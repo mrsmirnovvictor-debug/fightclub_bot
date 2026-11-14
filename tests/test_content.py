@@ -22,9 +22,11 @@ from bot.game.equipment import (
     ITEMS,
     LATE_SHARE_CAP,
     MAGIC_ITEMS,
+    RING_SLOTS,
     SHOWCASE,
     Item,
     Slot,
+    gear_share_cap,
     items_unlocked_at,
     weapon_share_cap,
     weapon_share_floor,
@@ -45,10 +47,30 @@ def test_catalogue_items_know_their_slot_and_price():
         )
         assert item.slot in item.slots
         assert isinstance(item, Item)
-        # второе место есть только у оружия: его берут во вторую руку
-        assert item.slots == (
-            (Slot.WEAPON, Slot.OFFHAND) if item.is_weapon else (item.slot,)
-        )
+        # Мест у вещи больше одного ровно в двух случаях: оружие берут во
+        # вторую руку, а кольцо ложится в любую из трёх клеток под кольца
+        if item.is_weapon:
+            places = (Slot.WEAPON, Slot.OFFHAND)
+        elif item.is_ring:
+            places = RING_SLOTS
+        else:
+            places = (item.slot,)
+        assert item.slots == places, item.code
+
+
+def test_no_two_items_share_a_code():
+    """Код — ключ вещи и в каталоге, и в базе у каждого, кто её купил.
+
+    Каталог собирается словарём, и двойник не ссорится, а молча затирает
+    первую запись: у купленной вещи меняются числа, картинка и название,
+    а в лавке одной вещи просто не оказывается. Коды у новых паков
+    считаются от набора и слота (`set_<набор>_<слот>`), так что столкнуть
+    два набора — дело одной опечатки.
+    """
+    codes = [item.code for item in ITEMS]
+    doubles = sorted({code for code in codes if codes.count(code) > 1})
+    assert not doubles, f"код на две вещи: {doubles}"
+    assert len(CATALOGUE) == len(ITEMS)
 
 
 def test_the_magic_counter_is_kept_out_of_the_club_shop():
@@ -77,9 +99,11 @@ def test_percent_bonuses_stay_within_their_caps():
     у трикстера с ассасином уворот и крит и без вещей упирались в свой
     потолок, и написанное на оружии в бой просто не доходило.
 
-    Одежда процентами не торгует: её дело — броня и запас. Восемь вещей
-    складывают свои доли, оружие в руках одно, поэтому потолок у одежды
-    прежний и маленький.
+    У одежды полоса своя и держит сумму долей на одной вещи, а не каждую
+    по отдельности: набор воина размазывает проценты по всем четырём
+    парам, и мелкими долями из него собралась бы вещь сильнее крупной.
+    Полоса идёт по уровню, от 5% на втором до 80% на девятом, — это и
+    есть лестница сетов.
 
     Товар мага живёт по своим правилам: он и должен быть заметно сильнее,
     иначе за него не платили бы звёздами. Вещи с ручными числами помечены
@@ -87,16 +111,16 @@ def test_percent_bonuses_stay_within_their_caps():
     """
     for item in SHOWCASE:
         shares = (item.accuracy, item.dodge, item.crit, item.anticrit, item.counter)
-        cap = (
-            weapon_share_cap(item.level_required)
-            if item.is_weapon
-            else (
-                EARLY_SHARE_CAP
-                if item.level_required <= EARLY_LEVELS
-                else LATE_SHARE_CAP
+        if item.is_weapon:
+            cap = weapon_share_cap(item.level_required)
+            assert max(shares) <= cap + 1e-9, (
+                f"{item.title}: {max(shares):.0%} > {cap:.0%}"
             )
+            continue
+        cap = gear_share_cap(item.level_required)
+        assert sum(shares) <= cap + 1e-9, (
+            f"{item.title}: всего {sum(shares):.0%} > {cap:.0%}"
         )
-        assert max(shares) <= cap + 1e-9, f"{item.title}: {max(shares):.0%} > {cap:.0%}"
 
 
 def test_every_weapon_of_its_tier_carries_the_share_of_its_tier():
@@ -294,40 +318,46 @@ def test_the_boosted_gear_is_what_the_owner_asked_for():
     assert (shirt.strength, shirt.agility, shirt.intuition, shirt.hp) == (3, 3, 3, 60)
 
 
-def test_the_boosted_gear_never_reaches_the_counter():
-    """Стендовые вещи — награды: их не купить и в эталонный комплект не взять.
+def test_the_reward_gear_never_reaches_the_counter():
+    """Наградные вещи не купить и в эталонный комплект не взять.
 
-    Это и есть шов между стендом и балансом: числа выше потолка живут
-    только в руках тестовых бойцов, а витрину держит потолок.
+    Это и есть шов между наградой и балансом: числа выше потолка не
+    должны попадать ни на прилавок, ни в расчёт, по которому меряют
+    силу класса. Список берём из самого каталога (`reward=True`), а не
+    из отдельного перечня: перечень разошёлся бы с каталогом молча.
     """
-    from bot.game.equipment import SHOWCASE, get_item
+    from bot.game.equipment import CATALOGUE, SHOWCASE
     from bot.game.reference import best_kit
-    from bot.seed import GRANTED_GEAR
+
+    rewards = {code for code, item in CATALOGUE.items() if item.reward}
+    assert rewards, "наградных вещей в каталоге не осталось вовсе"
 
     shelf = {item.code for item in SHOWCASE}
-    for code in GRANTED_GEAR:
-        assert get_item(code).reward, code
-        assert code not in shelf, code
+    assert not rewards & shelf, sorted(rewards & shelf)
 
     for fclass in FIGHTER_CLASSES.values():
         for level in range(1, 11):
             kit = {item.code for item in best_kit(fclass, level).values()}
-            assert not kit & set(GRANTED_GEAR), (fclass.code, level)
+            assert not kit & rewards, (fclass.code, sorted(kit & rewards))
 
 
 # ---------- лестницы: чем выше уровень, тем крупнее числа ----------
 
 
 def flat_cap(level: int) -> int:
-    """Потолок плоской прибавки к силе, ловкости или интуиции.
+    """Потолок плоской прибавки к силе, проворству или интуиции.
 
     Прибавка растёт по ступени за два уровня. Потолок нужен именно
     плоским числам: проценты режет `MAX_DODGE_CHANCE` и его соседи уже в
-    бою, а +5 к ловкости на вещи первого уровня ничем не режется и
+    бою, а +5 к проворству на вещи первого уровня ничем не режется и
     перебивает всю разницу между классами. На этом круг классов и
     ломался, пока усиленные вещи лежали на прилавке.
+
+    Ступеньку сдвинул пак сетов: футболка в нём только статами и торгует
+    (брони на ней нет вовсе), и на шестом уровне даёт +4 в профильное.
+    Лестница от этого не пропала — просто начинается на ступень выше.
     """
-    return max(1, (level - 1) // 2)
+    return max(1, (level + 2) // 2)
 
 
 def test_flat_bonuses_grow_by_the_ladder():
@@ -434,6 +464,288 @@ def test_every_item_has_a_picture_of_its_own():
         assert twin == item.code, f"{item.code} и {twin} делят картинку"
 
 
+# ---------- снятое с прилавка ----------
+
+
+def test_the_sets_took_over_the_whole_wardrobe():
+    """Пак закрыл все семь носимых слотов для всех четырёх классов."""
+    from bot.content.items import SET_PIECES
+    from bot.game.equipment import Slot
+
+    assert len(SET_PIECES) == 84
+    wardrobe = {
+        Slot.HEAD, Slot.SHIRT, Slot.BELT, Slot.GLOVES,
+        Slot.JACKET, Slot.PANTS, Slot.BOOTS,
+    }
+    for slot in wardrobe:
+        covered = {
+            code
+            for item in SET_PIECES
+            if item.slot is slot
+            for code in item.for_classes
+        }
+        assert covered == set(FIGHTER_CLASSES), f"{slot.value}: {covered}"
+    for item in SET_PIECES:
+        assert not item.shelf and not item.retired and item.price > 0, item.code
+        assert item.code.startswith("set_"), item.code
+
+
+def test_the_pack_reached_the_second_hand_with_twelve_shields():
+    """Двенадцать щитов: по одному на набор трёх линий, по четыре на класс.
+
+    Ассасинских в паке нет, и это не пропуск: ассасин бьёт первым и
+    насмерть, щит ему не по роли. Надеть он его всё равно может —
+    `for_classes` подсказывает витрине, кому вещь в первую очередь, а не
+    запирает её, — поэтому старые щиты лавки с прилавка не ушли: своей
+    вещи в этой руке у ассасина так и нет, и витрина предлагает ему
+    крышку от бочки со щитком.
+    """
+    from bot.content.items import SET_SHIELDS
+    from bot.game.art import set_piece
+    from bot.game.equipment import ItemKind
+
+    # Чей это щит и в какой папке бакета лежит его картинка
+    lines = {
+        "tank": ("avenger", "boxer", "army", "bouncer"),
+        "warrior": ("sport", "biker", "fighter", "hero"),
+        "trickster": ("plut", "croupier", "lovkach", "cardsharp"),
+    }
+    classes = {"tank": "tank", "warrior": "warrior", "trickster": "rogue"}
+
+    assert len(SET_SHIELDS) == 12
+    by_kit = {item.code.split("_")[1]: item for item in SET_SHIELDS}
+    assert set(by_kit) == {kit for kits in lines.values() for kit in kits}
+
+    for line, kits in lines.items():
+        for kit in kits:
+            item = by_kit[kit]
+            assert item.code == f"set_{kit}_shield"
+            assert item.slot is Slot.OFFHAND and item.kind is ItemKind.SHIELD
+            assert item.for_classes == (classes[line],), item.code
+            assert item.picture == set_piece(line, kit, "shield"), item.code
+            # Щит стоит на клубном прилавке и за кредиты
+            assert not item.shelf and not item.retired and item.price > 0
+
+    # Ступени те же, что у наборов, и на каждой — все три класса
+    tiers: dict[int, set[str]] = {}
+    for item in SET_SHIELDS:
+        tiers.setdefault(item.level_required, set()).update(item.for_classes)
+    assert sorted(tiers) == [2, 5, 7, 9]
+    for level, covered in tiers.items():
+        assert covered == {"tank", "warrior", "rogue"}, level
+    assert "assassin" not in {code for item in SET_SHIELDS for code in item.for_classes}
+
+    # Старые щиты остались на витрине: ассасину витрина предлагает только их
+    shelf = {item.code for item in SHOWCASE}
+    assert {"bar_lid", "buckler", "road_sign", "riot_shield"} <= shelf
+
+
+def test_the_shields_weigh_what_their_class_weighs():
+    """Танку тяжёлый, воину средний, трикстеру лёгкий — так их и прислали.
+
+    Вес считается бронёй и запасом здоровья: на каждой ступени у танка
+    их больше, чем у воина, а у воина — чем у трикстера. Доля у каждого
+    своя: танку антикрит (крит по кругу гасит он), трикстеру уворот,
+    который щитом обычно теряют, воину — по чуть-чуть от каждой пары.
+
+    Точности на танковом щите нет, как и на остальных танковых вещах: ею
+    сбивается уворот, то есть это ответ трикстеру, а трикстер по кругу
+    танка и бьёт.
+    """
+    from bot.content.items import SET_SHIELDS
+
+    mine = {
+        level: {
+            item.for_classes[0]: item
+            for item in SET_SHIELDS
+            if item.level_required == level
+        }
+        for level in (2, 5, 7, 9)
+    }
+    for level, kit in mine.items():
+        tank, warrior, rogue = kit["tank"], kit["warrior"], kit["rogue"]
+        for heavy, light in ((tank, warrior), (warrior, rogue)):
+            assert heavy.armor_max >= light.armor_max, level
+            assert heavy.hp >= light.hp, level
+        assert tank.armor_max > rogue.armor_max and tank.hp > rogue.hp, level
+
+        assert tank.anticrit and not tank.accuracy and not tank.dodge, level
+        assert rogue.dodge and not rogue.anticrit, level
+        # Воину — по чуть-чуть от каждой пары, начиная с пятой ступени:
+        # на второй у всего пака доля всего одна, пять процентов
+        if level > 2:
+            assert warrior.dodge and warrior.crit and warrior.anticrit, level
+
+
+def test_the_pack_reached_the_hand_with_sixteen_weapons():
+    """Шестнадцать оружий: по одному на каждый набор, включая ассасинские.
+
+    Щита ассасину не нарисовали, а оружие нарисовали всем: прикрываться
+    ему нечем, а бить есть чем. Уровень у оружия — по старшей вещи
+    набора, и это не выдумка теста: по ней набор и собирают.
+    """
+    from bot.content.items import SET_PIECES, SET_SHIELDS, SET_TITLES, SET_WEAPONS
+    from bot.game.art import set_piece
+    from bot.game.equipment import ItemKind, JEWEL_ITEMS
+
+    lines = {"tank": "tank", "warrior": "warrior", "rogue": "trickster",
+             "assassin": "assassin"}
+    assert len(SET_WEAPONS) == 16
+    # Форма начальника — набор без прилавка: оружие у неё своё, и в
+    # пачку покупных сетовых стволов она не входит
+    assert {item.kit for item in SET_WEAPONS} == set(SET_TITLES) - {"chief"}
+
+    # Старшая вещь набора — по ней считается уровень оружия
+    top: dict[str, int] = {}
+    for item in list(SET_PIECES) + list(SET_SHIELDS) + list(JEWEL_ITEMS):
+        if item.kit:
+            top[item.kit] = max(top.get(item.kit, 0), item.level_required)
+
+    prices = {3: 120, 5: 180, 7: 300, 9: 500}
+    for item in SET_WEAPONS:
+        kit = item.kit
+        fclass = item.for_classes[0]
+        assert item.code == f"set_{kit}_weapon"
+        assert item.slot is Slot.WEAPON and item.kind is ItemKind.WEAPON
+        assert len(item.for_classes) == 1
+        assert item.picture == set_piece(lines[fclass], kit, "weapon"), item.code
+        assert item.instrumental, f"{item.code}: нечем бить в тексте боя"
+        assert item.level_required == top[kit], (
+            f"{item.code}: {item.level_required} уровень при наборе до {top[kit]}"
+        )
+        assert item.price == prices[item.level_required], item.code
+        # Оружие набора лежит на клубном прилавке и за кредиты
+        assert not item.shelf and not item.retired and not item.reward
+
+    # Четыре ступени, и на каждой все четыре класса
+    tiers: dict[int, set[str]] = {}
+    for item in SET_WEAPONS:
+        tiers.setdefault(item.level_required, set()).update(item.for_classes)
+    assert sorted(tiers) == [3, 5, 7, 9]
+    for level, covered in tiers.items():
+        assert covered == set(FIGHTER_CLASSES), level
+
+
+def test_a_set_weapon_alone_does_not_beat_the_club_one():
+    """В одиночку сетовое оружие клубного не обходит — платят за комплект.
+
+    Средний урон у него ровно клубной ступени, а доля — по низу полосы,
+    а не по верху: 38% против 43% у секиры девятого уровня. Третья
+    ступень — исключение на полступени: там клубный сосед один, кастет
+    новичка, и на сумме в шесть единиц четырёх разных разбросов не
+    выходит.
+    """
+    from bot.content.items import SET_WEAPONS
+
+    def middle(item):
+        return (item.damage_min + item.damage_max) / 2
+
+    shares = lambda item: (  # noqa: E731
+        item.accuracy, item.dodge, item.crit, item.anticrit, item.counter
+    )
+    club: dict[int, list] = {}
+    for item in SHOWCASE:
+        if item.is_weapon and not item.kit:
+            club.setdefault(item.level_required, []).append(item)
+
+    for item in SET_WEAPONS:
+        level = item.level_required
+        rivals = club[level]
+        if level > 3:
+            assert middle(item) == max(middle(one) for one in rivals), item.code
+        else:
+            assert middle(item) == max(middle(one) for one in rivals) + 0.5
+        cap = weapon_share_cap(level)
+        floor = weapon_share_floor(level)
+        assert max(shares(item)) <= cap + 1e-9, item.code
+        if floor:
+            # Доля есть, и она в полосе — но у самого её низа
+            assert floor - 1e-9 <= max(shares(item)) <= floor + 0.015, item.code
+            assert max(shares(item)) < max(
+                max(shares(one)) for one in rivals
+            ), f"{item.code}: доля не ниже клубной"
+
+    # Средний урон внутри ступени у всех четверых один: разводим разброс
+    for level in (3, 5, 7, 9):
+        tier = [item for item in SET_WEAPONS if item.level_required == level]
+        assert len({middle(item) for item in tier}) == 1, level
+        spread = {
+            item.for_classes[0]: (item.damage_max - item.damage_min)
+            for item in tier
+        }
+        assert spread["assassin"] > spread["warrior"] > spread["tank"], level
+        assert spread["assassin"] > spread["rogue"] > spread["tank"], level
+
+
+def test_every_thing_of_a_set_knows_its_set():
+    """У вещи набора записан сам набор, а не только приставка в коде.
+
+    По этому полю считается комплект на бойце (`Equipment.kits`), и если
+    вещь о своём наборе не знает, она тихо перестаёт в него входить —
+    оружие при этом работает на 100%, и заметить это глазом нельзя.
+    """
+    from bot.content.items import SET_TITLES
+
+    for item in CATALOGUE.values():
+        if item.code.startswith("set_"):
+            assert item.kit, f"{item.code}: вещь набора без набора"
+            assert item.code.startswith(f"set_{item.kit}_"), item.code
+            assert item.kit in SET_TITLES, f"{item.kit}: набор без названия"
+        elif item.is_duty:
+            # Служебная форма — тоже набор, но код у неё свой: она не с
+            # прилавка, и приставка `set_` разводила бы её с покупными
+            assert item.kit in SET_TITLES, f"{item.kit}: набор без названия"
+        else:
+            assert not item.kit, f"{item.code}: набор у вещи вне наборов"
+
+
+def test_the_old_wardrobe_left_the_counter_but_not_the_catalogue():
+    """Снятая вещь уходит с витрины и остаётся всюду, где она уже есть.
+
+    Цену у неё никто не отбирал: по ней лавка принимает вещь обратно, по
+    ней же комиссионка держит рамки. Иначе снятие с прилавка тихо
+    превратило бы чужой гардероб в вещи без цены — а их на комиссионке
+    можно просить сколько угодно.
+    """
+    from bot.content.items import RETIRED_GEAR
+    from bot.game.equipment import CATALOGUE, SHOWCASE
+    from bot.game.market import buyback, has_counter_price
+
+    shelf = {item.code for item in SHOWCASE}
+    assert RETIRED_GEAR, "снимать оказалось нечего"
+    for code in RETIRED_GEAR:
+        item = CATALOGUE[code]
+        assert item.retired, code
+        assert code not in shelf, f"{code} остался на витрине"
+        assert not item.is_weapon and not item.is_shield, f"{code}: оружие не снимали"
+        assert has_counter_price(item) and buyback(item) > 0, code
+
+    # Снятого в витрине нет вовсе, и наоборот
+    assert not shelf & RETIRED_GEAR
+    for item in SHOWCASE:
+        assert not item.retired, item.code
+
+
+def test_the_only_old_shirt_left_is_the_one_the_pack_rewrote():
+    """Майку пак не заменил, а переписал: код и картинка прежние."""
+    from bot.game.art import shirt
+    from bot.game.equipment import CATALOGUE, SHOWCASE
+
+    майка = CATALOGUE["wife_beater"]
+    assert майка in SHOWCASE and not майка.retired
+    assert (майка.hp, майка.price, майка.level_required) == (30, 50, 1)
+    assert майка.picture == shirt("wife_beater")
+    assert not майка.for_classes, "майка всем"
+
+    old = [
+        item
+        for item in SHOWCASE
+        if not item.is_weapon and not item.is_shield
+        and not item.code.startswith("set_")
+    ]
+    assert [item.code for item in old] == ["wife_beater"]
+
+
 # ---------- фанатский магазин: свой прилавок ----------
 #
 # «Северный Вал» торгует не следующей ступенью клубной лавки, а своей
@@ -451,32 +763,207 @@ def fan_items():
 
 
 def test_the_fan_shelf_is_a_counter_of_its_own():
-    """Фанатский товар не лежит на витрине клуба и не путается с ней."""
-    from bot.game.equipment import FAN_SHELF, SHOWCASE
+    """Фанатский товар не лежит на витрине клуба и не путается с ней.
 
-    assert len(fan_items()) == 29, "пак приехал не целиком"
+    Одежда с оружием тут десятого уровня и от тысячи кредитов — ступень
+    выше клубной и цена вдвое. Украшения — исключение, и оно нарочное:
+    числа у них ровно те же, что у ювелира на девятой ступени, поэтому и
+    уровень с ценой ювелирные. Платят за вид и за то, что это падает с
+    рейда, а не за силу.
+    """
+    from bot.game.equipment import FAN_SHELF, JEWEL_SLOTS, SHOWCASE
+
+    assert len(fan_items()) == 42, "пак приехал не целиком"
     shelf = {item.code for item in SHOWCASE}
     for item in fan_items():
         assert item.shelf == FAN_SHELF, item.code
         assert item.code not in shelf, f"{item.code} попал на витрину клуба"
+        assert not item.stars and not item.reward, item.code
+        if item.slot in JEWEL_SLOTS:
+            assert item.level_required == 9, item.code
+            assert item.price in (200, 500), f"{item.code}: не ювелирная цена"
+            continue
         assert item.price >= 1000, f"{item.code}: {item.price} — не фанатская цена"
         assert item.level_required == 10, item.code
-        assert not item.stars and not item.reward, item.code
 
 
-def test_the_fan_shelf_keeps_the_same_ceilings():
-    """Потолки процентов и плоских прибавок на фанатском товаре те же.
+def test_the_fan_shelf_has_a_ceiling_of_its_own():
+    """У фанатской одежды полоса своя и на ступень выше клубной.
 
-    Именно они держат круг классов. Тематический магазин выводит вещь
-    из лестницы клуба, но не из баланса: 10% и +4 на десятом уровне.
+    Раньше потолок был общий и маленький — десять процентов на вещь.
+    Пока клубная одежда торговала теми же крохами, это держалось; с
+    паком сетов клубная вещь девятого уровня стала нести до 80%, и
+    фанатская за тысячу с лишним кредитов оказалась слабее сета за
+    пятьсот. Приз с рейда превратился в утешительный.
+
+    Полоса потолком и осталась — просто своя: 1.30 против клубных 0.80.
+    Плоские прибавки по-прежнему считаются по общей лестнице, и
+    выносливости на фанатских вещах нет, как и на всех прочих.
     """
+    from bot.game.equipment import FAN_SHARE_CAP
+
     for item in fan_items():
         shares = (item.accuracy, item.dodge, item.crit, item.anticrit, item.counter)
-        cap = weapon_share_cap(10) if item.is_weapon else LATE_SHARE_CAP
-        assert max(shares) <= cap + 1e-9, f"{item.title}: {max(shares):.0%}"
+        if item.is_weapon:
+            cap = weapon_share_cap(10)
+            assert max(shares) <= cap + 1e-9, f"{item.title}: {max(shares):.0%}"
+        else:
+            assert sum(shares) <= FAN_SHARE_CAP + 1e-9, (
+                f"{item.title}: всего {sum(shares):.0%}"
+            )
         for stat in ("strength", "agility", "intuition"):
             assert getattr(item, stat) <= flat_cap(item.level_required), item.title
         assert item.bonus.endurance == 0, item.title
+
+
+def test_the_fan_shelf_beats_the_club_sets_it_costs_twice_as_much_as():
+    """За фанатскую вещь просят вдвое — и она обходит сет девятого.
+
+    Это и есть смысл «Северного Вала»: приз с рейда и цель, ради которой
+    копят. Сравниваем по слоту с тем, что боец этого класса надел бы из
+    клубной лавки, — ни по одному числу фанатская вещь уступать не может.
+
+    Щиты сюда приехали позже одежды: пока в клубной лавке в этой руке
+    лежал штурмовой щит за 220 кредитов, фанатский обходил его и без
+    проверки. С сетовыми щитами у него появился соперник за 500, который
+    обходил его вчетверо, — и числа фанатских щитов подняли. Оружие
+    по-прежнему мимо: своего в паке сетов нет вовсе.
+    """
+    from bot.game.classes import FIGHTER_CLASSES
+    from bot.game.reference import best_kit
+
+    # Чья это линия: ассасинскую вещь носит и трикстер, но мерят её по
+    # ассасину — свою линию трикстер и так возьмёт, она дороже
+    primary = {
+        "fan_assassin": "assassin", "fan_rogue": "rogue",
+        "fan_warrior": "warrior", "fan_boss": "tank",
+    }
+    club = {code: best_kit(fclass, 10) for code, fclass in FIGHTER_CLASSES.items()}
+    numbers = (
+        "strength", "agility", "intuition", "hp", "armor_min", "armor_max",
+        "accuracy", "dodge", "crit", "anticrit", "counter",
+    )
+
+    checked = 0
+    for item in fan_items():
+        if item.is_weapon:
+            continue  # оружию клубного соперника в паке нет
+        line = next(key for key in primary if item.code.startswith(key))
+        if item.slot not in club[primary[line]]:
+            continue  # украшения — своя лестница, их проверяет тест ниже
+        rival = club[primary[line]][item.slot]
+        for name in numbers:
+            assert getattr(item, name) >= getattr(rival, name), (
+                f"{item.title} слабее, чем «{rival.title}», по «{name}»: "
+                f"{getattr(item, name)} против {getattr(rival, name)}"
+            )
+        assert item.price > rival.price * 2, f"{item.code}: дешевле двух сетовых"
+        checked += 1
+    assert checked == 30, "фанатская одежда приехала не целиком"
+
+
+def test_the_fan_jewels_are_the_jewellers_ninth_step():
+    """Фанатское украшение — та же девятая ступень, только в своём виде.
+
+    Числа заданы владельцем: «ровно 9-я ступень ювелира». Значит, каждое
+    из восьми повторяет украшение ювелира — кулон свой по классу, кольцо
+    из трёх сильных, — и сверить это можно числом к числу, а не на глаз.
+    Разойдутся — фанатская полка начнёт тихо обгонять ювелира, и приз с
+    рейда перестанет быть равным обмену, каким его задумали.
+    """
+    from bot.game.equipment import JEWEL_ITEMS, JEWEL_SLOTS, Slot
+
+    # Чей кулон и какое из сильных колец повторяет эта линия
+    same = {
+        "fan_boss_necklace": "set_bouncer_necklace",
+        "fan_warrior_necklace": "set_hero_necklace",
+        "fan_assassin_necklace": "set_killer_necklace",
+        "fan_rogue_necklace": "set_cardsharp_necklace",
+        "fan_boss_ring": "ring_guard",
+        "fan_warrior_ring": "ring_balance",
+        "fan_assassin_ring": "ring_luck",
+        "fan_rogue_ring": "ring_luck",
+    }
+    jeweller = {item.code: item for item in JEWEL_ITEMS}
+    numbers = (
+        "strength", "agility", "intuition", "hp", "armor_min", "armor_max",
+        "accuracy", "dodge", "crit", "anticrit", "counter",
+    )
+
+    mine = [item for item in fan_items() if item.slot in JEWEL_SLOTS]
+    assert {item.code for item in mine} == set(same), "украшений на полке не восемь"
+    for item in mine:
+        twin = jeweller[same[item.code]]
+        assert twin.level_required == 9, twin.code
+        for name in numbers:
+            assert getattr(item, name) == getattr(twin, name), (
+                f"{item.title}: «{name}» {getattr(item, name)} против "
+                f"{getattr(twin, name)} у «{twin.title}»"
+            )
+        assert item.price == twin.price, f"{item.code}: цена не ювелирная"
+        # Кольцо лежит в правой клетке и раздаёт себе остальные две,
+        # кулон — в своей: иначе на гопнике оно не наденется втрое
+        assert item.slot in (Slot.NECKLACE, Slot.RING_RIGHT), item.code
+
+
+def test_the_fan_gloves_close_the_last_empty_slot():
+    """Перчатки закрыли последний пустой слот линии — по паре на класс.
+
+    Брони на них нет и быть не может: кулак не зона удара, и число брони
+    на перчатке никуда не пришло бы. Поэтому берут они статами и долями —
+    и, как вся линия, обходят клубные перчатки девятого уровня, иначе за
+    них незачем платить вдвое.
+    """
+    from bot.game.classes import FIGHTER_CLASSES
+    from bot.game.equipment import CATALOGUE, Slot
+
+    pairs = {
+        "fan_boss_gloves": ("tank", "set_bouncer_gloves"),
+        "fan_warrior_gloves": ("warrior", "set_hero_gloves"),
+        "fan_assassin_gloves": ("assassin", "set_killer_gloves"),
+        "fan_rogue_gloves": ("rogue", "set_cardsharp_gloves"),
+    }
+    mine = [item for item in fan_items() if item.slot is Slot.GLOVES]
+    assert {item.code for item in mine} == set(pairs), "перчаток не четыре"
+    assert {code for item in mine for code in item.for_classes} == set(FIGHTER_CLASSES)
+
+    for item in mine:
+        fclass, rival_code = pairs[item.code]
+        assert item.for_classes == (fclass,), item.code
+        assert not item.armor_min and not item.armor_max, (
+            f"{item.code}: броня на перчатке никуда не приходит"
+        )
+        assert not item.zones, item.code
+        rival = CATALOGUE[rival_code]
+        for name in ("strength", "agility", "intuition", "hp",
+                     "accuracy", "dodge", "crit", "anticrit", "counter"):
+            assert getattr(item, name) >= getattr(rival, name), (
+                f"{item.title}: «{name}» слабее клубных перчаток"
+            )
+        assert item.price > rival.price * 2, f"{item.code}: дешевле двух клубных"
+    # Танку точности не писать: ею сбивается уворот, то есть это ответ
+    # трикстеру, который по кругу танка и бьёт. На клубных танковых вещах
+    # её нет по той же причине
+    assert not CATALOGUE["fan_boss_gloves"].accuracy
+
+
+def test_the_light_shield_is_the_tricksters_own():
+    """Лёгкий щит: брони меньше, чем у доски лидера, зато он даёт уворот.
+
+    Щит в фанатской линии был один — тяжёлый, танковый, и трикстер
+    дрался с пустой рукой. Этот его: блок всё равно на все зоны, но
+    носить его можно, не теряя уворота, — он сам его и прибавляет.
+    """
+    from bot.game.equipment import CATALOGUE, ItemKind, Slot
+
+    light, heavy = CATALOGUE["fan_rogue_shield"], CATALOGUE["fan_boss_shield"]
+
+    assert light.kind is ItemKind.SHIELD and light.slot is Slot.OFFHAND
+    assert light.for_classes == ("rogue",)
+    assert light.dodge > 0 and light.armor_min > 0
+    assert light.armor_max < heavy.armor_max, "лёгкий щит не легче тяжёлого"
+    assert not heavy.dodge, "у доски лидера уворота не было и нет"
+    assert light.zones and light.price < heavy.price
 
 
 def test_the_fan_shelf_dresses_every_class():
@@ -510,12 +997,188 @@ def test_fan_weapons_are_worth_their_price():
 
 
 def test_the_fan_shelf_is_drawn_and_not_shared():
-    """У каждой фанатской вещи своя картинка в общем бакете."""
+    """У каждой фанатской вещи своя картинка в общем бакете.
+
+    Адрес у фанатской вещи считается от кода — кроме тех, что переехали,
+    когда бакет стали разбирать по рейдам: они лежат в папке своей линии
+    (`bosses/raid2_items/<линия>/items/`), и файла под старым адресом у
+    них нет вовсе. Таким адрес написан строкой, и написан он сюда же:
+    переехала вещь — видно, что переехала, а не потерялась.
+    """
+    from bot.game.art import RAID_ITEMS
     from bot.game.equipment import SHOWCASE
 
     seen = {item.picture for item in SHOWCASE}
+    moved = {item.code for item in fan_items() if item.image}
+    assert moved == {
+        "fan_boss_gloves", "fan_warrior_gloves",
+        "fan_assassin_gloves", "fan_rogue_gloves",
+    }, moved
     for item in fan_items():
-        assert not item.image, f"{item.code}: адрес картинки задан руками"
+        if item.code in moved:
+            assert item.picture.startswith(f"{RAID_ITEMS}/"), item.code
+            assert item.picture.endswith(f"/items/{item.code}.png"), item.code
+        else:
+            assert not item.image, f"{item.code}: адрес картинки задан руками"
         assert item.picture.startswith(ART), item.code
         assert item.picture not in seen, f"{item.code} делит картинку с витриной"
         seen.add(item.picture)
+
+
+# ---------- ювелир: кольца и ожерелья ----------
+#
+# У ювелира свой прилавок, как у «Северного Вала»: в витрину клуба он не
+# входит, лестницу цен за собой не тянет и эталонного бойца не трогает —
+# круг классов считается по клубной лавке. Потолки процентов и плоских
+# прибавок на украшениях при этом клубные: именно они держат круг.
+
+
+def jewels():
+    from bot.game.equipment import JEWEL_ITEMS
+
+    return JEWEL_ITEMS
+
+
+def test_the_jeweller_is_a_counter_of_its_own():
+    """Украшения лежат у ювелира и больше нигде."""
+    from bot.game.equipment import JEWEL_SHELF, JEWEL_SLOTS, SHOWCASE
+
+    assert len(jewels()) == 39, "пак приехал не целиком"
+    shelf = {item.code for item in SHOWCASE}
+    for item in jewels():
+        assert item.shelf == JEWEL_SHELF, item.code
+        assert item.code not in shelf, f"{item.code} попал на витрину клуба"
+        assert item.slot in JEWEL_SLOTS, item.code
+        assert item.price > 0 and not item.stars and not item.reward, item.code
+        assert not item.retired, item.code
+
+
+def test_the_jeweller_opens_exactly_two_shelves():
+    """Полок ровно две — кольца и ожерелья, как их и просили.
+
+    Клетки под кольца три, а полка одна: кольцо записано в правую и само
+    раздаёт себе остальные две. Три полки «Кольца» рядом были бы ошибкой
+    раскладки, а не выбором.
+    """
+    from bot.game.equipment import JEWEL_SHELF, Slot, shop_sections
+
+    full = [(slot, items) for slot, items in shop_sections(JEWEL_SHELF) if items]
+    assert [slot for slot, _ in full] == [Slot.NECKLACE, Slot.RING_RIGHT]
+    assert [len(items) for _, items in full] == [16, 23]
+    assert [slot.section for slot, _ in full] == ["ожерелья", "кольца"]
+
+
+def test_the_jeweller_keeps_to_the_club_ceilings():
+    """Потолки на украшениях клубные: по ним и держится круг классов.
+
+    Полосу процентов пак прошёл как есть: кольцо несёт одну долю, кулон
+    девятого уровня — до 80%, ровно столько же, сколько сет того же
+    уровня. Выносливости на украшениях нет, как и на всех прочих вещах.
+    """
+    for item in jewels():
+        shares = (item.accuracy, item.dodge, item.crit, item.anticrit, item.counter)
+        cap = gear_share_cap(item.level_required)
+        assert sum(shares) <= cap + 1e-9, (
+            f"{item.title}: всего {sum(shares):.0%} > {cap:.0%}"
+        )
+        for stat in ("strength", "agility", "intuition"):
+            assert getattr(item, stat) <= flat_cap(item.level_required), item.title
+        assert item.bonus.endurance == 0, item.title
+
+
+def test_jewels_hold_a_blow_with_the_whole_body():
+    """Броня украшений прикрывает все зоны сразу, как у щита.
+
+    Так решил владелец, и это делает кольцо с бронёй вещью заметной: три
+    клетки складывают её втрое и на каждую зону. Удар она всё равно гасит
+    не больше чем на свою долю (`MAX_ARMOR_SHARE`), поэтому бой от трёх
+    колец не останавливается.
+    """
+    from bot.game.classes import ALL_ZONES
+    from bot.game.equipment import JEWEL_SLOTS, Slot
+
+    armoured = [item for item in jewels() if item.armor_max]
+    assert len(armoured) == 5, "броня на старших кулонах и кольце защиты"
+    assert {item.slot for item in armoured} == {Slot.NECKLACE, Slot.RING_RIGHT}
+    for item in armoured:
+        assert item.zones == ALL_ZONES, item.code
+        assert item.level_required == 9, item.code
+    # И это правило слота, а не вещи: броня на любом украшении пойдёт
+    # всем зонам, и наоборот — ни одно из них не прикрывает одну зону
+    from bot.game.equipment import SLOT_ZONES
+
+    for slot in JEWEL_SLOTS:
+        assert SLOT_ZONES[slot] == ALL_ZONES, slot.value
+
+
+def test_the_jeweller_dresses_every_class():
+    """На каждой ступени есть украшение под каждый класс.
+
+    Иначе полка превращается в полку одного класса: кольца носят сразу по
+    три, и класс, которому брать нечего, отстаёт втройне.
+    """
+    from bot.game.classes import FIGHTER_CLASSES
+    from bot.game.equipment import Slot
+
+    for slot in (Slot.NECKLACE, Slot.RING_RIGHT):
+        shelf = [item for item in jewels() if item.slot is slot]
+        tiers: dict[int, set[str]] = {}
+        for item in shelf:
+            tiers.setdefault(item.level_required, set()).update(item.for_classes)
+        for level, covered in sorted(tiers.items()):
+            assert covered == set(FIGHTER_CLASSES), (
+                f"{slot.value}, {level} уровень: обошли {set(FIGHTER_CLASSES) - covered}"
+            )
+
+
+def test_the_jewels_are_drawn_and_not_shared():
+    """У каждого украшения своя картинка в общем бакете.
+
+    Адрес у них задан строкой, и это не оплошность: кольцо линии лежит
+    под именем украшения (`ring.png`), а клеток под кольцо три — по коду
+    клетки файла в бакете нет вовсе.
+    """
+    from bot.game.art import SETS
+    from bot.game.equipment import SHOWCASE
+
+    seen = {item.picture for item in SHOWCASE}
+    for item in jewels():
+        assert item.picture.startswith(f"{SETS}/"), item.code
+        assert item.picture not in seen, f"{item.code} делит картинку"
+        seen.add(item.picture)
+
+
+def test_the_jewelled_kit_fills_all_four_cells():
+    """Комплект с украшениями надевает ожерелье и три кольца, а не одно.
+
+    Кольцо в нём одно и то же во все три клетки: кольца не уникальны, и
+    лучшее своё боец купит трижды. Клубный гардероб при этом остаётся —
+    украшения его не вытесняют.
+    """
+    from bot.game.classes import FIGHTER_CLASSES
+    from bot.game.equipment import RING_SLOTS, Slot
+    from bot.game.reference import best_kit, jewel_kit
+
+    for fclass in FIGHTER_CLASSES.values():
+        bare, dressed = best_kit(fclass, 9), jewel_kit(fclass, 9)
+        rings = [dressed[slot] for slot in RING_SLOTS]
+        assert len(set(rings)) == 1, fclass.code
+        assert rings[0].is_ring and rings[0].level_required == 9, fclass.code
+        necklace = dressed[Slot.NECKLACE]
+        assert necklace.slot is Slot.NECKLACE and necklace.level_required == 9
+        for code in (necklace.code, rings[0].code):
+            assert code not in {item.code for item in bare.values()}
+        # Клубное на месте: украшения добавились, а не заменили
+        for slot, item in bare.items():
+            assert dressed[slot] == item, slot.value
+
+    # Фанатский комплект носит свои украшения и тоже в три кольца: на
+    # одной клетке он считал бы треть прибавки, и каждый расчёт на нём
+    # врал бы в пользу того, кто кольца не надел
+    from bot.game.reference import fan_kit
+
+    for fclass in FIGHTER_CLASSES.values():
+        kit = fan_kit(fclass, 10)
+        rings = {kit[slot].code for slot in RING_SLOTS}
+        assert len(rings) == 1 and rings.pop().startswith("fan_"), fclass.code
+        assert kit[Slot.NECKLACE].code.startswith("fan_"), fclass.code

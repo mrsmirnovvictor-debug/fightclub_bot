@@ -13,14 +13,19 @@ from typing import Any
 from bot.battle_service import BattleService, BattleSession, Lobby
 from bot.game.battle import (
     BLUE,
+    DEFAULT_WAIT,
+    LEVEL_CHOICES,
+    LEVEL_NEAR,
     MAX_ROYALE,
     MAX_TEAM_SIZE,
     MIN_ROYALE,
     MIN_TEAM_SIZE,
     RED,
+    WAIT_MINUTES,
     BattleKind,
     team_name,
 )
+from bot.game.modes import FightMode
 from bot.game.classes import BLOCK_WIDTH
 from bot.models import Player
 from bot.webapp.fight import (
@@ -52,6 +57,10 @@ def lobby_payload(lobby: Lobby, viewer_id: int) -> dict[str, Any]:
         "total": lobby.total,
         "min_level": lobby.min_level,
         "max_level": lobby.max_level,
+        # Сколько ждут состав и до какого часа: срок у каждого сбора
+        # свой, и по нему же тикают часы на странице
+        "wait": lobby.wait,
+        "wait_text": f"{max(1, lobby.wait // 60)} мин",
         "mine": lobby.opener_id == viewer_id,
         "joined": viewer_id in lobby.members,
         "in_app": lobby.chat_id is None,
@@ -157,6 +166,26 @@ def build_battle(player: Player, service: BattleService | None) -> dict[str, Any
             },
         ],
         "can_fight": player.can_fight(),
+        # Из чего собирают бой: четыре вопроса, на которые отвечает
+        # созывающий. Числа и слова держит `bot.game.battle`, страница
+        # только рисует ответ
+        "modes": [
+            {"code": one.value, "title": one.title, "emoji": one.emoji}
+            for one in (FightMode.ARMED, FightMode.FIST)
+        ],
+        "levels": [
+            {
+                "code": code,
+                "title": title,
+                "note": note,
+                "mine": code == LEVEL_NEAR,
+            }
+            for code, title, note in LEVEL_CHOICES
+        ],
+        "waits": [
+            {"minutes": one, "title": f"{one} мин", "mine": one == DEFAULT_WAIT}
+            for one in WAIT_MINUTES
+        ],
         "battle": None,
         "lobby": None,
         "lobbies": [],

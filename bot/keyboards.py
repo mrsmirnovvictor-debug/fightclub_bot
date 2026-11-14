@@ -82,9 +82,14 @@ class TopUpCB(CallbackData, prefix="topup"):
 
 
 class ProCB(CallbackData, prefix="pro"):
-    """Взять подписку. free=1 — по акции, даром."""
+    """Взять подписку. free=1 — по акции, даром; tier — какую ступень.
+
+    Пустая ступень означает PRO: так приходят нажатия с кнопок, которые
+    висели в чате до появления второй ступени.
+    """
 
     free: int = 0
+    tier: str = ""
 
 
 class ChallengeCB(CallbackData, prefix="chl"):

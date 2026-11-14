@@ -30,7 +30,13 @@ from bot.game.bank import (
     CARD_PRICE,
     CARD_YEAR_PRICE,
     CASH,
+    CASH_OUT,
+    FEE,
+    GOT,
+    PAY,
     PURSES,
+    SENT,
+    TOP_UP,
     YEAR_SECONDS,
     make_number,
     tidy_number,
@@ -61,13 +67,15 @@ class Move:
 
 async def open_account(db: Database, player: Player, now: int | None = None) -> str:
     """Открыть счёт. Мгновенно, бесплатно и один на бойца."""
+    moment = now_ts() if now is None else now
     if player.has_account:
         raise BankError("Счёт в Vegas Банке у тебя уже есть — он один на бойца.")
 
     for _ in range(NUMBER_TRIES):
         number = make_number()
-        if await db.open_account(player.user_id, number):
+        if await db.open_account(player.user_id, number, moment):
             player.account_number = number
+            player.account_at = moment
             logger.info("Банк открыл счёт %s бойцу %s", number, player.user_id)
             return number
         # Либо номер занят, либо счёт успели открыть в соседнем окне
@@ -107,6 +115,7 @@ async def issue_card(db: Database, player: Player, now: int | None = None) -> in
     player.card_paid_until = paid_until
     if where == CARD:
         player.account_balance -= CARD_PRICE
+        player.note_card(-CARD_PRICE, FEE, "Выпуск карты", moment)
     else:
         player.credits -= CARD_PRICE
     await db.save_player(player)
@@ -151,6 +160,21 @@ async def deposit(
         raise BankError("Наличные изменились. Попробуй ещё раз.")
     player.credits -= amount
     player.account_balance += amount
+    # Судебный долг гасится первым: счёт заблокирован до тех пор, пока
+    # он есть, и класть на него деньги «мимо» долга бессмысленно
+    paid = player.repay_debt(amount)
+    if paid:
+        player.account_balance -= paid
+    await db.log_card(
+        player.user_id, amount, TOP_UP, "Внесение наличных",
+        player.account_balance, now,
+    )
+    if paid:
+        await db.log_card(
+            player.user_id, -paid, PAY, "Судебный штраф",
+            player.account_balance, now,
+        )
+    await db.save_player(player)
     return Move(amount, player.credits, player.account_balance)
 
 
@@ -159,6 +183,11 @@ async def withdraw(
 ) -> Move:
     """Снять со счёта наличные в банкомате. Без комиссии."""
     _require_account(player)
+    if player.account_blocked:
+        raise BankError(
+            f"Счёт заблокирован судебным штрафом: долг {player.account_debt} 💰. "
+            "Пополни счёт — долг спишется, и счёт откроется."
+        )
     amount = _sane(amount)
     if amount > player.account_balance:
         raise BankError(
@@ -168,6 +197,10 @@ async def withdraw(
         raise BankError("Деньги на счету изменились. Попробуй ещё раз.")
     player.account_balance -= amount
     player.credits += amount
+    await db.log_card(
+        player.user_id, -amount, CASH_OUT, "Снятие в банкомате",
+        player.account_balance, now,
+    )
     return Move(amount, player.credits, player.account_balance)
 
 
@@ -194,6 +227,16 @@ async def send(
         raise BankError("Деньги на счету изменились. Попробуй ещё раз.")
 
     player.account_balance -= amount
+    # Выписка у перевода двойная: у отправителя списание, у получателя
+    # приход. Остаток получателя берём из базы — его самого тут нет
+    await db.log_card(
+        player.user_id, -amount, SENT, f"Перевод: {holder.nickname}",
+        player.account_balance, now,
+    )
+    await db.log_card(
+        holder.user_id, amount, GOT, f"От бойца: {player.nickname}",
+        await db.account_money(holder.user_id), now,
+    )
     logger.info(
         "Банк перевёл %s с бойца %s бойцу %s", amount, player.user_id, holder.user_id
     )

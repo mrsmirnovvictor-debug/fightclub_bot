@@ -5,11 +5,15 @@ import pytest
 
 from bot.game.classes import get_class
 from bot.game.economy import (
+    BASE_EXP,
+    EXP_UPS,
+    GEAR_TOP_LEVEL,
     LEVEL_CREDITS,
     MAX_LEVEL,
     MICRO_UPS_PER_LEVEL,
     POINTS_PER_UP,
     UP_CREDITS,
+    exp_at_up,
     exp_to_next_level,
 )
 from bot.models import Player
@@ -29,18 +33,88 @@ def make_player(user_id=1, **kwargs):
     return Player(**data)
 
 
-def test_exp_curve_grows():
-    assert exp_to_next_level(1) < exp_to_next_level(2) < exp_to_next_level(3)
+def test_the_ladder_climbs_in_pairs_and_never_dips():
+    """Лестница идёт ступенями по два уровня и ни разу не дешевеет.
+
+    Пары — не прихоть: без них каждый второй уровень оказывался бы
+    вдвое дороже предыдущего, и боец видел бы не лестницу, а стену
+    через шаг. Внутри уровня апы тоже дорожают: первый приходит скоро
+    и держит бойца за столом, последний совпадает с самим уровнем.
+    """
+    assert MAX_LEVEL == 15
+    assert set(EXP_UPS) == set(range(1, MAX_LEVEL))
+    for level in range(1, MAX_LEVEL - 1):
+        assert exp_to_next_level(level) <= exp_to_next_level(level + 1)
+    # Ступени растут парами: уровень через один дороже — до двенадцатого.
+    # Последние три стоят одинаково, и это конец лестницы, а не пара:
+    # выше потолка ступеней нет, и растягивать её нечем
+    for level in range(1, 12):
+        assert exp_to_next_level(level) < exp_to_next_level(level + 2), level
+    assert (
+        exp_to_next_level(12)
+        == exp_to_next_level(13)
+        == exp_to_next_level(14)
+        == 15_200
+    )
+    for level, ups in EXP_UPS.items():
+        assert len(ups) == MICRO_UPS_PER_LEVEL, level
+        assert list(ups) == sorted(ups), level
+        assert exp_at_up(level, MICRO_UPS_PER_LEVEL) == exp_to_next_level(level)
+
+    # Весь путь до потолка — то, из чего считается всё остальное
+    assert sum(exp_to_next_level(one) for one in range(1, MAX_LEVEL)) == 102_300
+
+    # Вещей выше десятой ступени в городе нет, и это другой потолок
+    assert GEAR_TOP_LEVEL == 10 and GEAR_TOP_LEVEL < MAX_LEVEL
 
 
-def test_quarter_of_a_level_gives_an_up():
+def test_the_base_exp_is_a_property_of_the_level():
+    """Ставка — свойство уровня, а не апа внутри него.
+
+    Иначе два боя на одном уровне стоили бы разного только потому, что
+    между ними боец взял ап, и объяснить это игроку было бы нечем.
+    """
+    assert set(BASE_EXP) == set(range(1, MAX_LEVEL + 1))
+    for level in range(1, MAX_LEVEL):
+        assert BASE_EXP[level] <= BASE_EXP[level + 1]
+    # Потолок ставку не роняет: на пятнадцатом она та же, что на
+    # четырнадцатом, иначе победа над потолочным бойцом стоила бы
+    # дешевле победы над тем, кто на уровень младше
+    assert BASE_EXP[MAX_LEVEL] == BASE_EXP[MAX_LEVEL - 1]
+
+
+def test_the_first_up_of_the_level_gives_a_point_and_credits():
     player = make_player()
-    report = player.grant_exp(exp_to_next_level(1) // MICRO_UPS_PER_LEVEL)
+    report = player.grant_exp(exp_at_up(1, 1))
     assert report.ups == 1
     assert report.levels == 0
     assert player.free_points == POINTS_PER_UP
     assert player.credits == UP_CREDITS
     assert player.micro_ups == 1
+
+
+def test_a_shortfall_of_one_exp_holds_the_up_back():
+    """Ап приходит на пороге, а не около него."""
+    player = make_player()
+    report = player.grant_exp(exp_at_up(1, 1) - 1)
+    assert report.ups == 0 and player.micro_ups == 0
+    assert player.free_points == 0 and player.credits == 0
+
+
+def test_the_last_up_of_the_level_is_the_level_itself():
+    """До апа ноль не показывают, пока до уровня ещё остаётся опыт.
+
+    Порог четвёртого апа — цена всего уровня, а не четыре шага по
+    четверти. Пока шаги считали четвертями, на уровнях, чья цена на
+    четыре не делилась, боец видел «до апа: 0» и ещё пару боёв стоял
+    на месте.
+    """
+    player = make_player()
+    while not player.at_max_level:
+        left = player.exp_to_next_up
+        assert left > 0, (player.level, player.micro_ups, player.exp)
+        player.grant_exp(left)
+    assert player.level == MAX_LEVEL
 
 
 def test_level_up_grants_four_ups_and_level_credits():

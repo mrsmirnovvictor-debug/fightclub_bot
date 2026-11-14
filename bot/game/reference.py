@@ -13,6 +13,8 @@ from bot.game.economy import MICRO_UPS_PER_LEVEL
 from bot.game.equipment import (
     ALL_SLOTS,
     FAN_ITEMS,
+    JEWEL_ITEMS,
+    RING_SLOTS,
     SHOWCASE,
     Equipment,
     Item,
@@ -76,7 +78,83 @@ def fan_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
         # даже если в его слоте пусто, — он донашивает клубное
         if mine:
             kit[slot] = max(mine, key=lambda item: item.price)
+    return with_three_rings(kit)
+
+
+def fan_only_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
+    """Одна фанатская линия и ничего больше — форма, а не гардероб.
+
+    Этим одевают гопников. Игроку фанатское добирается клубным
+    (`fan_kit`): он ходит в своём и докупает, что приглянулось. Гопник же
+    не покупатель — на нём форма сектора, и если в линии чего-то нет, то
+    у него этого нет вовсе. Перчаток в линии нет — значит, дерётся
+    голыми руками, а не в клубных.
+
+    Вторую руку отсюда всё равно не возьмут: `boss_kit` наполняет её
+    только тем, что написано у самого бойца. Но сюда она попадает — на
+    случай, если этим комплектом однажды оденут не NPC.
+    """
+    return {
+        slot: max(mine, key=lambda item: item.price)
+        for slot in ALL_SLOTS
+        if (
+            mine := [
+                item
+                for item in FAN_ITEMS
+                if item.slot is slot
+                and item.level_required <= level
+                and fclass.code in item.for_classes
+            ]
+        )
+    }
+
+
+def with_three_rings(kit: dict[Slot, Item]) -> dict[Slot, Item]:
+    """Разложить кольцо по всем трём клеткам.
+
+    Кольцо в лавке одно, а мест под него три, и носить их будут все три:
+    кольца не уникальны, и лучшее своё боец купит трижды, а не станет
+    собирать разные послабее. Комплект, у которого занята одна клетка,
+    считал бы треть прибавки — и каждый расчёт на нём врал бы в пользу
+    того, кто кольца не надел. Так же одеты и NPC: `boss_kit` кладёт их
+    перстень во все три клетки.
+    """
+    ring = kit.get(Slot.RING_RIGHT)
+    if ring is not None:
+        for slot in RING_SLOTS:
+            kit[slot] = ring
     return kit
+
+
+def jewel_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
+    """Клубный гардероб плюс украшения: ожерелье и три одинаковых кольца.
+
+    У ювелира прилавок свой, и в эталон он не идёт: клетки под украшения
+    пустуют у каждого, кто к ювелиру не заходил. Но заходить будут, и
+    против такого же одетого круг классов обязан держаться — украшения
+    торгуют теми же процентами, что и сеты, а кольцо надевается трижды.
+    Этим комплектом круг и проверяется.
+
+    Кольцо берётся одно и то же во все три клетки: так носить их и будут —
+    кольца не уникальны, и лучшее своё кольцо боец купит трижды, а не
+    станет собирать набор послабее.
+    """
+    kit = best_kit(fclass, level)
+    mine = [
+        item
+        for item in JEWEL_ITEMS
+        if item.level_required <= level and fclass.code in item.for_classes
+    ]
+    def best(shelf: list[Item]) -> Item:
+        return max(shelf, key=lambda item: (item.level_required, item.price))
+
+    necklaces = [item for item in mine if item.slot is Slot.NECKLACE]
+    rings = [item for item in mine if item.is_ring]
+    if necklaces:
+        kit[Slot.NECKLACE] = best(necklaces)
+    if rings:
+        kit[Slot.RING_RIGHT] = best(rings)
+    return with_three_rings(kit)
 
 
 def equipment_of(kit: dict[Slot, Item]) -> Equipment:

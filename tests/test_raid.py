@@ -11,7 +11,7 @@ import pytest
 
 from bot.config import Config
 from bot.game.combat import Fighter
-from bot.game.economy import MAX_LEVEL
+from bot.game.economy import GEAR_TOP_LEVEL, MAX_LEVEL
 from bot.game.potions import RAID_PASS
 from bot.game.raid import (
     BOSS_ID,
@@ -65,9 +65,17 @@ def make_service(bot, db, **over) -> RaidService:
     # Стоит поменять то, как босс тянет кости, — и прежнее зерно уводит
     # сценарии в другую сторону. Тесты при этом проверяют механику рейда,
     # а не конкретный бросок, поэтому зерно здесь переставляют, а не
-    # подгоняют под него правила
+    # подгоняют под него правила.
+    #
+    # Переставлено с 22 на 24, когда запас здоровья перешёл на общую
+    # формулу: босс подвала — танк, выносливость подорожала с пяти до
+    # восьми за очко, и он прибавил четверть запаса. Проходимость рейда
+    # от этого не сдвинулась (`scripts/raid_balance.py` даёт прежние
+    # исходы, бой стал длиннее на ход), а вот прежний бросок уводил
+    # сценарий усталости в сторону: один боец не доживал до второй
+    # волны, и разменов выходило семь вместо восьми
     return RaidService(
-        bot=bot, db=db, config=Config(**settings), rng=random.Random(22)
+        bot=bot, db=db, config=Config(**settings), rng=random.Random(24)
     )
 
 
@@ -120,8 +128,9 @@ async def storm(service, session, players) -> None:
 
 
 def weaken(session, hp: int = 1) -> None:
-    """Оставить боссу на один удар: рейд должен закончиться победой."""
-    session.enemy.hp = hp
+    """Оставить противникам на один удар: рейд должен кончиться победой."""
+    for enemy in session.enemies.values():
+        enemy.hp = hp
 
 
 def toughen(session, hp: int = 5000) -> None:
@@ -148,13 +157,17 @@ def test_the_boss_stands_four_levels_above_the_party():
 
 def test_the_boss_comes_dressed_and_shielded():
     """Все слоты заняты, в руке оружие этого босса, во второй — щит."""
-    from bot.game.equipment import ALL_SLOTS, get_item
+    from bot.game.equipment import ALL_SLOTS, RING_SLOTS, Slot, get_item
 
     enemy = boss_fighter(CELLAR_BOSS, [6, 6], hp_share=0)
 
     kit = {slot.value: owned.code for slot, owned in enemy.equipment.items.items()}
 
-    assert len(kit) == len(ALL_SLOTS)  # пустых слотов нет
+    # Пустых слотов нет вовсе: с украшениями рейда босс носит и цепь, и
+    # три перстня — кольцо у него одно, и лежит оно во всех трёх клетках
+    assert len(kit) == len(ALL_SLOTS)
+    assert kit[Slot.NECKLACE.value] == "boss_necklace"
+    assert {kit[slot.value] for slot in RING_SLOTS} == {"boss_ring"}
     assert kit["weapon"] == CELLAR_BOSS.weapon
     # щит: блок в три зоны и броня по всему телу
     shield = get_item(kit["offhand"])
@@ -282,7 +295,7 @@ def test_the_raid_is_won_while_someone_still_stands():
     boss = make_fighter(BOSS_ID, hp=0)
     party = {1: make_fighter(1, hp=10), 2: make_fighter(2, hp=0)}
 
-    outcome = judge_raid(boss, party)
+    outcome = judge_raid([boss], party)
 
     assert outcome.end is RaidEnd.WIN
     assert outcome.survivors == [1]
@@ -292,18 +305,18 @@ def test_everyone_down_with_the_boss_is_a_draw():
     boss = make_fighter(BOSS_ID, hp=0)
     party = {1: make_fighter(1, hp=0), 2: make_fighter(2, hp=0)}
 
-    assert judge_raid(boss, party).end is RaidEnd.DRAW
+    assert judge_raid([boss], party).end is RaidEnd.DRAW
 
 
 def test_a_standing_boss_over_a_dead_party_is_a_loss():
     boss = make_fighter(BOSS_ID, hp=40)
     party = {1: make_fighter(1, hp=0)}
 
-    assert judge_raid(boss, party).end is RaidEnd.LOSS
+    assert judge_raid([boss], party).end is RaidEnd.LOSS
 
 
 def test_while_both_stand_the_raid_goes_on():
-    assert judge_raid(make_fighter(BOSS_ID, 40), {1: make_fighter(1, 10)}) is None
+    assert judge_raid([make_fighter(BOSS_ID, 40)], {1: make_fighter(1, 10)}) is None
 
 
 def test_the_prize_is_an_elixir_and_not_every_time():
@@ -456,7 +469,7 @@ async def test_without_a_pass_the_cellar_does_not_open(bot, db):
     service = make_service(bot, db)
     player = (await fill(db, 1, passes=0))[0]
 
-    with pytest.raises(RaidError, match="Рейд-пасс"):
+    with pytest.raises(RaidError, match="Билет в казино"):
         await service.open_raid(CHAT_ID, THREAD_ID, player)
     assert service.lobby_of_user(player.user_id) is None
 
@@ -488,7 +501,7 @@ async def test_the_cellar_is_shut_outside_its_hours(bot, db, monkeypatch):
     ))
     monkeypatch.setattr(rules, "now_ts", lambda: moscow(shut))  # подвал закрыт
 
-    with pytest.raises(RaidError, match="Подвал закрыт"):
+    with pytest.raises(RaidError, match="закрыто"):
         await service.open_raid(CHAT_ID, THREAD_ID, player)
     # пропуск остался в рюкзаке: за закрытую дверь не платят
     assert (await db.get_player(player.user_id)).potion_count(RAID_PASS) == 1
@@ -508,7 +521,7 @@ async def test_one_win_per_window(bot, db):
 
     fresh = await db.get_player(players[0].user_id)
     fresh.potions[RAID_PASS] = await db.add_potion(fresh.user_id, RAID_PASS)
-    with pytest.raises(RaidError, match="Босс уже повержен"):
+    with pytest.raises(RaidError, match="Своё в это окно ты уже взял"):
         await service.open_raid(CHAT_ID, THREAD_ID, fresh)
     assert (await db.get_player(fresh.user_id)).potion_count(RAID_PASS) == 1
 
@@ -607,12 +620,12 @@ async def test_a_press_resolves_that_fighter_at_once(bot, db):
     """Нажал — размен посчитан сразу, остальных не ждём."""
     service = make_service(bot, db)
     players, session = await gather(service, db, 3, size=3)
-    before = session.enemy.hp
+    before = session.enemies[BOSS_ID].hp
 
     await punch(service, session, players[0].user_id)
 
     assert players[0].user_id in session.acted
-    assert session.enemy.hp <= before
+    assert session.enemies[BOSS_ID].hp <= before
     assert len(session.waiting_for()) == 2  # волна ещё идёт
 
 
@@ -680,8 +693,13 @@ async def test_nobody_swings_twice_in_one_wave(bot, db):
 # ---------- итог и награда ----------
 
 
-async def test_a_dead_boss_splits_the_purse_between_everyone(bot, db):
-    """Кошель делится поровну, вещей за рейд не дают вовсе."""
+async def test_a_dead_boss_pays_every_man_in_full(bot, db):
+    """Кошель достаётся каждому целиком, вещей за рейд не дают вовсе.
+
+    Делили его прежде на отряд, и выходило наказание за то, что пришли
+    вчетвером: пропуск каждый покупает свой, и доля за победу тоже
+    своя. Так теперь во всех трёх рейдах города.
+    """
     service = make_service(bot, db, raid_purse=100)
     players, session = await gather(service, db, 4, size=4)
     toughen(session)  # кошель делят живые, а живучесть тут не проверяется
@@ -696,8 +714,7 @@ async def test_a_dead_boss_splits_the_purse_between_everyone(bot, db):
         (await db.get_player(p.user_id)).credits - was
         for p, was in zip(players, purse)
     ]
-    assert sum(paid) == 100  # весь кошель дошёл до отряда
-    assert max(paid) - min(paid) <= 1  # и разошёлся поровну
+    assert paid == [100, 100, 100, 100], "каждому по сто, а не сто на всех"
     for player in players:
         fresh = await db.get_player(player.user_id)
         # Победа над боссом идёт в счёт рейдов, а не в личные победы
@@ -707,7 +724,7 @@ async def test_a_dead_boss_splits_the_purse_between_everyone(bot, db):
 
     raids = await db.raids_of(players[0].user_id)
     assert raids and raids[0]["outcome"] == "win"
-    assert raids[0]["boss_level"] == session.enemy.level
+    assert raids[0]["boss_level"] == session.enemies[BOSS_ID].level
 
 
 async def test_a_lone_raider_takes_the_whole_purse(bot, db):
@@ -752,7 +769,7 @@ async def test_the_result_holds_the_screen_until_it_is_closed(bot, db):
     kept = service.result_of_user(players[0].user_id)
 
     assert kept is session and kept.finished
-    assert any("Босс повержен" in line for line in kept.summary)
+    assert any("Противник повержен" in line for line in kept.summary)
     service.forget_result(players[0].user_id)
     assert service.result_of_user(players[0].user_id) is None
 
@@ -886,7 +903,8 @@ async def test_a_raid_runs_past_thirty_waves_if_everyone_is_still_standing(bot, 
     for _ in range(FATIGUE_WAVES + 5):
         if service.raid_of_user(players[0].user_id) is None:
             break
-        session.enemy.hp = session.enemy.max_hp
+        boss = session.enemies[BOSS_ID]
+        boss.hp = boss.max_hp
         # Подпираем здоровье заново: усталость растёт, и к концу кувалда
         # босса снимает больше, чем у бойца всего здоровья
         toughen(session)
@@ -1038,7 +1056,7 @@ def test_the_hammer_sits_on_the_tenth_rung_of_the_ladder():
     ninth = get_item("splitting_axe")
     tenth = get_item("fan_boss_bat")
 
-    assert hammer.level_required == MAX_LEVEL
+    assert hammer.level_required == GEAR_TOP_LEVEL
     assert hammer.accuracy == tenth.accuracy == round(ninth.accuracy + 0.07, 2)
     assert hammer.anticrit == tenth.anticrit
     assert hammer.requires.endurance == tenth.requires.endurance
@@ -1055,7 +1073,8 @@ def test_the_whole_boss_kit_is_his_own():
 
     kit = boss_kit(CELLAR_BOSS)
 
-    assert len(kit.items) == 9, "у босса не все слоты заняты"
+    # Тринадцать клеток: девять по одежде с оружием, цепь и три перстня
+    assert len(kit.items) == 13, "у босса не все слоты заняты"
     for slot, owned in kit.items.items():
         item = owned.item
         assert item.code.startswith("boss_"), f"{slot.value} не его: {item.code}"
@@ -1063,29 +1082,67 @@ def test_the_whole_boss_kit_is_his_own():
         assert item.picture.endswith(f"/{item.code}.jpeg"), "картинка не от кода"
 
 
-def test_the_boss_kit_is_as_strong_as_the_shop_one_it_replaced():
-    """Менялся вид, а не сила: числа скопированы с прилавочных вещей.
+def test_the_boss_wears_nothing_from_the_counter():
+    """Весь комплект босса — его собственный, и прилавок его не двигает.
 
-    Иначе новый комплект тихо поменял бы сложность рейда вместе с
-    картинками, и не понять было бы, от чего именно.
+    Своих вещей у него восемь, и ни одной с витрины: добирать нечего.
+    Отдельные коды нужны ради картинок — общий код означал бы общую
+    картинку, и арт босса перекрасил бы мотошлем половине клуба.
+    """
+    from bot.game.equipment import Slot
+    from bot.game.raid import boss_kit
+
+    kit = boss_kit(CELLAR_BOSS)
+    own = set(CELLAR_BOSS.gear) | {CELLAR_BOSS.weapon}
+    for slot, owned in kit.items.items():
+        assert owned.item.code in own, f"{slot.value}: вещь с прилавка"
+    # Теперь занято всё, включая украшения: перстень с цепью у него тоже
+    # свои, и на прилавке их не бывает
+    assert set(kit.items) == set(Slot)
+
+
+def test_the_boss_set_matches_what_a_tank_buys_at_the_eighth_level():
+    """Комплект босса — это то, что танк носит с прилавка на восьмом.
+
+    Числа в нём не придуманы и не держатся на глаз: каждая вещь босса
+    повторяет ту клубную, которую боец-танк надел бы в этот же слот к
+    восьмому уровню. Так сложность рейда привязана к лавке, а не к
+    случайному числу: завезут новую ступень одежды — и видно будет, что
+    босс от неё отстал, а не «кажется, он слабоват».
+
+    До пака сетов числа были списаны со старой витрины и успели устареть
+    на четыре ступени: шлем держал 14 запаса и 3–5 брони против 30 и 8–10
+    у армейской каски. Щит с тех пор не трогали — он и был штурмовым
+    щитом восьмого уровня, им и остался.
     """
     from bot.game.classes import get_class
     from bot.game.equipment import Slot
     from bot.game.raid import boss_kit
     from bot.game.reference import best_kit
 
+    numbers = (
+        "strength", "agility", "intuition", "hp", "armor_min", "armor_max",
+        "accuracy", "dodge", "crit", "anticrit", "counter",
+    )
+    shop = best_kit(get_class(CELLAR_BOSS.class_code), 8)
     mine = boss_kit(CELLAR_BOSS)
-    shop = dict(best_kit(get_class(CELLAR_BOSS.class_code), MAX_LEVEL))
+
     for slot, item in shop.items():
         if slot is Slot.WEAPON:
-            continue  # оружие у босса своё, в том и смысл
-        was, now = item, mine.items[slot].item
-        assert (now.hp, now.armor_min, now.armor_max) == (
-            was.hp, was.armor_min, was.armor_max
-        ), f"{slot.value}: броня разъехалась"
-        assert (now.strength, now.agility, now.intuition) == (
-            was.strength, was.agility, was.intuition
-        ), f"{slot.value}: характеристики разъехались"
+            continue  # кувалда у босса своя, и она сильнее прилавочной
+        worn = mine.items[slot].item
+        for name in numbers:
+            assert getattr(worn, name) == getattr(item, name), (
+                f"{slot.value}: «{worn.title}» разошлась с «{item.title}» "
+                f"по «{name}» — {getattr(worn, name)} против {getattr(item, name)}"
+            )
+
+    # И кувалда остаётся сильнее того, чем бьёт танк с прилавка
+    shop_weapon = shop[Slot.WEAPON]
+    boss_weapon = mine.items[Slot.WEAPON].item
+    assert (boss_weapon.damage_min + boss_weapon.damage_max) > (
+        shop_weapon.damage_min + shop_weapon.damage_max
+    )
 
 
 def test_the_boss_is_dressed_by_his_own_step_not_the_partys():
@@ -1096,7 +1153,9 @@ def test_the_boss_is_dressed_by_his_own_step_not_the_partys():
     """
     from bot.game.raid import BOSS_GEAR_LEVEL
 
-    assert BOSS_GEAR_LEVEL == MAX_LEVEL
+    # Одевается босс по потолку прилавка, а не по потолку уровней:
+    # вещей выше десятой ступени в городе нет
+    assert BOSS_GEAR_LEVEL == GEAR_TOP_LEVEL
 
     rookies = boss_fighter(CELLAR_BOSS, [3, 3, 3])
     veterans = boss_fighter(CELLAR_BOSS, [10, 10, 10])
@@ -1120,15 +1179,39 @@ def test_the_hammer_makes_the_boss_hit_harder_than_a_dressed_player():
     from bot.game.reference import best_kit, developed_stats, equipment_of
 
     fclass = get_class("tank")
-    gear = equipment_of(dict(best_kit(fclass, MAX_LEVEL)))
+    gear = equipment_of(dict(best_kit(fclass, GEAR_TOP_LEVEL)))
     player = Fighter(
         user_id=1, name="Танк", fclass=fclass,
-        stats=developed_stats(fclass, MAX_LEVEL).merge(gear.bonus),
-        level=MAX_LEVEL, equipment=gear,
+        stats=developed_stats(fclass, GEAR_TOP_LEVEL).merge(gear.bonus),
+        level=GEAR_TOP_LEVEL, equipment=gear,
     )
-    boss = boss_fighter(CELLAR_BOSS, [MAX_LEVEL] * 3)
+    boss = boss_fighter(CELLAR_BOSS, [GEAR_TOP_LEVEL] * 3)
 
     def ceiling(one):
         return one.derived.damage_max + one.equipment.weapon_damage[1] * one.fclass.damage_mult
 
     assert ceiling(boss) > ceiling(player)
+
+
+async def test_a_broken_ending_still_ends_the_raid(bot, db, monkeypatch):
+    """Добыча не посчиталась — рейд всё равно кончен, отряд на воле.
+
+    Висящий рейд хуже любой ошибки в нём: из него не выйти, по городу
+    не пройти, и чинится это только перезапуском бота.
+    """
+    service = make_service(bot, db)
+    players, session = await gather(service, db, count=2)
+    weaken(session)
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("добыча не посчиталась")
+
+    monkeypatch.setattr(service, "_apply_results", boom)
+    await storm(service, session, players)
+
+    assert session.finished and session.summary
+    for player in players:
+        assert service.raid_of_user(player.user_id) is None
+        assert service.is_busy(player.user_id) is False
+        assert service.result_of_user(player.user_id) is session
+    await service.shutdown()

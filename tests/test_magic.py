@@ -19,7 +19,6 @@ from bot.game.equipment import (
 from bot.game.store import parse_payload, relic_payload
 from bot.inventory_service import equip
 from bot.models import Player
-from bot.seed import GIFT_ID, TEST_FIGHTER, TEST_RELIC, grant_test_relic
 from bot.store_service import StoreError, StoreService
 from bot.webapp.card import build_card, build_magic, build_shop
 from bot.webapp.server import create_app
@@ -294,34 +293,6 @@ def test_the_saber_shows_its_counter_bonus_on_the_card():
     assert card["combat"]["counter_chance"] == bare["combat"]["counter_chance"] + 25
 
 
-# ---------- тестовая выдача ----------
-
-
-async def test_victor_gets_a_saber_once_and_only_once(db):
-    await db.save_player(make_player(user_id=7, nickname=TEST_FIGHTER))
-
-    assert await grant_test_relic(db) is True
-    assert await grant_test_relic(db) is False
-
-    gear = await db.list_gear(7)
-    assert [owned.code for owned in gear] == [TEST_RELIC]
-
-
-async def test_the_test_gift_waits_until_the_fighter_exists(db):
-    assert await grant_test_relic(db) is False
-    await db.save_player(make_player(user_id=7, nickname=TEST_FIGHTER.lower()))
-    assert await grant_test_relic(db) is True  # прозвище ищем без учёта регистра
-
-
-async def test_a_gift_is_neither_a_purchase_nor_a_refund(db, store):
-    await db.save_player(make_player(user_id=7, nickname=TEST_FIGHTER))
-    await grant_test_relic(db)
-
-    assert await db.purchases_of(7) == []
-    with pytest.raises(StoreError, match="подарок"):
-        await store.refund(7, GIFT_ID)
-
-
 # ---------- карточка не должна расходиться с рингом ----------
 
 
@@ -357,9 +328,7 @@ def test_the_profile_text_counts_gear_the_same_way():
     player.gear = [OwnedItem(item=SABER, id=1, slot=Slot.WEAPON)]
     fighter = Fighter.from_player(player, armed=True)
 
-    text = combat_block(
-        player.fclass, player.stats, player.level, player.equipment
-    )
+    text = combat_block(player.fclass, player.stats, player.equipment)
 
     assert f"🌀 Уворот: <b>{fighter.dodge:.0%}</b>" in text
     assert f"🔄 Контрудар: <b>{fighter.counter:.0%}</b>" in text

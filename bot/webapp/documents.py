@@ -1,8 +1,8 @@
 """Документы бойца: то, что у него на руках, а не на плечах.
 
 Раздел заведён под то, что будет копиться: страховой полис и абонемент в
-зал первыми, за ними пойдут права из автошколы, пропуска и всё прочее,
-что выдают конторы города. Поэтому наружу отдаётся **список**, а не
+зал первыми, за ними карта банка и права из автошколы, а дальше пропуска
+и всё прочее, что выдают конторы города. Поэтому наружу отдаётся **список**, а не
 «полис в карточке» — страница рисует документы одной вёрсткой и не
 знает, сколько их.
 
@@ -46,7 +46,8 @@ def policy_document(player: Player, moment: int) -> dict[str, Any]:
     # Полис держит подписка, когда его срок и есть её срок. Тогда и
     # обещания у него другие: не «месяц с часа оформления», а «пока жива
     # подписка», и продлевать его незачем
-    by_pro = player.is_pro(moment) and policy.until <= player.pro_until
+    cover = player.policy_cover_until(moment)
+    by_pro = bool(cover) and policy.until <= cover
     return {
         "code": CODE,
         "kind": "insurance",
@@ -77,7 +78,7 @@ def policy_document(player: Player, moment: int) -> dict[str, Any]:
         # именно кончилось: срок, а не сам документ
         "state": "Действует" if live else "Срок вышел",
         # По какому праву он на руках: по оплате или по подписке
-        "ground": "По подписке PRO" if by_pro else "Оплачен",
+        "ground": "По подписке PREMIUM" if by_pro else "Оплачен",
     }
 
 
@@ -111,7 +112,7 @@ def gym_document(player: Player, moment: int) -> dict[str, Any]:
         "period_title": "Действует",
         "active": live,
         "seconds_left": max(0, player.gym_until - moment),
-        "covers": "Тренировки на силу, ловкость и интуицию",
+        "covers": "Тренировки на силу, проворство и интуицию",
         "gives": (
             "Одно занятие в день бесплатно",
             f"Ещё до {VISITS_PER_DAY - 1} занятий в день за кредиты: {extra}",
@@ -121,10 +122,14 @@ def gym_document(player: Player, moment: int) -> dict[str, Any]:
         "switchable": False,
         "note": (
             "Без абонемента на тренировки не пускают. "
-            "С подпиской PRO он держится сам, на весь её срок."
+            "С подпиской он держится сам, на весь её срок."
         ),
         "state": "Действует" if live else "Срок вышел",
-        "ground": "По подписке PRO" if player.is_pro(moment) else "Оплачен",
+        "ground": (
+            f"По подписке {player.tier(moment).title.removeprefix('Подписка ')}"
+            if player.tier(moment)
+            else "Оплачен"
+        ),
     }
 
 
@@ -182,15 +187,22 @@ def card_document(player: Player, moment: int) -> dict[str, Any]:
 def build_documents(player: Player, now: int | None = None) -> dict[str, Any]:
     """Раздел «Документы» целиком."""
     moment = now_ts() if now is None else now
+    from bot.webapp.driving import licence_document
+    from bot.webapp.study import diploma_documents
+
     papers = [
         row
         for row in (
             policy_document(player, moment),
             gym_document(player, moment),
             card_document(player, moment),
+            licence_document(player, moment),
         )
         if row
     ]
+    # Дипломов бывает несколько, и идут они последними: бланк на всю
+    # жизнь, который не продлевают и не теряют
+    papers.extend(diploma_documents(player))
     return {
         "documents": papers,
         "total": len(papers),
@@ -199,7 +211,8 @@ def build_documents(player: Player, now: int | None = None) -> dict[str, Any]:
         "empty_note": (
             "Пока ни одного документа. Полис страхования оформляют в "
             "страховой компании, абонемент — в тренажёрном зале, "
-            "карту — в Vegas Банке."
+            "карту — в Vegas Банке, права сдают в автошколе, а дипломы "
+            "получают в корпусе, колледже, академии и университете."
         ),
     }
 

@@ -3,12 +3,28 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <!-- Телефон в сумме «+1 031 💰» видит телефонный номер: плюс, единица
+       кода страны и цифры через пробел, — и заворачивает её в tel-ссылку.
+       В выписке таких сумм целый столбец, да и дат с адресами на странице
+       хватает, поэтому распознавание выключено целиком: деньги здесь
+       деньги, а не способ кому-то позвонить -->
+  <meta name="format-detection"
+        content="telephone=no, date=no, address=no, email=no">
   <title>Карточка бойца</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <link rel="stylesheet" href="static/card.css">
 </head>
 <body>
-  <div id="loader" class="loader">Судья листает картотеку…</div>
+  <!-- Экран загрузки: картина во весь экран, а внизу, в оставленном под
+       них месте, колесо и строка. Адрес картинки подставляет сервер —
+       она нужна раньше, чем приедет первый ответ -->
+  <div id="loader" class="loader">
+    <div class="loader-pic" style="background-image: url('{{loading}}')"></div>
+    <div class="loader-foot">
+      <div class="loader-spin" aria-hidden="true"></div>
+      <div class="loader-text" id="loader-text">Судья листает картотеку…</div>
+    </div>
+  </div>
 
   <div id="error" class="error hidden">
     <div class="error-emoji">🥊</div>
@@ -17,8 +33,10 @@
 
   <!-- ---------- 1. Бойцовский клуб ---------- -->
   <main id="club" class="screen club hidden">
-    <!-- Вид изнутри: один экран обслуживает и клуб, и казино, поэтому картинку
-         ставит не вёрстка, а та локация, в которой боец стоит -->
+    <!-- Вид изнутри: один экран обслуживает клуб, казино и справочную,
+         поэтому картинку ставит не вёрстка, а та локация, в которой боец
+         стоит. У справочной локации нет вовсе: в неё не приходят ногами,
+         её открывает кнопка внизу, — и панорамы у неё поэтому нет -->
     <figure class="interior hidden" id="club-interior">
       <img class="interior-pic" id="club-pic" alt="">
     </figure>
@@ -29,7 +47,7 @@
     </header>
     <h1 class="screen-title" id="club-title">🥊 Бойцовский клуб</h1>
 
-    <!-- Разделы одной вкладки: бои, рейд, игроки и статистика -->
+    <!-- Разделы одной вкладки: бои, рейд, рейтинг и статистика -->
     <div class="bubbles" id="club-sections"></div>
 
     <!-- Бои: вызовы, свой вызов или панель идущего боя -->
@@ -38,10 +56,61 @@
       <div id="fights-body"></div>
     </section>
 
-    <!-- Игроки -->
+    <!-- Список игроков: все записанные, страницами по пятьдесят. Сверху
+         два переключателя — порядок и уровень. Порядок по ELO даёт
+         места, по алфавиту — картотеку: место в ней не рисуется вовсе,
+         потому что номер строки означал бы не то, что в нём написано -->
     <section id="club-players">
+      <div class="sift">
+        <div class="bubbles" id="club-order"></div>
+        <label class="sift-level">
+          <span class="sift-label">Уровень</span>
+          <select class="field-input" id="club-level">
+            <option value="0">любой</option>
+          </select>
+        </label>
+      </div>
       <p class="screen-note" id="club-note"></p>
       <div id="club-list"></div>
+      <div class="pager hidden" id="club-pager">
+        <button type="button" class="pager-step" id="club-prev"
+                aria-label="Предыдущие пятьдесят">←</button>
+        <span class="pager-where" id="club-where"></span>
+        <button type="button" class="pager-step" id="club-next"
+                aria-label="Следующие пятьдесят">→</button>
+      </div>
+    </section>
+
+    <!-- Рейтинг недели: только те, кто провёл десять зачётных боёв.
+         Награда рядом с местом предварительная — итог подводится в
+         воскресенье в полдень, и подпись об этом приезжает с сервера, а
+         не живёт здесь: это часть правил, а не оформления -->
+    <section id="club-ladder" class="hidden">
+      <p class="screen-note" id="ladder-window"></p>
+      <div class="ladder-mine hidden" id="ladder-mine"></div>
+      <div class="ladder-paid hidden" id="ladder-paid"></div>
+      <p class="screen-note" id="ladder-note"></p>
+      <div id="ladder-list"></div>
+      <div class="pager hidden" id="ladder-pager">
+        <button type="button" class="pager-step" id="ladder-prev"
+                aria-label="Предыдущие пятьдесят">←</button>
+        <span class="pager-where" id="ladder-where"></span>
+        <button type="button" class="pager-step" id="ladder-next"
+                aria-label="Следующие пятьдесят">→</button>
+      </div>
+      <!-- Ошибка загрузки — не пустой рейтинг. У неё своя записка и
+           своя кнопка: пустоту перезагружать незачем, а оборванную
+           загрузку — только и остаётся -->
+      <div class="ladder-oops hidden" id="ladder-oops">
+        <p class="screen-note" id="ladder-oops-note"></p>
+        <button type="button" class="btn secondary" id="ladder-again">
+          Попробовать снова
+        </button>
+      </div>
+      <details class="ladder-prizes" id="ladder-prizes">
+        <summary>Призы за места</summary>
+        <div id="ladder-table"></div>
+      </details>
     </section>
 
     <!-- Рейд: сбор отряда, волна против босса или итог -->
@@ -56,8 +125,19 @@
       <div id="battle-body"></div>
     </section>
 
-    <!-- Статистика: бои по дням, с провалом в разбор одного боя -->
+    <!-- Статистика игрока: бои по дням, с провалом в разбор одного боя.
+         Сверху поиск: чужую статистику смотрят по нику, и искать его по
+         рейтингу нельзя — в рейтинге только верхние полсотни -->
     <section id="club-stats" class="hidden">
+      <div class="seek">
+        <input class="field-input" id="stats-seek" type="text" maxlength="32"
+               autocomplete="off" spellcheck="false"
+               placeholder="Чья статистика? Начни вводить ник">
+        <button type="button" class="btn secondary hidden" id="stats-mine">
+          Моя статистика
+        </button>
+      </div>
+      <div class="seek-found hidden" id="stats-found"></div>
       <p class="screen-note" id="stats-note"></p>
       <div id="stats-body"></div>
     </section>
@@ -84,6 +164,16 @@
         <div class="road-cells" id="road-cells"></div>
         <span class="road-clock" id="road-clock"></span>
       </div>
+
+      <!-- Плашка под ногами: боец стоит на точке войны. Отсюда и только
+           отсюда собирают отряд — точку берут ногами, а не из списка -->
+      <div class="turf-band hidden" id="map-turf"></div>
+
+      <!-- Кто здесь: счётчик соседей в углу. Нажал — открылся список -->
+      <button type="button" class="crowd-chip hidden" id="map-crowd"></button>
+
+      <!-- Машины у этого здания: стоят на улице, видны каждому -->
+      <button type="button" class="crowd-chip cars hidden" id="map-cars"></button>
     </div>
   </main>
 
@@ -127,6 +217,23 @@
     <h1 class="screen-title">💎 Магазин «Элита»</h1>
     <p class="screen-note" id="magic-note"></p>
     <div id="pro-card"></div>
+
+    <!-- Промокод: слово, которое превращается в подписку. Поле стоит
+         пустым и ничего не подсказывает — код называют снаружи игры, и
+         подбирать его по прилавку нельзя -->
+    <section class="promo" id="promo-box">
+      <h2 class="promo-head">🎟 Промокод</h2>
+      <p class="promo-note" id="promo-note">
+        Получил код — введи его здесь. Один код на бойца.
+      </p>
+      <div class="promo-row">
+        <input class="field-input" id="promo-input" type="text"
+               maxlength="32" autocomplete="off" autocapitalize="characters"
+               spellcheck="false" placeholder="Например, CLUB2026">
+        <button type="button" class="btn" id="promo-go">Применить</button>
+      </div>
+    </section>
+
     <div id="magic-list"></div>
     <div class="soon hidden" id="magic-empty">
       <div class="soon-emoji">💎</div>
@@ -302,6 +409,208 @@
     <div id="work-body"></div>
   </main>
 
+  <!-- ---------- 3b6. Автошкола: курс, билет и экзамен ---------- -->
+  <!-- Один экран на весь путь: запись, обратный отсчёт учёбы, билет и
+       то, чем он кончился. Шаг решает сервер (`stage`) — страница только
+       рисует тот, который ей назвали. -->
+  <main id="school" class="screen hidden">
+    <figure class="interior hidden" id="school-interior">
+      <img class="interior-pic" id="school-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="school-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-school"></span>
+    </header>
+    <h1 class="screen-title">🚗 Автошкола</h1>
+    <p class="screen-note" id="school-note"></p>
+
+    <div id="school-body"></div>
+  </main>
+
+  <!-- ---------- 3b7. Полицейский участок: выдача прав ---------- -->
+  <main id="police" class="screen hidden">
+    <figure class="interior hidden" id="police-interior">
+      <img class="interior-pic" id="police-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="police-back">← На карту</button>
+    </header>
+    <h1 class="screen-title">🚓 Полицейский участок</h1>
+    <p class="screen-note" id="police-note"></p>
+
+    <div id="police-body"></div>
+  </main>
+
+  <!-- ---------- 3b8. Особняк мафии: дом всех семей города ---------- -->
+  <!-- Дом в два колена. Сперва список кланов города: свой с галочкой и
+       крестиком выхода, чужие с дверью заявки. Нажал на клан — открылись
+       его вкладки: «Состав», «Имущество» и «Настройки» (последние две —
+       только у своей семьи). Быстрая правка состава есть и в карточке,
+       под местоположением: за чином через полгорода не ходят, а вот за
+       общим карманом — ногами, он лежит в доме -->
+  <main id="mafia" class="screen hidden">
+    <figure class="interior hidden" id="mafia-interior">
+      <img class="interior-pic" id="mafia-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="mafia-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-mafia"></span>
+    </header>
+    <h1 class="screen-title">🎩 Особняк мафии</h1>
+    <p class="screen-note" id="mafia-note"></p>
+
+    <div class="bubbles" id="mafia-tabs"></div>
+
+    <section id="mafia-clans"></section>
+    <section id="mafia-family" class="hidden"></section>
+    <section id="mafia-estate" class="hidden"></section>
+    <section id="mafia-settings" class="hidden"></section>
+  </main>
+
+  <!-- ---------- 3b9. Жилой дом: аренда квартиры ---------- -->
+  <!-- Две вкладки одного подъезда: «Подъезд» — этажи с квартирами, что
+       свободно и кем занято; «Моя квартира» — срок, сейф и кладовая. У
+       бездомного вторая не показывается вовсе, а у того, чьё жильё в
+       другом доме, здесь только список: квартира на бойца одна -->
+  <main id="flats" class="screen hidden">
+    <figure class="interior hidden" id="flats-interior">
+      <img class="interior-pic" id="flats-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="flats-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-flats"></span>
+    </header>
+    <h1 class="screen-title" id="flats-title">🏠 Жилой дом</h1>
+    <p class="screen-note" id="flats-note"></p>
+
+    <div class="bubbles" id="flats-tabs"></div>
+
+    <section id="flats-stairs"></section>
+    <section id="flats-home" class="hidden"></section>
+  </main>
+
+  <!-- ---------- 3b15. Администрация: выборы мэра ---------- -->
+  <!-- Экран дома: кто мэр, какая сейчас фаза цикла, список кандидатов с
+       программами и кнопка выдвижения. Голосуют не здесь — бюллетень
+       приходит сам, в любом доме и на любом экране -->
+  <main id="elections" class="screen hidden">
+    <figure class="interior hidden" id="elections-interior">
+      <img class="interior-pic" id="elections-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="elections-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-elections"></span>
+    </header>
+    <h1 class="screen-title">🏛 Администрация города</h1>
+    <p class="screen-note" id="elections-note"></p>
+
+    <div id="elections-body"></div>
+  </main>
+
+  <!-- ---------- 3b14. Кто здесь: соседи по дому и ограбления ---------- -->
+  <!-- Экран один на весь город: дом — тот, в котором боец стоит. Что
+       рисовать — список соседей, идущую драку или её развязку, — решает
+       сервер: ответ всегда полный -->
+  <main id="crowd" class="screen hidden">
+    <header class="screen-head">
+      <button type="button" class="back" id="crowd-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-crowd"></span>
+    </header>
+    <h1 class="screen-title" id="crowd-title">👥 Кто здесь</h1>
+    <p class="screen-note" id="crowd-note"></p>
+
+    <div id="crowd-body"></div>
+  </main>
+
+  <!-- ---------- 3b13. Война за территории ---------- -->
+  <!-- Один экран на всю войну: карта точек, сбор отряда, идущая волна и
+       итог. Что из этого рисовать, решает сервер — ответ всегда полный,
+       и страница только смотрит, что в нём лежит -->
+  <main id="turf" class="screen hidden">
+    <header class="screen-head">
+      <button type="button" class="back" id="turf-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-turf"></span>
+    </header>
+    <h1 class="screen-title">🚩 Территории</h1>
+    <p class="screen-note" id="turf-note"></p>
+
+    <div id="turf-body"></div>
+  </main>
+
+  <!-- ---------- 3b12. Учёба: приёмная, занятие и выпускной билет ---------- -->
+  <!-- Экран один на пять домов, и что он покажет, решает дом: в четырёх
+       приёмная с курсами, на полигоне только часы занятия. Заголовок
+       поэтому приходит с сервера — он называет дом, а не услугу -->
+  <main id="study" class="screen hidden">
+    <figure class="interior hidden" id="study-interior">
+      <img class="interior-pic" id="study-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="study-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-study"></span>
+    </header>
+    <h1 class="screen-title" id="study-title">🎓 Учёба</h1>
+    <p class="screen-note" id="study-note"></p>
+
+    <div id="study-body"></div>
+  </main>
+
+  <!-- ---------- 3b11. Бар: бармен и его задания ---------- -->
+  <!-- Бармен стоит прямо на виде изнутри: картинка с прозрачным фоном
+       ложится поверх интерьера у стойки и сама себе кнопка. Значок над
+       ним говорит, есть ли дело: «!» — предлагает, часы — ждёт, галочка
+       — принимает работу. Разговор раскрывается под картинкой.
+
+       Экран зовётся `tavern`, а не `bar`, хотя дом — «Бар»: `id="bar"`
+       уже носит нижняя панель вкладок, и два таких на страницу — это
+       один `getElementById` на двоих -->
+  <main id="tavern" class="screen hidden">
+    <figure class="interior hidden" id="tavern-interior">
+      <img class="interior-pic" id="tavern-pic" alt="">
+      <button type="button" class="npc hidden" id="tavern-npc">
+        <img class="npc-pic" id="tavern-npc-pic" alt="">
+        <span class="npc-mark" id="tavern-npc-mark"></span>
+      </button>
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="tavern-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-tavern"></span>
+    </header>
+    <h1 class="screen-title">🍸 Бар</h1>
+    <p class="screen-note" id="tavern-note"></p>
+
+    <div id="tavern-body"></div>
+  </main>
+
+  <!-- ---------- 3b10. Почта: посылки между бойцами ---------- -->
+  <!-- Две вкладки: «Отправить» — рюкзак, ник, цена и срок; «Посылки» —
+       две полки: что пришло тебе и что ты отправил сам. Вторая полка не
+       про действие, а про память: по ней видно, у кого твоя вещь -->
+  <main id="post" class="screen hidden">
+    <figure class="interior hidden" id="post-interior">
+      <img class="interior-pic" id="post-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="post-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-post"></span>
+    </header>
+    <h1 class="screen-title">📮 Почта</h1>
+    <p class="screen-note" id="post-note"></p>
+
+    <div class="bubbles" id="post-tabs"></div>
+
+    <section id="post-send"></section>
+    <section id="post-parcels" class="hidden"></section>
+  </main>
+
   <!-- ---------- 3c. Рынок: обмен между бойцами ---------- -->
   <!-- Стол общий, и это главное свойство экрана: страница здесь ничего
        не помнит и ничего не досчитывает. Всё, что видно, — последний
@@ -320,6 +629,203 @@
     <p class="screen-note" id="trade-note"></p>
 
     <div id="trade-body"></div>
+  </main>
+
+  <!-- ---------- 3b-ter. Турнирная арена ---------- -->
+  <!-- Недельный плей-офф: запись по воскресеньям, круги по часам, и
+       сетка, в которой прошедший зелёный, а вылетевший красный -->
+  <main id="arena" class="screen hidden">
+    <figure class="interior hidden" id="arena-interior">
+      <img class="interior-pic" id="arena-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="arena-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-arena"></span>
+    </header>
+    <h1 class="screen-title">🏟 Турнирная арена</h1>
+    <p class="screen-note" id="arena-note"></p>
+
+    <div id="arena-body"></div>
+  </main>
+
+  <!-- ---------- 3b-quinquies. Общежитие ---------- -->
+  <!-- Комната студенту: бесплатно и на всё время учёбы. Четыре полки,
+       сейф — и выезд через администрацию, когда учёба кончилась -->
+  <main id="dorm" class="screen hidden">
+    <figure class="interior hidden" id="dorm-interior">
+      <img class="interior-pic" id="dorm-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="dorm-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-dorm"></span>
+    </header>
+    <h1 class="screen-title">🛏 Общежитие</h1>
+    <p class="screen-note" id="dorm-note"></p>
+
+    <div id="dorm-body"></div>
+  </main>
+
+  <!-- ---------- 3b-octies. Барбершоп и салон красоты ---------- -->
+  <!-- Экран один, домов два: в барбершопе мужские образы, в салоне
+       женские. Смотрят полку все, берут только своего пола -->
+  <main id="barber" class="screen hidden">
+    <figure class="interior hidden" id="barber-interior">
+      <img class="interior-pic" id="barber-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="barber-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-barber"></span>
+    </header>
+    <h1 class="screen-title" id="barber-title">Образы</h1>
+    <p class="screen-note" id="barber-note"></p>
+
+    <div id="barber-body"></div>
+  </main>
+
+  <!-- ---------- 3b-septies. Школа боевых искусств ---------- -->
+  <!-- Приём за дела в бою: все приёмы клуба по наименьшей цене, а
+       платят за них точными ударами, уворотами, критами и блоками -->
+  <main id="dojo" class="screen hidden">
+    <figure class="interior hidden" id="dojo-interior">
+      <img class="interior-pic" id="dojo-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="dojo-back">← На карту</button>
+    </header>
+    <h1 class="screen-title">🥋 Школа боевых искусств</h1>
+    <div class="bubbles" id="dojo-tabs"></div>
+    <p class="screen-note" id="dojo-note"></p>
+
+    <div id="dojo-body"></div>
+  </main>
+
+  <!-- ---------- 3b-nonies. Суд ---------- -->
+  <!-- Дела об угоне: судья выносит приговор по лестнице, остальные
+       видят только свои приговоры и долг по штрафу -->
+  <main id="court" class="screen hidden">
+    <figure class="interior hidden" id="court-interior">
+      <img class="interior-pic" id="court-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="court-back">← На карту</button>
+    </header>
+    <h1 class="screen-title" id="court-title">⚖️ Суд</h1>
+    <p class="screen-note" id="court-note"></p>
+
+    <div id="court-body"></div>
+  </main>
+
+  <!-- ---------- 3b-decies. Казино ---------- -->
+  <!-- Четыре стола на четыре места. Время, деньги, колода и исходы —
+       серверные; экран показывает снимок и шлёт кнопки -->
+  <main id="casino" class="screen hidden">
+    <figure class="interior hidden" id="casino-interior">
+      <img class="interior-pic" id="casino-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="casino-back">← На карту</button>
+      <span class="purse" id="casino-purse"></span>
+    </header>
+    <h1 class="screen-title" id="casino-title">🎰 Казино</h1>
+    <p class="screen-note" id="casino-note"></p>
+
+    <div id="casino-body"></div>
+  </main>
+
+  <!-- ---------- 3b-nonies. Электростанция: «Чёрный пуск» ---------- -->
+  <main id="blackout" class="screen hidden">
+    <figure class="blackout-view hidden" id="blackout-view">
+      <img class="blackout-pic" id="blackout-pic" alt="">
+      <span class="blackout-where" id="blackout-where"></span>
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="blackout-back">← На карту</button>
+      <span class="blackout-clock" id="blackout-clock"></span>
+    </header>
+    <h1 class="screen-title" id="blackout-title">Миссия «Чёрный пуск»</h1>
+    <p class="screen-note" id="blackout-note"></p>
+
+    <div id="blackout-body"></div>
+  </main>
+
+  <!-- ---------- 3b-octies. Автомойка ---------- -->
+  <!-- Номера машин: у каждой свой знак, и перебить его можно только
+       здесь. Вместе с номером с машины уходит и розыск -->
+  <main id="wash" class="screen hidden">
+    <figure class="interior hidden" id="wash-interior">
+      <img class="interior-pic" id="wash-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="wash-back">← На карту</button>
+      <span class="purse" id="shop-purse-wash"></span>
+    </header>
+    <h1 class="screen-title" id="wash-title">🧽 Автомойка</h1>
+    <p class="screen-note" id="wash-note"></p>
+
+    <div id="wash-body"></div>
+  </main>
+
+  <!-- ---------- 3b-sexies. АЗС ---------- -->
+  <!-- Три колонки на весь город: машину ставят в свободную, платят за
+       проценты и ждут. Заряд тратит дорога, а наливают его только тут -->
+  <main id="charge" class="screen hidden">
+    <figure class="interior hidden" id="charge-interior">
+      <img class="interior-pic" id="charge-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="charge-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-charge"></span>
+    </header>
+    <h1 class="screen-title">⚡ АЗС</h1>
+    <p class="screen-note" id="charge-note"></p>
+
+    <div id="charge-body"></div>
+  </main>
+
+  <!-- ---------- 3b-quater. Машины ---------- -->
+  <!-- Один экран на три дома: салон торгует, участок и парк выдают
+       своим. Что здесь делают, решает не экран, а дом: в салоне на
+       полке цены, в гараже — места и кто в разъезде -->
+  <main id="cars" class="screen hidden">
+    <figure class="interior hidden" id="cars-interior">
+      <img class="interior-pic" id="cars-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="cars-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-cars"></span>
+    </header>
+    <h1 class="screen-title" id="cars-title">🚗 Автосалон</h1>
+    <p class="screen-note" id="cars-note"></p>
+
+    <div id="cars-body"></div>
+  </main>
+
+  <!-- ---------- 3b-bis. Тюрьма ---------- -->
+  <!-- Сидящий видит свой срок часами, а не одной строкой в отказе на
+       выходе; всякий вошедший — список тех, кто сидит, и когда они
+       выйдут. Дом города, а не экран полиции: сюда заходят с улицы -->
+  <main id="prison" class="screen hidden">
+    <figure class="interior hidden" id="prison-interior">
+      <img class="interior-pic" id="prison-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="prison-back">← На карту</button>
+    </header>
+    <h1 class="screen-title">🚔 Тюрьма</h1>
+    <p class="screen-note" id="prison-note"></p>
+
+    <div id="prison-body"></div>
   </main>
 
   <!-- ---------- 3c. Дом без услуги ---------- -->
@@ -347,6 +853,9 @@
   <main id="bag" class="screen hidden">
     <header class="head">
       <span class="head-class" id="bag-class"></span>
+      <!-- Знаки мафии: общий знак семьи и свой знак клана. Стоят между
+           классом и ником — в том же порядке, что и в любом списке -->
+      <span class="head-clan" id="bag-clan"></span>
       <h1 class="head-name" id="bag-name"></h1>
       <span class="head-level" id="bag-level"></span>
     </header>
@@ -366,6 +875,11 @@
 
     <div class="city" id="city"></div>
 
+    <!-- Кошельки над рюкзаком: счёт и наличные в один ряд. Стояли они
+         строкой среди боевых показателей, где деньгам делать нечего, —
+         а нужны они ровно здесь, рядом с тем, что покупают -->
+    <div class="wallets" id="wallets"></div>
+
     <section class="bag" id="bag-box">
       <h2 class="bag-head">🎒 Инвентарь <span class="bag-count" id="bag-count"></span></h2>
       <div class="bag-list" id="bag-list"></div>
@@ -377,6 +891,25 @@
         <h2 class="bag-head">🧪 Эликсиры <span class="bag-count" id="potion-count"></span></h2>
         <div class="bag-list" id="potion-list"></div>
       </div>
+
+      <!-- Билеты на рейд: лежали они в стопке эликсиров, потому что
+           приходят оттуда же — с полки оружейника. Но билет не пьют,
+           его предъявляют на входе, и в списке склянок он читался как
+           склянка, которую забыли выпить -->
+      <div id="pass-box" class="hidden">
+        <h2 class="bag-head">🎟 Билеты на рейд <span class="bag-count" id="pass-count"></span></h2>
+        <div class="bag-list" id="pass-list"></div>
+      </div>
+    </section>
+
+    <!-- Ключи: что у бойца есть и что под ним сейчас. Машина не вещь —
+         слота у неё нет и в рюкзак она не кладётся, — но лежит она там
+         же, где лежит всё, что боец носит с собой. Стояли ключи в
+         карточке персонажа, потому что машину видно там; видно её и
+         здесь, а место для имущества тут -->
+    <section class="keys hidden" id="bag-keys">
+      <h2 class="bag-head">🔑 Ключи <span class="bag-count" id="keys-count"></span></h2>
+      <div class="shelf-list" id="keys-list"></div>
     </section>
   </main>
 
@@ -384,6 +917,9 @@
   <main id="hero" class="screen hidden">
     <header class="head">
       <span class="head-class" id="hero-class"></span>
+      <!-- Знаки мафии: общий знак семьи и свой знак клана. Стоят между
+           классом и ником — в том же порядке, что и в любом списке -->
+      <span class="head-clan" id="hero-clan"></span>
       <h1 class="head-name" id="hero-name"></h1>
       <span class="head-level" id="hero-level"></span>
     </header>
@@ -402,6 +938,22 @@
     </section>
 
     <div class="city" id="hero-city"></div>
+
+    <!-- Имя своей семьи под местоположением: нажатие открывает её состав
+         — поднять, разжаловать или выгнать, не идя в особняк. У чужой
+         карточки строки нет: чужой семьёй не распоряжаются -->
+    <button type="button" class="clan-line hidden" id="hero-clan-line"></button>
+
+    <!-- Та же подпись, но у служивого: значок службы, её имя и
+         должность. Не кнопка: распоряжаться службой из карточки
+         нельзя, её кабинет стоит в её же доме -->
+    <div class="clan-line duty-line hidden" id="hero-duty-line"></div>
+
+    <!-- Шкала опыта: уровень, дорожка с засечками апгрейдов и числа.
+         Стоит наверху, сразу под семьёй, и ниже по карточке не
+         повторяется: одно и то же дважды на одном экране читается как
+         ошибка, а не как напоминание -->
+    <section class="panel xp-panel" id="progress"></section>
 
     <!-- Приёмы — про самого бойца, а не про его поклажу, и стоят рядом с
          характеристиками. В инвентаре их видел только хозяин карточки:
@@ -429,11 +981,16 @@
       <ul class="rows" id="stats"></ul>
       <div id="upgrade" class="upgrade hidden"></div>
       <hr class="rule">
-      <ul class="rows" id="progress"></ul>
-      <hr class="rule">
       <ul class="rows" id="combat"></ul>
       <hr class="rule">
       <ul class="rows" id="record"></ul>
+    </section>
+
+    <!-- Квесты: список заданий бармена. Он же журнал — боец носит его с
+         собой, и открывается он откуда угодно -->
+    <section id="hero-quests" class="hidden">
+      <p class="screen-note" id="quests-note"></p>
+      <div class="quest-list" id="quests-list"></div>
     </section>
 
     <!-- Документы: пока один полис, но раздел заведён под то, что будет
@@ -488,6 +1045,44 @@
     </section>
   </div>
 
+  <!-- Приглашение в клан: окно встаёт поверх любого экрана при входе в
+       игру — позвали однажды, и ответить надо один раз -->
+  <div class="daily-veil hidden" id="invite-veil">
+    <section class="daily" id="invite-box">
+      <h2 class="daily-head" id="invite-head"></h2>
+      <p class="daily-note" id="invite-note"></p>
+      <div class="daily-buttons" id="invite-buttons"></div>
+    </section>
+  </div>
+
+  <!-- Бюллетень: окно встаёт поверх любого экрана, пока идут выборы.
+       Голосуют не в доме, а везде — значит, и лист приходит сам.
+       Закрыл — остаётся плашка в правом нижнем углу с отсчётом -->
+  <div class="daily-veil hidden" id="ballot-veil">
+    <section class="daily" id="ballot-box">
+      <h2 class="daily-head" id="ballot-head"></h2>
+      <p class="daily-note" id="ballot-note"></p>
+      <div class="ballot-list" id="ballot-list"></div>
+      <div class="daily-buttons" id="ballot-buttons"></div>
+    </section>
+  </div>
+
+  <!-- Конец станции: боец выбыл или время вышло. Окно встаёт поверх
+       экрана станции и не даёт выставить его в город молча — прежде
+       экран просто сменялся городским лобби, и боец узнавал о
+       поражении по тому, что оказался на карте -->
+  <div class="daily-veil hidden" id="station-veil">
+    <section class="daily" id="station-box">
+      <h2 class="daily-head">Чёрный пуск</h2>
+      <p class="daily-note" id="station-said"></p>
+      <div class="daily-buttons" id="station-buttons"></div>
+    </section>
+  </div>
+
+  <!-- Плашка выборов: висит в углу поверх всего, пока идёт голосование
+       и бюллетень закрыт. Нажал — лист открылся снова -->
+  <button type="button" class="vote-chip hidden" id="vote-chip"></button>
+
   <div id="sheet" class="sheet hidden">
     <div class="sheet-back" id="sheet-back"></div>
     <div class="sheet-body">
@@ -500,6 +1095,9 @@
     </div>
   </div>
 
+  <!-- Сцена боя идёт первой: карточка зовёт её разбор событий,
+       и к этому моменту он должен быть объявлен -->
+  <script src="static/fightscene.js"></script>
   <script src="static/card.js"></script>
 </body>
 </html>

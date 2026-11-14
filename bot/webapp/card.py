@@ -20,19 +20,25 @@ from bot.game.combat import (
     total_crit,
     total_dodge,
 )
-from bot.game.economy import MAX_LEVEL, MICRO_UPS_PER_LEVEL
+from bot.game.economy import MAX_LEVEL, MICRO_UPS_PER_LEVEL, exp_at_up
 from bot.game.equipment import (
     ALL_SLOTS,
+    JEWEL_SLOTS,
     LEFT_SLOTS,
     UNDER_SLOTS,
     FAN_SHELF,
+    JEWEL_SHELF,
     MAGIC_ITEMS,
     RIGHT_SLOTS,
+    SET_TITLES,
     Equipment,
     Item,
     OwnedItem,
     Slot,
     get_item,
+    next_step,
+    power_percent,
+    set_power,
     shop_sections,
 )
 from bot.game.abilities import MAX_ABILITIES, TIER_COST
@@ -47,11 +53,14 @@ from bot.game.health import (
 from bot.game.locations import Service, get_location
 from bot.game.looks import DEFAULT_LOOK, get_look
 from bot.game import pro
-from bot.game.presence import is_online, presence_text
-from bot.game.pro import PRO_BADGE, current_offer
+from bot.game.presence import is_online, plural, presence_text
+from bot.game.pro import current_offer
 from bot.game.potions import (
     POTIONS,
     effects_bonus,
+    PASS_CODE,
+    PASS_EMOJI,
+    PASS_TITLE,
     SECTION_CODE,
     SECTION_EMOJI,
     SECTION_TITLE,
@@ -63,8 +72,11 @@ from bot.game.stats import derive
 from bot.game.store import PACKS
 from bot.models import Player
 from bot.webapp.auth import sign_avatar
+from bot.webapp.clans import fighter_badges
 from bot.webapp.bank import purse_payload
+from bot.webapp.cars import driving_payload
 from bot.webapp.documents import build_documents
+from bot.webapp.services import service_badge
 
 # Ссылка на аватар живёт час — столько же, сколько открытая карточка
 AVATAR_TTL = 60 * 60
@@ -90,7 +102,54 @@ def format_birthday(created_at: str | None) -> str:
 CELL_TITLES: dict[Slot, str] = {Slot.JACKET: "тело"}
 
 
-def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
+def kit_payload(item: Item, equipment: Equipment | None = None) -> dict:
+    """Строка комплекта: сколько вещей набора надето и что это даёт.
+
+    Пусто — вещь не из набора. Лестницу силы тянет только оружие, но
+    строка стоит на каждой вещи набора: по ней и видно, сколько собрано
+    и сколько осталось до следующей ступени.
+
+    Без экипировки (на прилавке у чужой вещи) счёт нулевой, а ступени
+    всё равно показываем: покупатель должен понимать, за что платит.
+    """
+    if not item.kit:
+        return {}
+    worn = equipment.kit_worn(item.kit) if equipment is not None else 0
+    power = set_power(worn)
+    step = next_step(worn)
+    title = SET_TITLES.get(item.kit, item.kit)
+    whose = "оружие" if item.is_weapon else "оружие набора"
+    text = (
+        f"Набор «{title}»: надето {worn} "
+        f"{plural(worn, 'вещь', 'вещи', 'вещей')} — "
+        f"{whose} работает на {power_percent(power)}%."
+    )
+    if step is not None:
+        need = step[0] - worn
+        text += (
+            f" Ещё {need} {plural(need, 'вещь', 'вещи', 'вещей')} — "
+            f"и {power_percent(step[1])}%."
+        )
+    return {
+        "code": item.kit,
+        "title": title,
+        "worn": worn,
+        "power": power_percent(power),
+        "weapon": item.is_weapon,
+        "next": (
+            {"need": step[0], "power": power_percent(step[1])}
+            if step is not None
+            else {}
+        ),
+        "text": text,
+    }
+
+
+def worn_payload(
+    owned: OwnedItem,
+    fclass: FighterClass | None = None,
+    equipment: Equipment | None = None,
+) -> dict:
     """Надетая вещь так, как её показывает клетка куклы.
 
     Свойства вещи идут сюда целиком, а не одной строкой: по нажатию на
@@ -103,8 +162,17 @@ def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
     здесь стоял слот предмета, нажатие на вторую руку снимало оружие из
     первой — а второе нажатие отвечало «слот и так пуст», хотя в клетке
     оружие было видно.
+
+    **Числа — те, с которыми вещь работает на этом бойце.** Не только с
+    модификацией, но и с комплектом: оружие собранного набора бьёт
+    сильнее, чем написано в лавке, и в строке урона внизу карточки стоит
+    именно это число. Показывать в клетке лавочное значило бы спорить с
+    самим собой — так уже было с ожерельем, которое в кукле лежало
+    полосой, а в карточке квадратом.
     """
-    in_hands = weapon_in_hands(owned.real, fclass)
+    # Вещь, как она работает на бойце: с заточкой и с комплектом
+    shown = equipment.grown(owned) if equipment is not None else owned.real
+    in_hands = weapon_in_hands(shown, fclass)
     return {
         "id": owned.id,
         "slot": (owned.slot or owned.item.slot).value,
@@ -112,8 +180,8 @@ def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
         "title": owned.title,
         "icon": owned.emoji,
         "image": owned.image,
-        "bonus": owned.describe_bonus(),
-        "bonuses": bonuses_payload(owned.real, fclass, owned),
+        "bonus": shown.describe_bonus(),
+        "bonuses": bonuses_payload(shown, fclass, owned),
         # Класс меняет урон оружия — говорим об этом там же, где число
         "in_hands": f"У {fclass.title.lower()}а в руках: {in_hands}"
         if in_hands
@@ -121,6 +189,15 @@ def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
         "wear": owned.wear,
         "max_wear": owned.max_wear,
         "wear_text": owned.describe_wear(),
+        # Форма клетки, в которой вещь надета: по нажатию на клетку её
+        # карточку рисует тот же код, что и строку рюкзака, и без этого
+        # поля ожерелье в карточке показывалось квадратом, хотя в самой
+        # клетке лежало полосой. Берём её у клетки, а не у предмета:
+        # кольцо знает свою правую, а надето может быть в любой из трёх
+        "shape": (owned.slot or owned.item.slot).shape,
+        # Комплект: сколько вещей набора на бойце и во что это
+        # превращает его оружие
+        "kit": kit_payload(owned.item, equipment),
         "mod": mod_mark(owned),
     }
 
@@ -141,10 +218,13 @@ def slot_payload(
         # Название клетки: у тела оно своё, потому что вещей в ней две
         "cell_title": CELL_TITLES.get(slot, slot.title),
         "under_title": under_slot.title if under_slot else "",
-        "under": worn_payload(under, fclass) if under else None,
+        "under": worn_payload(under, fclass, equipment) if under else None,
         "placeholder": slot.emoji,
         "placeholder_image": slot.placeholder,
-        "item": worn_payload(owned, fclass) if owned else None,
+        # Какой клеткой слот рисуется: квадрат, широкая полоса ожерелья
+        # или колечко. Форму решает сервер — см. `Slot.shape`
+        "shape": slot.shape,
+        "item": worn_payload(owned, fclass, equipment) if owned else None,
     }
 
 
@@ -213,6 +293,10 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
         "kind": item.kind.value,
         "slot": item.slot.value,
         "slot_title": item.slot.section.capitalize(),
+        # Какой клеткой вещь рисуется: ожерелье втрое шире квадрата, кольцо
+        # втрое у́же. Форму держит слот (`Slot.shape`), и страница берёт её
+        # отсюда — и для куклы, и для прилавка, и для рюкзака
+        "shape": item.slot.shape,
         "slots": [
             {"slot": slot.value, "title": slot.title} for slot in item.slots
         ],
@@ -226,6 +310,7 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
         "can_equip": player.can_equip(item),
         "bonus": item.describe_bonus(),
         "bonuses": bonuses_payload(item, player.fclass, owned),
+        "kit": kit_payload(owned.item, player.equipment),
         # Модификация: звёздочка ступени и что она дала
         "mod": mod_mark(owned),
     }
@@ -418,6 +503,7 @@ def goods_payload(
         "kind": item.kind.value,
         "slot": item.slot.value,
         "slot_title": item.slot.section.capitalize(),
+        "shape": item.slot.shape,
         "price": price,
         "full_price": item.price,
         "off": item.price - price,
@@ -428,6 +514,7 @@ def goods_payload(
         "owned": owned,
         "requirements": requirements_payload(player, item),
         "bonuses": bonuses_payload(item, player.fclass),
+        "kit": kit_payload(item, player.equipment),
         "suits": suits_payload(item),
     }
 
@@ -435,7 +522,11 @@ def goods_payload(
 def potion_gains_payload(potion: Potion) -> list[dict]:
     """Что эликсир делает — теми же строчками, что и свойства вещи."""
     rows: list[dict] = []
-    if potion.heal:
+    if potion.full:
+        rows.append(
+            {"emoji": "❤️", "title": "Восстановит", "text": "до полного"}
+        )
+    elif potion.heal:
         rows.append(
             {"emoji": "❤️", "title": "Восстановит", "text": f"до +{potion.heal}"}
         )
@@ -470,13 +561,21 @@ def potion_payload(
         "icon": potion.emoji,
         "image": potion.picture,
         "kind": potion.kind.value,
+        # Пропуск рисуется билетом, а не квадратом: см. `Potion.shape`
+        "shape": potion.shape,
         # Пропуск лежит в той же стопке, но его не пьют: кнопки «Использовать»
         # у него нет — его тратит подвал на входе
         "consumable": not potion.is_pass,
+        # ...и в рюкзаке он лежит своей полкой: билет на рейд и склянка
+        # здоровья — разные вещи, и искать билет среди эликсиров незачем
+        "is_pass": potion.is_pass,
         # Временный вытесняет другой временный, восстановление — никого
         "boost": potion.is_boost,
-        "slot": SECTION_CODE,
-        "slot_title": SECTION_TITLE,
+        "slot": PASS_CODE if potion.is_pass else SECTION_CODE,
+        # Подпись под названием — что это за вещь. У билета это «Билеты»,
+        # а не «Прочее»: в «прочем» лежит то, чему не нашлось полки, а у
+        # билета полка своя — и у оружейника, и в рюкзаке
+        "slot_title": PASS_TITLE if potion.is_pass else SECTION_TITLE,
         # Полоса износа: у пропуска она есть, у склянок её нет. Без этих
         # ключей карточка вещи рисовала пропуску «Износ: undefined» —
         # рисует её одна и та же карточка, а ключей у склянки не было
@@ -507,15 +606,38 @@ def potion_payload(
 
 
 def potions_section(player: Player, service: Service | None = None) -> dict:
-    """Раздел «Прочее»: то, что пьют, а не надевают."""
+    """Раздел «Прочее»: то, что пьют, а не надевают.
+
+    Пропуска сюда не идут: их не пьют, а предъявляют на входе в рейд,
+    и стоят они своей полкой у оружейника. В рюкзаке, где раздел один
+    на всё непривычное, они по-прежнему рядом со склянками — там
+    делить нечего.
+    """
     rows = [
         potion_payload(player, potion, player.potion_count(potion.code), service)
         for potion in POTIONS
+        if not potion.is_pass or service is None
     ]
     return {
         "slot": SECTION_CODE,
         "title": SECTION_TITLE,
         "emoji": SECTION_EMOJI,
+        "open": sum(1 for row in rows if row["unlocked"]),
+        "items": rows,
+    }
+
+
+def passes_section(player: Player, service: Service | None = None) -> dict:
+    """Полка пропусков у оружейника: три билета на три рейда."""
+    rows = [
+        potion_payload(player, potion, player.potion_count(potion.code), service)
+        for potion in POTIONS
+        if potion.is_pass
+    ]
+    return {
+        "slot": PASS_CODE,
+        "title": PASS_TITLE,
+        "emoji": PASS_EMOJI,
         "open": sum(1 for row in rows if row["unlocked"]),
         "items": rows,
     }
@@ -549,24 +671,43 @@ def relic_payload(player: Player, item: Item, owned: int) -> dict:
 
 
 def pro_payload(
-    player: Player, now: int | None = None, promo_claimed: bool = False
+    player: Player,
+    now: int | None = None,
+    promo_claimed: bool = False,
+    tier: "pro.Tier | None" = None,
 ) -> dict:
-    """Карточка подписки: она всегда стоит первой на элитном прилавке.
+    """Карточка одной ступени подписки: они стоят первыми на прилавке.
 
     `promo_claimed` — забирал ли боец бесплатную неделю. Она даётся один
     раз, поэтому кнопка после этого всегда ведёт в счёт: иначе «продлить
-    бесплатно» тыкается до бесконечности.
+    бесплатно» тыкается до бесконечности. Бывает она только у PRO.
+
+    Без ступени собирается карточка PRO: так зовут из тех мест, где
+    ступень ещё не завезли.
     """
     moment = int(time.time()) if now is None else now
-    offer = current_offer()
-    paid = pro.paid_offer()
+    one = tier or pro.PRO_TIER
+    offer = current_offer(tier=one)
+    paid = pro.paid_offer(one)
     free = offer.promo and not promo_claimed
-    left = player.pro_left(moment)
+    # Сколько осталось — у этой ступени, а не у старшей: на карточке PRO
+    # должен стоять срок PRO, даже если поверх неё взяли PREMIUM
+    left = max(
+        0,
+        (
+            player.premium_until
+            if one.code == pro.PREMIUM
+            else player.pro_until
+        )
+        - moment,
+    )
     return {
-        "title": pro.TITLE,
-        "emoji": pro.EMOJI,
-        "image": pro.IMAGE,
-        "benefits": list(pro.BENEFITS),
+        "code": one.code,
+        "title": one.title,
+        "emoji": one.emoji,
+        "badge": one.badge,
+        "image": one.image,
+        "benefits": list(one.benefits),
         "note": pro.NOTE,
         # Что предлагают этому бойцу: бесплатная неделя или обычный месяц
         "stars": 0 if free else paid.stars,
@@ -586,6 +727,28 @@ def pro_payload(
     }
 
 
+def ups_payload(player: Player) -> list[dict[str, Any]]:
+    """Засечки шкалы: по апгрейду на каждый, кроме четвёртого.
+
+    Четвёртый апгрейд — это сам уровень, и на шкале он стоит отдельным
+    знаком в самом конце: у него и цвет другой, и число на нём не номер
+    апгрейда, а номер следующего уровня.
+
+    На потолке засечек нет вовсе: уровня впереди нет, а значит, нет и
+    долей до него.
+    """
+    if player.at_max_level:
+        return []
+    return [
+        {
+            "number": number,
+            "at": exp_at_up(player.level, number),
+            "taken": number <= player.micro_ups,
+        }
+        for number in range(1, MICRO_UPS_PER_LEVEL)
+    ]
+
+
 def build_magic(
     player: Player, now: int | None = None, promo_claimed: bool = False
 ) -> dict:
@@ -596,7 +759,14 @@ def build_magic(
     return {
         "credits": player.credits,
         "level": player.level,
+        # Карточка PRO осталась отдельным ключом: по нему её берут
+        # страницы, которые про вторую ступень ещё не знают
         "pro": pro_payload(player, now, promo_claimed),
+        # Обе ступени подряд, младшая первой: выбор между двумя ценами —
+        # это и есть то, зачем боец открыл прилавок
+        "tiers": [
+            pro_payload(player, now, promo_claimed, one) for one in pro.TIERS
+        ],
         "items": [
             relic_payload(player, item, mine.get(item.code, 0))
             for item in MAGIC_ITEMS
@@ -609,17 +779,34 @@ def build_magic(
 # стоят в аптеке. Один прилавок на всё был, пока магазин был вкладкой.
 WEAPON_SLOTS = (Slot.WEAPON, Slot.OFFHAND)
 
+# Чей прилавок у магазина свой. Остальные торгуют клубной витриной, и
+# она же решает, что стои́т на прилавке у одёжника с оружейником
+SHELVES: dict[Service, str] = {
+    Service.FAN: FAN_SHELF,
+    Service.JEWEL: JEWEL_SHELF,
+}
+
 
 def sells(service: Service, slot: Slot) -> bool:
-    """Торгует ли этот магазин вещами такого слота."""
+    """Торгует ли этот магазин вещами такого слота.
+
+    Украшения продают двое: ювелир — одни их, и «Северный Вал», где
+    фанатская линия лежит целиком, от биты до перстня. У одёжника с
+    оружейником украшений не бывает: кольцо не ляжет между штанами и
+    кроссовками, хотя оружием оно и не является.
+    """
+    # Фанатский магазин одевает целиком: там и бита, и кроссовки, и цепь
+    # одной команды. Делить его незачем — прилавок и так свой
+    if service is Service.FAN:
+        return True
+    if service is Service.JEWEL:
+        return slot in JEWEL_SLOTS
+    if slot in JEWEL_SLOTS:
+        return False
     if service is Service.WEAPONS:
         return slot in WEAPON_SLOTS
     if service is Service.CLOTHES:
         return slot not in WEAPON_SLOTS
-    # Фанатский магазин одевает целиком: там и бита, и кроссовки одной
-    # команды. Делить его надвое незачем — прилавок и так свой
-    if service is Service.FAN:
-        return True
     return False
 
 
@@ -633,8 +820,8 @@ def build_shop(
         mine[owned.code] = mine.get(owned.code, 0) + 1
 
     sections = []
-    # У фанатского магазина свой прилавок: клубной витрины там нет вовсе
-    shelf = FAN_SHELF if service is Service.FAN else ""
+    # У тематического магазина свой прилавок: клубной витрины там нет вовсе
+    shelf = SHELVES.get(service, "")
     for slot, items in shop_sections(shelf):
         if not items or not sells(service, slot):
             continue  # пустой раздел — пустая полка: показывать нечего
@@ -654,6 +841,9 @@ def build_shop(
     # Склянки не надевают, слота у них нет — и стоят они в аптеке
     if service is Service.POTIONS:
         sections.append(potions_section(player, service))
+    # А пропуска — у оружейника: их не пьют, их предъявляют на входе
+    if service is Service.WEAPONS:
+        sections.append(passes_section(player, service))
     return {
         "credits": player.credits,
         "level": player.level,
@@ -673,11 +863,13 @@ def work_badge(player: Player, moment: int) -> dict:
     по второму меняет надпись. Всё остальное о работе лежит на её
     собственном экране — в карточке ему делать нечего.
     """
-    from bot.game.work import vacancy_at
+    from bot.game.work import get_vacancy
 
-    here = vacancy_at(player.where(moment))
+    # Не «есть ли тут работа», а «моя ли она»: в банке три места, и
+    # кассиру незачем видеть кнопку смены управляющего
+    mine = get_vacancy(player.job_code) if player.job_code else None
     return {
-        "here": bool(here is not None and here.code == player.job_code),
+        "here": bool(mine is not None and mine.place == player.where(moment)),
         "on_shift": player.on_shift(moment),
         "code": player.job_code,
     }
@@ -727,6 +919,7 @@ def lot_payload(player: Player, lot: dict, now: int = 0) -> dict:
         "image": item.picture,
         "slot": item.slot.value,
         "slot_title": item.slot.section.capitalize(),
+        "shape": item.slot.shape,
         "price": price,
         # Продавцу видно, сколько дойдёт до него, покупателю — сколько отдать
         "payout": payout(price),
@@ -759,6 +952,7 @@ def sellable_payload(player: Player, owned: OwnedItem) -> dict:
         "image": owned.image,
         "slot": owned.item.slot.value,
         "slot_title": owned.item.slot.section.capitalize(),
+        "shape": owned.item.slot.shape,
         "wear": owned.wear,
         "max_wear": owned.max_wear,
         "wear_text": owned.describe_wear(),
@@ -818,31 +1012,106 @@ def avatar_payload(player: Player, avatar_url: str) -> dict:
     }
 
 
-def fighter_row(player: Player, viewer_id: int | None) -> dict:
+def fighter_row(
+    player: Player,
+    viewer_id: int | None,
+    bot_token: str = "",
+    place: int = 0,
+) -> dict:
     """Строка списка клуба: только то, что видно в самой строке.
 
     Карточку по кнопке «i» отдаёт /api/card — там уже есть и аватар, и слоты,
     и счёт. Тянуть всё это в список значило бы читать экипировку каждого
     бойца ради строчки из трёх слов.
+
+    Клан — исключение: его знаки стоят в самой строке, рядом с ником, и
+    без них строка списка врала бы, показывая мафиози одиночкой.
     """
     return {
         "user_id": player.user_id,
         "nickname": player.nickname,
         "level": player.level,
+        # Рейтинг стоит в самой строке: доску почёта читают по нему, и
+        # прятать число, по которому список отсортирован, незачем
+        "rating": player.rating,
         "pro": player.is_pro(),
+        # Сам значок, а не только признак: у ступеней он разный, и
+        # признаком их не различить
+        "badge": player.badge,
         "is_self": player.user_id == viewer_id,
         "fclass": {
             "code": player.fclass.code,
             "title": player.fclass.title,
             "emoji": player.fclass.emoji,
         },
+        "clan": fighter_badges(player, bot_token),
+        "service": service_badge(player),
+        # Место в рейтинге. Ноль — строка не из рейтинга, а из поиска:
+        # там мест нет, и рисовать «0 место» было бы неправдой
+        "place": place,
     }
 
 
-def build_club(players: list[Player], viewer_id: int | None) -> dict:
-    """Список клуба: кто записан, какого уровня и что у него в карточке."""
+# Сколько бойцов на странице рейтинга. Пятьдесят — столько, сколько
+# называют доской почёта: дальше начинается картотека, и листают её уже
+# те, кто ищет себя, а не тех, кто наверху
+PAGE = 50
+
+
+def build_club(
+    players: list[Player],
+    viewer_id: int | None,
+    bot_token: str = "",
+    offset: int = 0,
+    total: int | None = None,
+    page_size: int = PAGE,
+    places: bool = True,
+) -> dict:
+    """Страница списка клуба: кто записан, какого уровня и с каким ELO.
+
+    Место считает сервер и от смещения, а не страница от своего списка:
+    на второй странице первая строка — это пятьдесят первое место, и
+    страница, считающая места сама, написала бы там единицу.
+
+    `places` — рисовать ли места вовсе. Место даёт ELO по всему клубу, и
+    в списке, переставленном по алфавиту или урезанном до одного
+    уровня, номер строки означал бы не то, что в нём написано: «пятый»
+    читался бы как пятое место в клубе. Поэтому в таком списке мест нет,
+    а ELO в строке остаётся — оно свойство бойца, а не порядка строк.
+
+    `total` — сколько бойцов в клубе всего, а не на этой странице: по
+    нему рисуются стрелки и подпись «1–50 из 137».
+    """
+    whole = len(players) if total is None else total
+    size = max(1, page_size)
     return {
-        "fighters": [fighter_row(player, viewer_id) for player in players],
+        "fighters": [
+            fighter_row(
+                player,
+                viewer_id,
+                bot_token,
+                place=(offset + number) if places else 0,
+            )
+            for number, player in enumerate(players, start=1)
+        ],
+        "total": whole,
+        "offset": offset,
+        "page_size": size,
+        # Страницы считаем здесь же: на странице это было бы делением с
+        # округлением вверх, написанным во второй раз
+        "page": offset // size + 1,
+        "pages": max(1, -(-whole // size)),
+    }
+
+
+def build_search(
+    players: list[Player], viewer_id: int | None, bot_token: str = ""
+) -> dict:
+    """Найденные по прозвищу. Мест тут нет: это не рейтинг, а поиск."""
+    return {
+        "fighters": [
+            fighter_row(player, viewer_id, bot_token) for player in players
+        ],
         "total": len(players),
     }
 
@@ -927,7 +1196,7 @@ def build_card(
     is_self = viewer_id == player.user_id
     equipment = player.equipment
     fclass = player.fclass
-    derived = derive(fclass, player.stats, player.level, player.extra_hp)
+    derived = derive(fclass, player.stats, player.extra_hp)
 
     current_hp = player.current_hp(moment)
     state = player.health_state(moment)
@@ -945,11 +1214,25 @@ def build_card(
         "name": player.nickname,
         "level": player.level,
         "is_self": is_self,
+        # Клан: по нему страница ставит знаки у ника и зажигает вкладку
+        # «Клан». Пусто — боец сам по себе, и вкладки у него нет
+        "clan": fighter_badges(player, bot_token, moment),
+        # Служба: значок у ника рядом со знаком клана. Носить их разом
+        # нельзя — служивого в семью не пускают, мафиози на службу не берут
+        "service": service_badge(player),
+        # Подписка: ступень, её значок и сколько ей осталось. Картинка
+        # значка идёт рядом с эмодзи — страница ставит её, где есть место,
+        # а эмодзи остаётся для строк, куда картинку не вставить
         "pro": {
             "active": player.is_pro(moment),
             "seconds_left": player.pro_left(moment),
             "left_text": spell_duration(player.pro_left(moment)),
-            "badge": PRO_BADGE,
+            "badge": player.badge,
+            "tier": (player.tier(moment).code if player.tier(moment) else ""),
+            "tier_title": (
+                player.tier(moment).title if player.tier(moment) else ""
+            ),
+            "picture": (player.tier(moment).image if player.tier(moment) else ""),
         },
         "fclass": {
             "code": fclass.code,
@@ -958,6 +1241,10 @@ def build_card(
             "tagline": fclass.tagline,
         },
         "avatar": avatar_payload(player, avatar_url),
+        # Машина под бойцом: рисуется поверх образа, снизу. Не слот —
+        # машина не вещь, и места среди слотов ей нет, а под ногами —
+        # ровно её место. Пусто — боец пешком
+        "car": driving_payload(player, moment),
         "hp": {
             "current": current_hp,
             "max": derived.max_hp,
@@ -974,8 +1261,8 @@ def build_card(
         },
         # Выпитое идёт в ту же прибавку, что и надетое. Боевые числа его
         # и так считали (движок берёт player.stats), а строка
-        # характеристики — нет: эликсир ловкости поднимал уворот, но
-        # «Ловкость» на карточке оставалась прежней, и выходило, что
+        # характеристики — нет: эликсир проворства поднимал уворот, но
+        # «Проворство» на карточке оставалось прежним, и выходило, что
         # склянка не подействовала
         "stats": stats_payload(
             player.base_stats,
@@ -1023,6 +1310,12 @@ def build_card(
             "capped": player.at_max_level,
             "max_level": MAX_LEVEL,
             "free_points": player.free_points,
+            "level": player.level,
+            "next_level": min(player.level + 1, MAX_LEVEL),
+            # Пороги апгрейдов этого уровня — те самые, по которым
+            # начисляются очки. Шкала рисует по ним засечки, и считать их
+            # на странице было бы вторым местом, где живёт лестница
+            "ups": ups_payload(player),
         },
         "place": place_payload(player, moment),
         # Работа: по ней в шапке того дома, где боец стоит, встаёт кнопка
@@ -1046,6 +1339,13 @@ def build_card(
             "rating": player.rating,
             # Чужой кошелёк не наше дело: карточку соседа открывают из чата боя
             "credits": player.credits if is_self else 0,
+            # Счёт в банке — рядом с наличными: над рюкзаком они стоят
+            # парой, и по ним боец и решает, чем платить. Карты нет —
+            # нет и строки: показывать ноль на счету, которого не
+            # открывали, значит обещать счёт
+            "account": player.account_balance if is_self else 0,
+            "has_account": bool(is_self and player.has_account),
+            "has_card": bool(is_self and player.has_card),
         },
         "birthplace": player.home,
         "birthday": format_birthday(player.created_at),

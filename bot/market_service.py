@@ -17,6 +17,9 @@ from bot.game.locations import Service
 from bot.game.equipment import Item, get_item
 from bot.game.market import fee_of, payout, price_is_sane, price_range
 from bot.models import Player
+# Квесты слушают город: службы зовут `notice` и больше о них ничего не знают
+from bot.game.quests import market_mark
+from bot.quest_service import notice
 
 
 class MarketError(Exception):
@@ -47,6 +50,13 @@ async def sell_lot(db: Database, player: Player, gear_id: int, price: int) -> in
         raise MarketError(
             f"«{owned.title}» на тебе надета. Сними её — тогда и выставляй."
         )
+    # Служебная форма принадлежит креслу, а не бойцу: иначе достаточно
+    # было бы один раз стать начальником и продать комплект
+    if owned.item.is_duty:
+        raise MarketError(
+            f"«{owned.title}» — служебная форма. Её сдают на склад, а не "
+            "продают."
+        )
     if not price_is_sane(owned.item, price):
         limits = price_range(owned.item)
         raise MarketError(
@@ -57,8 +67,15 @@ async def sell_lot(db: Database, player: Player, gear_id: int, price: int) -> in
             else "Цена должна быть больше нуля."
         )
 
+    # Номер вещи запоминаем до удаления: ниже его уже не спросить, а
+    # бармену нужен именно он — задание закрывает не любой кастет, а тот,
+    # который он сам и выдал
+    item_id = owned.id
     await db.delete_gear(owned.id)
     player.gear = [row for row in player.gear if row.id != owned.id]
+    # Вещь на прилавке — событие для бармена: одно из его заданий ровно
+    # в этом и состоит
+    await notice(db, player, market_mark(item_id))
     return await db.add_lot(
         seller_id=player.user_id,
         code=owned.code,
@@ -109,7 +126,7 @@ async def buy_lot(
     if not await db.take_lot(lot_id):
         raise MarketError("Этот лот уже разобрали.")
 
-    player.pay(price, moment, Service.MARKET)
+    player.pay(price, moment, Service.MARKET, about=f"Покупка {item.title}")
     await db.save_player(player)
     owned = await db.add_gear(
         player.user_id, lot["code"], max_wear=lot["max_wear"], wear=lot["wear"]

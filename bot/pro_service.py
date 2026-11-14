@@ -1,8 +1,14 @@
-"""Выдача подписки PRO.
+"""Выдача подписок PRO и PREMIUM.
 
 Одна дверь на все входы: и оплата звёздами, и бесплатная акция приходят
-сюда. Внутри всегда одно и то же — продлить срок и дотянуть до нового
-срока то, что подписка держит: страховой полис и абонемент в зал.
+сюда. Внутри всегда одно и то же — продлить срок своей ступени и
+дотянуть до нового срока то, что эта ступень держит: абонемент в зал у
+обеих, страховой полис только у PREMIUM.
+
+Какую ступень продлевать, сказано в самой оферте. Сроки у ступеней
+раздельные: оплаченный месяц PRO обязан дожить свой срок, даже если
+поверх него взяли PREMIUM, — иначе покупка младшей ступени исчезала бы
+в старшей, и за неё пришлось бы возвращать звёзды.
 
 Вещей подписка не выдаёт: ни клинка, ни образа. И то и другое оставалось
 у бойца навсегда, то есть подписка продавала вечное за месячную цену. У
@@ -26,7 +32,9 @@ from dataclasses import dataclass
 
 from bot.database import Database
 from bot.game.health import now_ts
-from bot.game.pro import ProOffer, promo_is_on, promo_offer
+from bot.game.pro import PREMIUM, ProOffer, promo_is_on, promo_offer
+from bot.game.promocodes import PromoCode, find as find_code, known as code_known
+from bot.game.promocodes import normalize as normalize_code
 from bot.gym_service import cover_pass
 from bot.insurance_service import cover_by_pro
 from bot.models import Player
@@ -57,24 +65,36 @@ async def grant_pro(
 ) -> ProGrant:
     """Выдать или продлить подписку на этих условиях."""
     moment = now_ts() if now is None else now
-    renewed = player.is_pro(moment)
-    player.extend_pro(offer.seconds, moment)
+    tier = offer.tier
+    renewed = (
+        player.is_premium(moment)
+        if tier.code == PREMIUM
+        else player.is_pro_exactly(moment)
+    )
+    if tier.code == PREMIUM:
+        player.extend_premium(offer.seconds, moment)
+    else:
+        player.extend_pro(offer.seconds, moment)
 
     await db.save_player(player)
     # Полис и абонемент — после сохранения срока: обе сверки смотрят на
     # `pro_until`, и до сохранения увидели бы прежний конец подписки
     policy = bool(await cover_by_pro(db, player, moment))
     gym = bool(await cover_pass(db, player, moment))
+    until = (
+        player.premium_until if tier.code == PREMIUM else player.pro_until
+    )
     logger.info(
-        "PRO: боец %s до %s (%s дней, %s ⭐)",
+        "%s: боец %s до %s (%s дней, %s ⭐)",
+        tier.title,
         player.user_id,
-        player.pro_until,
+        until,
         offer.days,
         offer.stars,
     )
     return ProGrant(
         offer=offer,
-        until=player.pro_until,
+        until=until,
         policy=policy,
         gym=gym,
         renewed=renewed,
@@ -126,11 +146,64 @@ async def claim_free_pro(
     return await grant_pro(db, player, promo_offer(), now)
 
 
+def code_claim_id(code: str, user_id: int) -> str:
+    """Ключ применённого кода в журнале. Он же и защита от второго раза."""
+    return f"promo:code:{normalize_code(code)}:{user_id}"
+
+
+async def code_taken(db: Database, code: str, user_id: int) -> bool:
+    """Применял ли боец этот код. Один раз на бойца, навсегда."""
+    return await db.get_purchase(code_claim_id(code, user_id)) is not None
+
+
+async def redeem_code(
+    db: Database, player: Player, typed: str, now: int | None = None
+) -> tuple[PromoCode, ProGrant]:
+    """Применить промокод. Возвращает сам код и то, что он выдал.
+
+    Проверку «не применял ли уже» делает не чтение перед записью, а сама
+    запись: ключ в журнале уникален, и два быстрых нажатия подряд не
+    проскочат. Читать сперва и писать потом значило бы оставить щель
+    ровно в тот миг, когда она дороже всего.
+
+    Действует ли код, решает сервер: со страницы ни слова, ни даты не
+    подделать.
+    """
+    wanted = normalize_code(typed)
+    if not wanted:
+        raise ProError("Введи промокод — поле пустое.")
+
+    code = find_code(typed)
+    if code is None:
+        if code_known(typed):
+            raise ProError("Этот промокод больше не действует.")
+        raise ProError("Такого промокода нет. Проверь, как он написан.")
+
+    first = await db.add_purchase(
+        user_id=player.user_id,
+        code=code.tier,
+        stars=0,
+        credits=0,
+        charge_id=code_claim_id(code.code, player.user_id),
+        # Подарок, а не покупка: в историю трат не идёт и возврату не
+        # подлежит — возвращать нечего
+        kind="gift",
+    )
+    if not first:
+        raise ProError(
+            "Этот промокод ты уже применял — он даётся один раз на бойца."
+        )
+    return code, await grant_pro(db, player, code.offer(), now)
+
+
 __all__ = [
     "ProError",
     "ProGrant",
     "claim_free_pro",
+    "code_claim_id",
+    "code_taken",
     "grant_pro",
     "promo_claim_id",
     "promo_taken",
+    "redeem_code",
 ]

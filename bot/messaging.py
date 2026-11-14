@@ -138,7 +138,15 @@ class Announcer:
             return
         self.budget.spend(chat_id)
         try:
-            await self.bot.unpin_chat_message(chat_id, message_id)
+            # Только по именам, и это не стиль. У `pin_chat_message`
+            # второй параметр — `message_id`, а у `unpin_chat_message`
+            # в aiogram 3 на его месте стоит `business_connection_id`.
+            # Позиционный вызов отправлял номер сообщения в поле
+            # бизнес-подключения, а сам `message_id` оставался пустым —
+            # Telegram отвечал отказом, и закреп в чате так и висел
+            await self.bot.unpin_chat_message(
+                chat_id=chat_id, message_id=message_id
+            )
         except TelegramRetryAfter as error:
             logger.info("Снятие закрепа пропущено: подождать %s сек",
                         error.retry_after)

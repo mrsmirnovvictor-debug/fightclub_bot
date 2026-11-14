@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 import sqlite3
 
+import aiosqlite
 import pytest
 
 from bot.bank_service import deposit, issue_card, open_account
@@ -32,6 +33,7 @@ from bot.models import Player
 BANK_COLUMNS: tuple[str, ...] = (
     "account_number",
     "account_balance",
+    "account_at",
     "card_at",
     "card_paid_until",
     "pay_from",
@@ -177,6 +179,51 @@ async def test_a_fighter_saved_by_the_new_code_keeps_his_bank_row(old_db_path):
     await db.close()
 
 
+async def test_the_statement_gains_a_comment_without_losing_old_rows(tmp_path):
+    """Комментарий дописан к живой выписке, а старые строки остались.
+
+    Выписка появилась раньше комментария: на базе прошлой версии таблица
+    уже есть, и `CREATE TABLE IF NOT EXISTS` колонку в неё не добавит.
+    """
+    path = str(tmp_path / "old_log.db")
+    old = await aiosqlite.connect(path)
+    old.row_factory = aiosqlite.Row
+    await old.execute(
+        """
+        CREATE TABLE card_log (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            at      INTEGER NOT NULL,
+            amount  INTEGER NOT NULL,
+            kind    TEXT    NOT NULL,
+            note    TEXT    NOT NULL DEFAULT '',
+            balance INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    await old.execute(
+        "INSERT INTO card_log (user_id, at, amount, kind, note, balance) "
+        "VALUES (1, 1700000000, -120, 'pay', 'Магазин одежды', 880)"
+    )
+    await old.commit()
+    await old.close()
+
+    db = Database(path)
+    await db.connect()
+    moves = await db.card_log(1)
+    # Старая строка на месте, и комментарий у неё пустой: дорисовать его
+    # задним числом не из чего
+    assert len(moves) == 1
+    assert moves[0].note == "Магазин одежды" and moves[0].about == ""
+
+    # А новая операция комментарий уже несёт
+    await db.log_card(1, -135, "pay", "Ювелирный магазин", 745,
+                      1700000100, about="Покупка Кольцо силы")
+    fresh = await db.card_log(1)
+    assert fresh[0].about == "Покупка Кольцо силы"
+    await db.close()
+
+
 async def test_a_failed_connect_closes_the_base_behind_itself(old_db_path, monkeypatch):
     """Сорвалось обновление — соединение закрыто, и процесс может упасть.
 
@@ -207,10 +254,14 @@ def test_the_schema_holds_no_index_over_a_migrated_column():
     обязан смотреть на колонку, которая в этой же схеме и заведена с
     самого начала. Колонка из `MIGRATIONS` там означает падение запуска
     на каждой живой базе — и ни один другой тест этого не увидит.
+
+    Дописанных колонок у клуба два списка: свои у бойца и свои у машин,
+    и правило одно на оба.
     """
-    from bot.database import MIGRATIONS
+    from bot.database import MIGRATIONS, Database
 
     migrated = {column for column, _ in MIGRATIONS}
+    migrated |= {column for column, _ in Database.CAR_COLUMNS}
     indexes = re.findall(
         r"CREATE\s+(?:UNIQUE\s+)?INDEX[^;]+;", SCHEMA, flags=re.I | re.S
     )
@@ -221,3 +272,425 @@ def test_the_schema_holds_no_index_over_a_migrated_column():
                 f"индекс по дописанной колонке {column} в SCHEMA: "
                 "на живой базе её ещё нет, и запуск упадёт"
             )
+
+
+# ---------- окна рейдов: в ключ добавился сам рейд ----------
+#
+# Рейдов в городе стало два, и окна у них могут начаться в один час: в
+# среду в полдень открыты и казино, и стадион. Прежний ключ (боец, час)
+# этого не различал, а дописать колонку в первичный ключ SQLite не умеет
+# — таблицу приходится собирать заново и переливать строки. Это та же
+# засада, что с индексом по счёту: на пустой базе новая схема создаётся
+# сразу правильной, и без этих тестов поломку увидел бы только живой бот.
+
+# Схема окон прошлой версии: ключ без рейда
+OLD_RAID_WINDOW = """
+CREATE TABLE raid_window (
+    user_id   INTEGER NOT NULL,
+    opened_at INTEGER NOT NULL,
+    won       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, opened_at)
+);
+"""
+
+
+@pytest.fixture
+def old_windows_path(tmp_path):
+    """База прошлой версии с двумя записями об окнах подвала."""
+    path = tmp_path / "windows.db"
+    legacy = re.sub(
+        r"CREATE TABLE IF NOT EXISTS raid_window \(.*?\);",
+        "",
+        schema_without(BANK_COLUMNS),
+        flags=re.S,
+    )
+    raw = sqlite3.connect(path)
+    raw.executescript(legacy + OLD_RAID_WINDOW)
+    raw.execute(
+        "INSERT INTO players (user_id, nickname, class_code) "
+        "VALUES (1, 'Тайлер', 'warrior')"
+    )
+    # одно окно отдано пропуском, во втором боец победил
+    raw.execute("INSERT INTO raid_window (user_id, opened_at, won) VALUES (1, 100, 0)")
+    raw.execute("INSERT INTO raid_window (user_id, opened_at, won) VALUES (1, 200, 1)")
+    raw.commit()
+    raw.close()
+    return str(path)
+
+
+async def test_old_raid_windows_become_the_cellars(old_windows_path):
+    """Всё, что лежало в таблице до стадиона, — это подвал казино.
+
+    Терять эти строки нельзя: по ним считается «одна победа на окно», и
+    забытая победа пустила бы бойца в подвал второй раз за то же окно.
+    """
+    db = Database(old_windows_path)
+    await db.connect()
+
+    assert await db.raid_window(1, 100, "cellar") == {
+        "user_id": 1, "raid": "cellar", "opened_at": 100, "won": 0
+    }
+    won = await db.raid_window(1, 200, "cellar")
+    assert won and won["won"] == 1
+    # а на стадионе этих окон нет: там боец ещё не был
+    assert await db.raid_window(1, 200, "hooligans") is None
+    await db.close()
+
+
+async def test_after_the_upgrade_two_raids_share_one_hour(old_windows_path):
+    """Главное, ради чего таблицу и пересобрали: один час, два рейда.
+
+    До пересборки вторая вставка молча проваливалась об первичный ключ, и
+    билет на матч сходил за талон казино.
+    """
+    db = Database(old_windows_path)
+    await db.connect()
+
+    assert await db.start_raid_window(1, 300, "cellar") is True
+    assert await db.start_raid_window(1, 300, "hooligans") is True
+    assert await db.start_raid_window(1, 300, "cellar") is False
+
+    await db.close_raid_window(1, 300, "hooligans")
+    assert (await db.raid_window(1, 300, "hooligans"))["won"] == 1
+    assert (await db.raid_window(1, 300, "cellar"))["won"] == 0
+    await db.close()
+
+
+async def test_the_window_upgrade_runs_once_and_keeps_running(old_windows_path):
+    """Перезапуск не должен ни падать, ни терять переписанное."""
+    for _ in range(3):
+        db = Database(old_windows_path)
+        await db.connect()
+        await db.close()
+
+    db = Database(old_windows_path)
+    await db.connect()
+    assert (await db.raid_window(1, 200, "cellar"))["won"] == 1
+    async with db.conn.execute("PRAGMA table_info(raid_window)") as cursor:
+        columns = {row["name"] for row in await cursor.fetchall()}
+    assert "raid" in columns
+    # и старая таблица за собой не осталась
+    async with db.conn.execute(
+        "SELECT name FROM sqlite_master WHERE name = 'raid_window_old'"
+    ) as cursor:
+        assert await cursor.fetchone() is None
+    await db.close()
+
+
+# Таблица групповых боёв прошлой версии: ветка была обязательной
+OLD_BATTLES = """
+CREATE TABLE battles (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    INTEGER NOT NULL,
+    thread_id  INTEGER,
+    kind       TEXT    NOT NULL,
+    mode       TEXT    NOT NULL DEFAULT 'armed',
+    rounds     INTEGER NOT NULL DEFAULT 0,
+    winner_team INTEGER,
+    draw       INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+
+@pytest.fixture
+def old_battles_path(tmp_path):
+    """База прошлой версии с одним групповым боем из чата."""
+    path = tmp_path / "battles.db"
+    legacy = re.sub(
+        r"CREATE TABLE IF NOT EXISTS battles \(.*?\);",
+        "",
+        schema_without(BANK_COLUMNS),
+        flags=re.S,
+    )
+    raw = sqlite3.connect(path)
+    # Таблица идёт первой: на неё в схеме смотрит индекс по ветке, и
+    # без неё он не создастся
+    raw.executescript(OLD_BATTLES + legacy)
+    raw.execute(
+        "INSERT INTO battles (id, chat_id, thread_id, kind, rounds, winner_team) "
+        "VALUES (7, -100, NULL, 'team', 4, 1)"
+    )
+    raw.commit()
+    raw.close()
+    return str(path)
+
+
+async def test_a_group_battle_may_now_go_without_a_thread(old_battles_path):
+    """Главное, ради чего таблицу и пересобрали: бой без ветки.
+
+    Групповые бои завелись в чате, и `chat_id` у них был всегда. Бой из
+    мини-аппа идёт без ветки — и запись о нём падала об `NOT NULL`
+    прямо в развязке, оставляя бойцов в кончившемся бою навсегда.
+    """
+    db = Database(old_battles_path)
+    await db.connect()
+
+    await db.conn.execute(
+        "INSERT INTO battles (chat_id, kind, rounds) VALUES (NULL, 'royale', 3)"
+    )
+    await db.conn.commit()
+    async with db.conn.execute(
+        "SELECT chat_id, kind FROM battles ORDER BY id"
+    ) as cursor:
+        rows = [dict(one) for one in await cursor.fetchall()]
+    # Прежний бой из чата на месте, рядом с ним — бой из аппа
+    assert rows == [
+        {"chat_id": -100, "kind": "team"},
+        {"chat_id": None, "kind": "royale"},
+    ]
+    await db.close()
+
+
+async def test_the_battle_upgrade_runs_once_and_keeps_running(old_battles_path):
+    """Перезапуск не должен ни падать, ни терять записанные бои."""
+    for _ in range(3):
+        db = Database(old_battles_path)
+        await db.connect()
+        await db.close()
+
+    db = Database(old_battles_path)
+    await db.connect()
+    rows = await db.recent_battles(-100)
+    assert len(rows) == 1
+    kept = rows[0]
+    assert kept["id"] == 7 and kept["kind"] == "team" and kept["rounds"] == 4
+    assert kept["winner_team"] == 1 and kept["draw"] == 0
+    await db.close()
+
+
+async def test_the_dead_family_garage_is_dropped(tmp_path):
+    """Пустая таблица гаража уходит: место машины лежит у самой машины.
+
+    `clan_cars` приехала пустой — писать в неё никто не успел, — и
+    второй источник правды о том, где стоит машина, не нужен. Живая
+    база, где она ещё есть, после обновления работает без неё.
+    """
+    path = tmp_path / "garage.db"
+    raw = sqlite3.connect(path)
+    raw.executescript(
+        schema_without(BANK_COLUMNS)
+        + """
+        CREATE TABLE IF NOT EXISTS clan_cars (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            clan_id INTEGER NOT NULL,
+            code    TEXT    NOT NULL,
+            put_by  INTEGER NOT NULL DEFAULT 0,
+            put_at  INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS clan_cars_clan ON clan_cars(clan_id);
+        """
+    )
+    raw.commit()
+    raw.close()
+
+    db = Database(str(path))
+    await db.connect()
+    async with db.conn.execute(
+        "SELECT name FROM sqlite_master WHERE name = 'clan_cars'"
+    ) as cursor:
+        assert await cursor.fetchone() is None, "мёртвая таблица осталась"
+    # А у машин появились колонки парковки
+    async with db.conn.execute("PRAGMA table_info(cars)") as cursor:
+        columns = {row["name"] for row in await cursor.fetchall()}
+    assert {"parked", "parked_id", "driven"} <= columns
+    await db.close()
+
+
+# Таблица машин первой версии: машина жила только при хозяине
+OLD_CARS = """
+CREATE TABLE cars (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    code    TEXT    NOT NULL,
+    until   INTEGER NOT NULL DEFAULT 0,
+    took_at INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (user_id, code)
+);
+"""
+
+
+async def test_a_car_from_the_old_base_keeps_its_owner(tmp_path):
+    """Купленная до парковок машина остаётся при хозяине, а не на ней."""
+    path = tmp_path / "cars.db"
+    legacy = re.sub(
+        r"CREATE TABLE IF NOT EXISTS cars \(.*?\);",
+        "",
+        schema_without(BANK_COLUMNS),
+        flags=re.S,
+    )
+    raw = sqlite3.connect(path)
+    # Таблица идёт первой: на неё в схеме смотрят индексы
+    raw.executescript(OLD_CARS + legacy)
+    raw.execute(
+        "INSERT INTO players (user_id, nickname, class_code) "
+        "VALUES (1, 'Тайлер', 'warrior')"
+    )
+    raw.execute(
+        "INSERT INTO cars (user_id, code, until, took_at) "
+        "VALUES (1, 'street_compact', 0, 100)"
+    )
+    raw.commit()
+    raw.close()
+
+    db = Database(str(path))
+    await db.connect()
+    rows = await db.cars_of(1)
+    assert len(rows) == 1
+    assert rows[0]["code"] == "street_compact"
+    assert rows[0]["parked"] == "" and rows[0]["parked_id"] == 0
+    # И выезжает она с полным баком: пробег у старой машины нулевой, и
+    # это не поблажка, а единственное честное число — заряда до этого
+    # правила не было вовсе
+    assert rows[0]["driven"] == 0
+    await db.close()
+
+
+# Таблица школы первой версии: записывались в неё по одному приёму, и
+# ключом был сам боец
+OLD_DOJO = """
+CREATE TABLE dojo (
+    user_id    INTEGER PRIMARY KEY,
+    code       TEXT    NOT NULL,
+    deed       TEXT    NOT NULL,
+    baseline   INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+
+async def test_a_dojo_record_survives_the_key_change(tmp_path):
+    """Запись в школе остаётся на месте, когда в ключ добавился приём.
+
+    Учится разом один приём, но набранный ждёт подтверждения сколько
+    угодно долго, и всё это время боец учит следующий. Прежний ключ
+    (боец) этого не различал, а дописать колонку в первичный ключ SQLite
+    не умеет — только собрать таблицу заново и перелить строки.
+    """
+    path = tmp_path / "dojo.db"
+    legacy = re.sub(
+        r"CREATE TABLE IF NOT EXISTS dojo \(.*?\);",
+        "",
+        schema_without(BANK_COLUMNS),
+        flags=re.S,
+    )
+    raw = sqlite3.connect(path)
+    raw.executescript(OLD_DOJO + legacy)
+    raw.execute(
+        "INSERT INTO players (user_id, nickname, class_code) "
+        "VALUES (1, 'Тайлер', 'warrior')"
+    )
+    raw.execute(
+        "INSERT INTO dojo (user_id, code, deed, baseline, started_at) "
+        "VALUES (1, 'nimble', 'dodge', 120, 500)"
+    )
+    raw.commit()
+    raw.close()
+
+    db = Database(str(path))
+    await db.connect()
+    rows = await db.dojo_rows(1)
+    # Ключ стал составным, и вторая запись рядом с первой встаёт
+    await db.set_dojo(1, "crit_hit", "crit", 7, 900)
+    both = await db.dojo_rows(1)
+    await db.close()
+
+    assert len(rows) == 1
+    assert rows[0]["code"] == "nimble" and rows[0]["baseline"] == 120
+    assert rows[0]["started_at"] == 500
+    assert [one["code"] for one in both] == ["nimble", "crit_hit"]
+
+
+# ---------- журнал ELO и недельный рейтинг ----------
+
+
+def schema_without_tables(*names: str) -> str:
+    """Схема прошлой версии: нынешняя без этих таблиц и их индексов."""
+    legacy = SCHEMA
+    for name in names:
+        legacy = re.sub(
+            rf"CREATE TABLE IF NOT EXISTS {name} \(.*?\);",
+            "",
+            legacy,
+            flags=re.DOTALL,
+        )
+        legacy = re.sub(
+            rf"CREATE (UNIQUE )?INDEX IF NOT EXISTS \w+\s+ON {name}\([^)]*\);",
+            "",
+            legacy,
+        )
+    return legacy
+
+
+LADDER_TABLES = ("rating_log", "ladder_weeks", "ladder_places")
+
+
+@pytest.fixture
+async def base_without_the_ladder(tmp_path):
+    """База, собранная до того, как появился недельный рейтинг."""
+    path = str(tmp_path / "old.db")
+    async with aiosqlite.connect(path) as conn:
+        await conn.executescript(schema_without_tables(*LADDER_TABLES))
+        await conn.commit()
+    with sqlite3.connect(path) as conn:
+        names = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    for name in LADDER_TABLES:
+        assert name not in names, f"{name} не убралась из прошлой версии"
+    return path
+
+
+async def test_the_ladder_tables_appear_on_a_live_base(base_without_the_ladder):
+    """Таблицы рейтинга заводятся на базе, которая их не знала.
+
+    Индексов по дописываемым колонкам в них нет — все три таблицы
+    целиком новые, и `CREATE TABLE IF NOT EXISTS` создаёт их со всем
+    своим содержимым разом. Эта проверка держит это: заведись в них
+    когда-нибудь новая колонка с индексом рядом — и живая база встанет.
+    """
+    db = Database(base_without_the_ladder)
+    await db.connect()
+    try:
+        tables = set(await db.game_tables())
+        for name in LADDER_TABLES:
+            assert name in tables, name
+        # И они работают: журнал пишется, рейтинг считается
+        assert await db.log_rating(1, "duel", "key", "win", 25, 1025, 100)
+        assert len(await db.rating_log_of(1)) == 1
+    finally:
+        await db.close()
+
+
+async def test_an_empty_journal_gives_an_empty_week_and_no_payouts(
+    base_without_the_ladder,
+):
+    """На базе без истории боёв рейтинг пуст, а выплат нет.
+
+    Это и есть ограничение первого запуска: журнал заводится пустым, и
+    истории боёв, прошедших до его появления, в нём нет. Выдумывать её
+    мы не станем — в рейтинг попадает только тот, кто проведёт десять
+    боёв после выкатки.
+    """
+    from bot.ladder_service import live_week, settle_due
+
+    db = Database(base_without_the_ladder)
+    await db.connect()
+    try:
+        stats = Stats(strength=12, agility=8, intuition=8, endurance=12)
+        player = Player(
+            user_id=1, nickname="Тайлер", class_code="warrior",
+            level=9, **stats.as_dict(),
+        )
+        player.rating = 1800
+        player.credits = 100
+        await db.save_player(player)
+
+        assert await live_week(db) == []
+        assert await settle_due(db) == []
+        # Рейтинг бойца при этом цел: журнал его не трогает
+        assert (await db.get_player(1)).rating == 1800
+        assert (await db.get_player(1)).credits == 100
+    finally:
+        await db.close()

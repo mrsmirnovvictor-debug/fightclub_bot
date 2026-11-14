@@ -29,6 +29,7 @@ from bot.keyboards import (
     StandoffCB,
     TourCB,
 )
+from bot.game.raid import CELLAR_RAID, kind_at
 from bot.raid_service import RaidError, RaidService
 from bot.tournament_service import TournamentError, TournamentService
 from bot.models import Player, Ring
@@ -433,7 +434,13 @@ async def on_lobby(
 async def cmd_raid(
     message: Message, db: Database, raids: RaidService
 ) -> None:
-    """Собрать рейд на босса. Отряд — все, кто успеет с пропуском."""
+    """Собрать рейд. Отряд — все, кто успеет с пропуском.
+
+    Какой именно рейд, решает место бойца, как и в приложении: стоит на
+    стадионе — собирает стычку с фанатами, в казино или где угодно ещё —
+    спускается в подвал. Отдельного слова в команде для этого не нужно:
+    до рейда в любом случае идти ногами.
+    """
     player = await db.get_player(message.from_user.id)
     if player is None:
         await message.reply(NO_CHARACTER)
@@ -445,6 +452,7 @@ async def cmd_raid(
             message.chat.id,
             thread_id_of(message),
             player,
+            kind_at(player.where()) or CELLAR_RAID,
             chat_title=message.chat.title or "",
         )
     except RaidError as error:

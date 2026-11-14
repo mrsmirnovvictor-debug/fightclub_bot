@@ -123,7 +123,7 @@ def distribution_text(
         )
     if cap:
         lines.append(f"\n<i>При создании в один стат можно вложить не больше {cap}.</i>")
-    lines += ["", "<b>Что получается:</b>", combat_block(fclass, total, level)]
+    lines += ["", "<b>Что получается:</b>", combat_block(fclass, total)]
     if left:
         lines.append("\nЖми «+1», пока очки не кончатся.")
     return "\n".join(lines)

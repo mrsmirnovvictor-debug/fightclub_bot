@@ -1,19 +1,24 @@
-"""Команда владельца: выдача подписки PRO руками.
+"""Команды владельца: выдача подписки руками и обнуление города.
 
 Главное здесь не про подписку, а про дверь: команда, которая раздаёт
 платное даром, не должна отвечать никому, кроме владельца, — и в первую
 очередь тогда, когда владельца забыли назначить.
+
+У обнуления дверь та же, но за ней ещё и фраза: это единственное
+необратимое действие во всём клубе, и случайно его не сделать.
 """
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from bot.config import Config
+from bot.database import Database
 from bot.game.classes import get_class
 from bot.game.health import now_ts
 from bot.game.pro import DAY, LEGACY_LOOK, PRO_DAYS
-from bot.handlers.admin import MAX_GIFT_DAYS, is_owner
+from bot.handlers.admin import MAX_GIFT_DAYS, WIPE_WORD, backup_name, is_owner
 from bot.models import Player
 from tests.harness import DISPATCHER, Client
 
@@ -360,3 +365,187 @@ async def test_the_grant_stays_out_of_the_paid_history(club):
     await owner.send("/givecredits x RED x 500")
 
     assert await db.purchases_of(777) == []
+
+
+async def test_the_owner_grants_the_top_tier_by_its_own_command(club):
+    """`/givepremium` продлевает PREMIUM, а не младшую ступень.
+
+    Команды две, а тело одно: выдача не зависит от ступени ничем, кроме
+    того, какой срок продлевать. Проверяем, что продлевается именно тот.
+    """
+    from bot.game.pro import PREMIUM_BADGE
+
+    db, owner, session = club
+    before = now_ts()
+
+    await owner.send("/givepremium x RED x")
+
+    player = await db.get_player(777)
+    assert player.pro_until == 0, "продлили не ту ступень"
+    assert PRO_DAYS * DAY - 60 <= player.premium_until - before <= (
+        PRO_DAYS * DAY + 60
+    )
+    assert player.is_premium() and player.badge == PREMIUM_BADGE
+    said = session.texts[-1]
+    assert "PREMIUM" in said and "30 дней" in said
+
+
+async def test_the_owner_finds_a_russian_nickname_in_any_case(club):
+    """«/givepro марла» находит Марлу: прозвище — не пароль.
+
+    Родной `lower()` в SQLite складывает только латиницу, и сравнение
+    без учёта регистра на русских никах молча не работало: владелец
+    писал ник строчными и получал «такого бойца нет».
+    """
+    db, owner, session = club
+    await db.save_player(make_player(778, "Марла"))
+
+    for typed in ("Марла", "марла", "МАРЛА"):
+        await owner.send(f"/givepro {typed}")
+        assert "Марла" in session.texts[-1], typed
+        assert (await db.get_player(778)).is_pro(), typed
+
+
+# ---------- обнуление города ----------
+
+
+@pytest.fixture
+def no_restart(monkeypatch):
+    """Перезапуск назначается, но не случается: опроса на стенде нет."""
+    asked = []
+    monkeypatch.setattr(
+        "bot.handlers.admin.schedule_restart", lambda dispatcher: asked.append(1)
+    )
+    return asked
+
+
+async def a_lived_in_city(db) -> None:
+    """Город, в котором успели пожить: бойцы, клан, машина, покупка."""
+    one = make_player(778, "Марла")
+    one.credits = 900
+    await db.save_player(one)
+    await db.create_clan("Коза Ностра", 777, "black_ravens", now_ts())
+    await db.add_purchase(
+        user_id=777, code="pro", stars=250, credits=0,
+        charge_id="ch-test", kind="buy",
+    )
+
+
+async def test_a_stranger_cannot_wipe_the_city(club, no_restart):
+    """Чужому команды не существует — как и всех остальных."""
+    db, _, session = club
+    stranger = Client(db)
+
+    await stranger.send(f"/wipe {WIPE_WORD}")
+
+    assert session.texts == []
+    assert len(await db.all_players()) == 1, "город стёрт посторонним"
+    assert no_restart == []
+
+
+async def test_the_bare_command_only_explains_itself(club, no_restart):
+    """`/wipe` без фразы ничего не стирает, а рассказывает, что сделает."""
+    db, owner, session = club
+    await a_lived_in_city(db)
+    before = len(await db.all_players())
+
+    await owner.send("/wipe")
+
+    said = session.texts[-1]
+    assert WIPE_WORD in said, "фраза не названа — обнулить будет нечем"
+    assert "бойцов" in said and str(before) in said
+    assert len(await db.all_players()) == before, "город стёрт без фразы"
+    assert no_restart == [], "перезапуск назначен впустую"
+
+
+async def test_a_wrong_phrase_wipes_nothing(club, no_restart):
+    """Похожая фраза — не фраза: обнуление делается ровно по слову."""
+    db, owner, session = club
+    await a_lived_in_city(db)
+
+    for typed in ("СТЕРЕТЬ", "стереть все", "СТЕРЕТЬ ВСЕ", "да"):
+        await owner.send(f"/wipe {typed}")
+        assert WIPE_WORD in session.texts[-1], typed
+        assert len(await db.all_players()) == 2, typed
+    assert no_restart == []
+
+
+async def test_the_phrase_is_read_in_any_case_and_spacing(club, no_restart):
+    """Регистр и лишние пробелы фразу не ломают: набирают её руками."""
+    db, owner, session = club
+    await a_lived_in_city(db)
+
+    await owner.send("/wipe   стереть   всё  ")
+
+    assert await db.all_players() == []
+    assert no_restart == [1]
+
+
+async def test_the_owner_wipes_the_whole_city_and_keeps_a_copy(club, no_restart):
+    """Стёрто всё, но перед этим снята копия — и о ней сказано."""
+    db, owner, session = club
+    await a_lived_in_city(db)
+
+    await owner.send(f"/wipe {WIPE_WORD}")
+
+    # Ни бойцов, ни кланов, ни покупок
+    assert await db.all_players() == []
+    for table in await db.game_tables():
+        async with db.conn.execute(f"SELECT COUNT(*) AS n FROM {table}") as cursor:
+            left = int((await cursor.fetchone())["n"])
+        assert left == 0, f"в таблице {table} осталось {left} строк"
+
+    # Копия лежит рядом с базой и не пуста
+    said = session.texts[-1]
+    assert "обнулён" in said.lower()
+    copy = Path(backup_name(db.path))
+    saved = list(copy.parent.glob("test-before-wipe-*.db"))
+    assert len(saved) == 1, f"копии нет: {list(copy.parent.iterdir())}"
+    assert saved[0].stat().st_size > 0
+    assert saved[0].name in said, "в ответе не сказано, куда легла копия"
+
+    # И в копии город ещё цел
+    old = Database(str(saved[0]))
+    await old.connect()
+    try:
+        assert len(await old.all_players()) == 2, "копия снята уже после стирания"
+    finally:
+        await old.close()
+
+    assert no_restart == [1], "перезапуск не назначен"
+
+
+async def test_a_wipe_that_cannot_make_a_copy_wipes_nothing(club, no_restart, monkeypatch):
+    """Копия не снялась — не стираем. Обнуление без копии это потеря."""
+    db, owner, session = club
+    await a_lived_in_city(db)
+
+    async def no_disk(path):
+        raise OSError("на диске нет места")
+
+    monkeypatch.setattr(db, "backup_to", no_disk)
+    await owner.send(f"/wipe {WIPE_WORD}")
+
+    assert len(await db.all_players()) == 2, "город стёрт без копии"
+    assert "ничего не стёрто" in session.texts[-1]
+    assert no_restart == [], "перезапуск назначен после несостоявшегося стирания"
+
+
+async def test_the_city_starts_counting_from_one_again(club, no_restart):
+    """Номера нового сезона начинаются с единицы, а не продолжают прошлый."""
+    db, owner, _ = club
+    first = await db.create_clan("Коза Ностра", 777, "black_ravens", now_ts())
+    assert first.id == 1
+
+    await owner.send(f"/wipe {WIPE_WORD}")
+    again = await db.create_clan("Новая семья", 777, "black_ravens", now_ts())
+
+    assert again.id == 1, f"номера продолжили прошлый сезон: {again.id}"
+
+
+def test_the_copy_lies_next_to_the_base_and_names_its_hour():
+    """Копия ложится рядом с базой: на хостинге диск один."""
+    name = backup_name("/data/fightclub.db", now=1_767_225_600)
+    assert name.startswith("/data/fightclub-before-wipe-")
+    assert name.endswith(".db")
+    assert "/data/" in name and name.count("/data/") == 1

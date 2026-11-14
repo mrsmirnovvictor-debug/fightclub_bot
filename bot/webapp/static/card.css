@@ -15,6 +15,13 @@
   --dmg: #1a63c4;
   --dmg-crit: #cc2f22;
   --gold: #b8860b;
+  /* Фон рамки бойца. Не из темы: машины сняты в студии на ровном сером,
+     и рамка обязана быть того же серого — иначе полоса машины висит
+     заплаткой на фоне другого цвета. Цвет снят с самих фотографий, и по
+     той же причине он один на светлую и тёмную тему: картинка от темы
+     не меняется. Тот же серый запечён и в картинках вещей, так что
+     рамка бойца стоит на одном фоне со слотами вокруг неё */
+  --avatar-bg: #5c6065;
 }
 
 /* Telegram обычно сам подставляет цвета темы; тут — тёмные запасные,
@@ -82,19 +89,95 @@ body {
 
 .hidden { display: none !important; }
 
-.loader, .error {
+.error {
   padding: 48px 16px;
   text-align: center;
   color: var(--muted);
+}
+
+/* ---------- экран загрузки ----------
+
+   Картина во весь экран, а внизу колесо и строка — в том месте, которое
+   под них на картине и оставлено. Показываем картину целиком
+   (`contain`), а не по ширине: её низ — часть замысла, и обрезать его
+   значит обрезать как раз то место, куда встаёт строка.
+
+   Фон тёмный и не из темы: картина нарисована на чёрном, и светлая
+   подложка по краям резала бы глаз. Строка внизу лежит на затемнении —
+   так она читается и когда картина не доехала вовсе. */
+/* Заставка уходит угасанием, а не щелчком. Окно награды за вход
+   появляется сразу за ней, и рывок на этом месте читается как сбой
+   вёрстки. Длительность ставит страница: проверкам ждать эти доли
+   секунды пятьсот раз незачем (`LOADER_FADE` в card.js) */
+.loader {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: #0b0d10;
+  opacity: 1;
+  transition: opacity 320ms ease;
+}
+.loader.gone { opacity: 0; pointer-events: none; }
+/* Картину прижимаем к низу, а не к верху: место под строку оставлено на
+   ней самой, внизу, и оно обязано лечь туда же, где строка и стоит.
+   Прижать к верху — и это место уехало бы на середину экрана, а строка
+   осталась бы на пустом чёрном */
+.loader-pic {
+  position: absolute;
+  inset: 0;
+  background-position: center bottom;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+.loader-foot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 24px 24px calc(32px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  background: linear-gradient(
+    to bottom, rgba(11, 13, 16, 0), rgba(11, 13, 16, 0.85) 45%
+  );
+}
+.loader-text {
+  color: #e8dfce;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+.loader-spin {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid rgba(232, 223, 206, 0.22);
+  border-top-color: #e2641f;
+  animation: loader-turn 0.9s linear infinite;
+}
+@keyframes loader-turn {
+  to { transform: rotate(360deg); }
+}
+/* Колесо крутится ради ожидания, а не ради красоты: кому движение
+   мешает, тот его выключил в системе, и спорить с этим нечем */
+@media (prefers-reduced-motion: reduce) {
+  .loader-spin { animation-duration: 3s; }
 }
 .error-emoji { font-size: 40px; margin-bottom: 12px; }
 .error-text { color: var(--ink); }
 
 .screen { max-width: 760px; margin: 0 auto; }
 
+/* Шапка карточки: значок класса, знак клана, ник, премиум и уровень.
+   Выравниваем по середине, а не по общей черте строки: у картинки знака
+   нижний край и есть её черта, и по ней она вставала заметно выше
+   эмодзи, которые свисают под черту. Середина ставит всех в одну линию */
 .head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 7px;
   margin-bottom: 8px;
 }
@@ -170,10 +253,28 @@ body {
   gap: 9px;
   align-items: stretch;
 }
-.slots { display: grid; gap: 9px; align-content: start; }
+/* Колонка слотов — ровно одна дорожка, и шире своей клетки она не
+   становится. `minmax(0, 1fr)` здесь не для красоты: у широкой клетки
+   ожерелья высота задана содержимым, а `aspect-ratio` пересчитывает её в
+   минимальную ширину втрое больше — и колонка молча расползалась на
+   треть, съедая аватар. */
+.slots {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 9px;
+  align-content: start;
+}
 .slot {
   position: relative;
+  min-width: 0;
   aspect-ratio: 1;
+  /* Картинка не должна раздвигать клетку. Высота у клетки выведена из
+     ширины (`aspect-ratio`), а процентная высота картинки от такой
+     высоты не считается — значит, картинка меряется сама собой, и
+     недоехавшая раздвигает клетку своим значком с подписью. Узкую
+     полосу ожерелья это растягивало почти в квадрат: в лавке цепь, на
+     бойце квадрат. `overflow` эту власть у картинки отбирает */
+  overflow: hidden;
   border: 1px solid var(--slot-line);
   border-radius: 5px;
   background: var(--slot);
@@ -184,6 +285,26 @@ body {
   cursor: pointer;
   user-select: none;
 }
+/* Ожерелье висит под головой, и клетка у него по форме самой цепи:
+   втрое шире своей высоты. Кольца, наоборот, втрое у́же — трое их в ряд
+   занимают ровно ту же ширину, что одна квадратная клетка над ними.
+   Так колонка остаётся колонкой: ни одна клетка из неё не вылезает. */
+.slot.wide { aspect-ratio: 3 / 1; }
+.slot-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+}
+.slot.ring { border-radius: 4px; }
+/* Значок-заглушка в узкой клетке держит её высоту снизу: строка в 22
+   пикселя не даёт полосе ожерелья стать той полосой, какой она задумана,
+   а колечко из квадратного делает стоячим. Поэтому у этих двух форм свой
+   значок — мелкий и в одну строку ровно. */
+.slot.wide.empty, .slot.ring.empty { font-size: 12px; line-height: 1; }
+.slot.ring img { border-radius: 3px; }
+/* Метка износа на колечке в полный рост не влезает — ужимаем вместе с
+   клеткой, иначе она закрывает собой само кольцо */
+.slot.ring .slot-wear { font-size: 8px; right: -1px; bottom: -1px; }
 .slot img { width: 100%; height: 100%; object-fit: cover; border-radius: 4px; }
 /* У пустого слота своя подложка — тень того, что сюда надевается.
    Гасим слот только когда она не загрузилась и остался значок. */
@@ -225,14 +346,22 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   min-height: 280px;
   border: 1px solid var(--slot-line);
   border-radius: 6px;
-  background: var(--slot);
+  background: var(--avatar-bg);
   display: flex;
+  /* По центру — это про значок на месте не доехавшего образа. Самого
+     бойца к низу прижимает `object-position` ниже: картинка занимает
+     рамку целиком, и выравнивать её коробку бессмысленно */
   align-items: center;
   justify-content: center;
   overflow: hidden;
 }
-.avatar img { width: 100%; height: 100%; object-fit: cover; }
-.avatar .emoji { font-size: 104px; line-height: 1; }
+/* `contain`, а не `cover`: образ вырезан по фигуре и лежит на прозрачном
+   фоне, и обрезать его рамкой значило бы отрезать бойцу ноги или голову.
+   Пустое место по бокам — это фон рамки, и он тут нарочно */
+.avatar img { width: 100%; height: 100%; object-fit: contain; }
+/* Значок вместо образа: та же третья полка, что и у картинки, — иначе
+   не доехавший образ ушёл бы под машину */
+.avatar .emoji { font-size: 104px; line-height: 1; position: relative; z-index: 2; }
 .avatar.clickable { cursor: pointer; position: relative; }
 .avatar.clickable::after {
   content: "сменить образ";
@@ -248,6 +377,382 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   background: rgba(0, 0, 0, 0.45);
 }
 .avatar.clickable:active { transform: scale(0.99); }
+/* Рамка бойца стоит в три слоя, снизу вверх:
+     1. фон рамки — он же фон образа, потому что образ прозрачный;
+     2. машина, если боец за рулём, — полосой 16:9 по верхнему краю;
+     3. сам боец — поверх машины, так что она оказывается за фигурой.
+   Машина не слот: слоты стоят по бокам, и места среди них ей нет. А
+   верхний край — это задний план, и машина за спиной бойца читается
+   как машина, на которой он приехал, а не как подставка под ногами */
+.avatar { position: relative; }
+/* Селектор с запасом: `.avatar img` рядом задаёт образу высоту во всю
+   рамку, и по весу он перебил бы одиночный класс — машина растянулась бы
+   на весь образ вместо полосы по краю */
+.avatar img.avatar-car {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: auto;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  /* Линии по низу машины нет нарочно: под аватар идёт вырезанная
+     машина, у неё своего фона нет вовсе, и отчерчивать нечего */
+  /* Второй слой: над фоном, но под бойцом */
+  z-index: 1;
+}
+/* Третий слой. `position` обязателен — без него `z-index` не считается,
+   и боец ушёл бы под машину. `object-position: bottom` ставит фигуру на
+   нижний край рамки: свободная высота уходит наверх, где и стоит
+   машина, — то есть ровно туда, где она не мешает */
+.avatar img:not(.avatar-car) {
+  position: relative;
+  z-index: 2;
+  object-position: bottom;
+  /* Зума здесь нет нарочно, и это не недосмотр.
+
+     Вокруг фигуры в файле осталось пустое поле, и боец от этого мельче
+     рамки. Зум его съедал — но вместе с полем начинал резать и самого
+     бойца: `contain` вписывает канву по той её стороне, что упирается
+     первой, а какая это сторона, зависит от пропорции рамки. Рамка же
+     у каждого экрана своя: на узкой (0.57) зум срезал только пустоту,
+     на широкой (0.69) — уже руки. Одного числа, верного на всех
+     экранах, тут нет и быть не может.
+
+     Поэтому образ вписывается целиком и за рамку не выходит никогда.
+     Расти ему в размере — за счёт файла: вырезанный впритык по фигуре
+     займёт рамку сам, без единой строки здесь. */
+}
+/* Подпись «сменить образ» остаётся внизу: машина уехала наверх, и
+   спорить им за одну полосу больше не о чем */
+.avatar.clickable::after { z-index: 3; }
+
+/* Машина на полке: картинка широкая, и держать её в квадрате нельзя —
+   16:9 в 104 пикселя превращает седан в полоску. Поэтому у машины своя
+   карточка: картинка сверху во всю ширину, под ней имя и цены */
+.car {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.car.driving { border-color: var(--hp-green); }
+.car-pic {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--slot-line);
+  border-radius: 6px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 46px;
+  overflow: hidden;
+}
+.car-pic img { width: 100%; height: 100%; object-fit: cover; }
+.car-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+.car-title { font-weight: 700; }
+/* Скорость — единственное свойство машины, и по ней их выбирают:
+   стоит у имени и зелёным, как всякая прибавка */
+.car-times {
+  color: var(--hp-green);
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* Заряд машины: число у имени, запас — полоской под ним. Полоска нужна
+   рядом с числом, а не вместо: «12%» читается точнее, чем короткий
+   огрызок, а огрызок виден быстрее, чем число */
+.charge-bar {
+  margin-top: 8px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--slot);
+  border: 1px solid var(--slot-line);
+  overflow: hidden;
+}
+.charge-fill {
+  height: 100%;
+  background: var(--hp-yellow);
+  transition: width 0.3s;
+}
+.charge-fill.high { background: var(--hp-green); }
+.charge-fill.low { background: var(--hp-red); }
+
+/* АЗС: три колонки в один ряд — станция и выглядит так. Ряд не
+   рассыпается на узком экране: колонки сжимаются вместе с ним, потому
+   что их всегда три и переносить одну вниз было бы ложью о станции */
+.charge-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 4px 0 16px;
+}
+/* Колонка целиком — кнопка: в ряду из трёх отдельной кнопке под каждой
+   места нет, а нажатие у колонки одно и очевидное */
+.charge-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: inherit;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+.charge-slot.mine { border-color: var(--hp-green); }
+.charge-slot.ready { box-shadow: inset 0 0 0 1px var(--hp-green); }
+.charge-pic {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  border: 1px solid var(--slot-line);
+  border-radius: 6px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  overflow: hidden;
+}
+.charge-pic img { width: 100%; height: 100%; object-fit: cover; }
+/* Машина встаёт под колонкой, а не вместо неё: так и видно, что
+   заряжают именно её */
+.charge-car {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--slot-line);
+  border-radius: 6px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  overflow: hidden;
+}
+.charge-car img { width: 100%; height: 100%; object-fit: cover; }
+/* Пока наливается — машина дышит зелёным, как шкала здоровья в бою.
+   Дозарядилась — успокаивается: мигающая машина, которую можно
+   забирать, торопила бы зря */
+.charge-car.filling { animation: charging 1.6s ease-in-out infinite; }
+@keyframes charging {
+  0%, 100% { box-shadow: inset 0 0 0 1px var(--slot-line); }
+  50% { box-shadow: inset 0 0 0 2px var(--hp-green); }
+}
+.charge-spark {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  font-size: 12px;
+  line-height: 1;
+}
+.charge-car.filling .charge-spark {
+  animation: spark 1.6s ease-in-out infinite;
+}
+@keyframes spark {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+.charge-clock {
+  font-weight: 700;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--hp-green);
+}
+.charge-slot.free .charge-clock { color: var(--muted); font-weight: 600; }
+.charge-who {
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Окно выбора машины: картинки по две в ряд */
+.charge-cars {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.charge-car-tile {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.charge-car-pic {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--slot-line);
+  border-radius: 6px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  overflow: hidden;
+}
+.charge-car-pic img { width: 100%; height: 100%; object-fit: cover; }
+.charge-car-title { font-weight: 700; font-size: 12.5px; }
+.charge-car-tag { font-size: 11px; color: var(--muted); }
+
+/* Три мерки квадратами в один ряд: выбрали — обвелась, под ними две
+   кнопки */
+.charge-steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.charge-step {
+  display: grid;
+  gap: 2px;
+  align-content: center;
+  aspect-ratio: 1 / 1;
+  padding: 6px 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: inherit;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+.charge-step.picked { border-color: var(--accent); background: var(--slot); }
+.charge-step.poor { opacity: 0.5; }
+.charge-step-head { font-weight: 700; font-size: 15px; }
+.charge-step-price { font-size: 12px; color: var(--accent); }
+.charge-step-time { font-size: 11px; color: var(--muted); }
+.charge-step-waste { font-size: 10px; color: var(--hp-yellow); }
+
+/* Полоска набранного в школе: своя, а не заряда машины. Заряд говорит,
+   сколько осталось, а эта — сколько пройдено, и красный на её начале
+   значил бы беду там, где просто начало пути */
+.deed-bar {
+  margin-top: 8px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--slot);
+  border: 1px solid var(--slot-line);
+  overflow: hidden;
+}
+.deed-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s;
+}
+
+/* Рассказ о рейде: во всю ширину под заголовком раздела. Это первое,
+   что боец читает о рейде, и читает он его один раз — поэтому строка
+   обычная, а не мелкая подпись */
+/* Вкладки школы стоят по центру: их две, и прижатые к краю они
+   читаются как начало списка, который не поместился */
+#dojo-tabs { justify-content: center; }
+
+/* Каталог обучения — строки, а не карточки: приёмов шестнадцать, и
+   выбирают в них по описанию, а не по картинке */
+.dojo-line {
+  display: grid;
+  grid-template-columns: 44px 1fr 36px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+.dojo-line-pic {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  background: var(--slot);
+  border: 1px solid var(--slot-line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  overflow: hidden;
+}
+.dojo-line-pic img { width: 100%; height: 100%; object-fit: cover; }
+.dojo-line-body { min-width: 0; }
+.dojo-line-title { font-weight: 700; font-size: 13px; }
+.dojo-line-cost {
+  margin-left: 6px;
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.dojo-line-note {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 2px;
+  line-height: 1.3;
+}
+.dojo-line-deed {
+  font-size: 11.5px;
+  font-weight: 700;
+  margin-top: 3px;
+}
+/* Кнопка «плюс»: круглая и большая на палец — из неё начинается учёба */
+.dojo-plus {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* Набранный приём обведён: он ждёт одного нажатия */
+.dojo-ready { border: 1px solid var(--hp-green); border-radius: 12px; padding: 10px; }
+/* Сколько набрано — числом под шкалой: «Точных ударов 120/500» */
+.dojo-count {
+  margin-top: 6px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Окно подтверждения: что уйдёт и что придёт, картинками рядом */
+.dojo-swap {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 8px;
+  align-items: center;
+}
+.dojo-swap-side { display: grid; gap: 4px; text-align: center; }
+.dojo-swap-side .skill-pic { width: 100%; }
+.dojo-swap-tag { font-size: 11px; color: var(--muted); }
+.dojo-swap-title { font-weight: 700; font-size: 12.5px; }
+.dojo-swap-arrow { font-size: 20px; color: var(--muted); }
+
+.keys { margin: 4px 0 18px; }
 
 .city {
   margin: 12px 0 16px;
@@ -504,6 +1009,70 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   margin-top: 4px;
 }
 
+/* Выбор клетки под кольцо: три клетки в ряд, под каждой — что в ней
+   лежит. Клетка здесь крупнее, чем в кукле: там она у́же вдвое, потому
+   что стоит в ряду с другими, а здесь по ней надо попасть пальцем */
+.ring-pick {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 4px;
+}
+.ring-cell {
+  display: grid;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: center;
+}
+.ring-cell .slot { aspect-ratio: 1; border-radius: 6px; }
+.ring-cell-name {
+  font-size: 12px;
+  line-height: 1.25;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+/* Занятая клетка подписана своим кольцом, и подпись у неё не блёклая:
+   это не подсказка, а то, что игрок сейчас сменит */
+.ring-cell.busy .ring-cell-name { color: var(--ink); font-weight: 600; }
+.ring-cell:active .slot { transform: scale(0.95); }
+
+/* ---------- экзамен в автошколе ---------- */
+/* Билет — это картинка и четыре строки под ней. Картинку показываем
+   целиком: на ней знаки и разметка, и срезанный край делает вопрос
+   нечестным. Поэтому `contain`, а не `cover`, и высота по месту */
+.exam {
+  display: grid;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+.exam-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 13px;
+  color: var(--muted);
+}
+.exam-clock { font-weight: 700; font-variant-numeric: tabular-nums; }
+.exam-wrong { font-size: 12.5px; color: var(--muted); }
+/* Ошибка на счету одна, и видно её должно быть сразу: вторая кончает
+   экзамен, и прятать первую в подпись цвета «как всё» нечестно */
+.exam-wrong.on { color: var(--hp-yellow); font-weight: 700; }
+.exam-pic {
+  width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: var(--slot);
+}
+
 /* ---------- инвентарь ---------- */
 
 .bag { margin-top: 16px; }
@@ -539,6 +1108,40 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   overflow: hidden;
 }
 .thing-pic img { width: 100%; height: 100%; object-fit: cover; }
+/* Ожерелье и в лавке лежит полосой: клетка под него втрое шире своей
+   высоты — ровно как в кукле. В квадрате цепь срезало с боков, и товар
+   на прилавке было не разглядеть. Значок-заглушка в такой полосе тоже
+   мельче: сорок шесть пикселей в тридцать пять не влезают */
+.thing-pic.wide {
+  height: auto;
+  aspect-ratio: 3 / 1;
+  align-self: center;
+  font-size: 22px;
+}
+/* Пропуск — билет: 1200 на 600, прозрачный фон, название рейда и
+   отрывная часть. В колонку под картинку он не влезает — она 104
+   точки и жёсткая, — и, растянутый до своей ширины, наползал на
+   текст. Поэтому у билета своя раскладка: половина карточки под
+   картинку, половина под текст. На всю ширину билет занимал пол-экрана
+   ради одной строки описания, а описание уезжало под него.
+
+   Рамки и заливки у клетки нет: за прозрачным фоном билета виднелась
+   бы серая плитка, и корешок переставал быть корешком */
+.thing.ticket { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.thing.ticket .thing-pic {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 2 / 1;
+  align-self: start;
+  border-color: transparent;
+  background: transparent;
+}
+.thing.ticket .thing-pic img { object-fit: contain; }
+/* Половина карточки — место узкое, и мелочи билета в нём жмутся */
+.thing.ticket .thing-title { font-size: 14px; }
+.thing.ticket .thing-kind,
+.thing.ticket .thing-wear,
+.thing.ticket .thing-note { font-size: 11.5px; }
 .thing-body { min-width: 0; }
 .thing-title { font-weight: 700; }
 .thing-kind { color: var(--muted); font-size: 12.5px; margin-top: 1px; }
@@ -572,6 +1175,10 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
    видеть, какая его часть пришла с модификацией */
 .thing-gain .gain-plus { color: var(--hp-green); font-weight: 700; }
 .thing-label { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
+/* Строка комплекта. Пока набор не собран, она серая, как подсказка; с
+   первой ступени — зелёная: это уже не совет, а прибавка в бою */
+.thing-kit { color: var(--muted); font-size: 12.5px; margin-top: 6px; line-height: 1.35; }
+.thing-kit.strong { color: var(--hp-green); font-weight: 600; }
 
 .thing-buttons {
   display: flex;
@@ -684,7 +1291,6 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   .foot { grid-area: foot; }
 }
 
-
 /* ---------- выдвижной лист: выбор образа ---------- */
 
 .sheet { position: fixed; inset: 0; z-index: 20; }
@@ -780,7 +1386,6 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .look-tag.on { color: var(--accent); font-weight: 700; }
 .look-tag.poor { color: var(--hp-red); }
 
-
 /* ---------- общая шапка экрана ---------- */
 
 .screen-head {
@@ -805,6 +1410,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
      картинка смотрелась бы вклеенной карточкой, а не видом из дверей */
   margin: -14px -14px 12px;
   overflow: hidden;
+  /* Жители дома стоят поверх вида, и считаются они от него */
+  position: relative;
   border-bottom: 1px solid var(--line);
   /* Пока картинка не доехала, на её месте стоит подложка карточки, а не
      дыра в цвет фона */
@@ -852,6 +1459,1196 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   white-space: nowrap;
 }
 .fighter-level { color: var(--muted); font-weight: 700; font-size: 13px; }
+
+/* ---------- рейтинг игроков ----------
+
+   Строка доски почёта: место слева, ELO справа, между ними всё то же,
+   что и в любом списке бойцов. Место и ELO — числа, и ширина у них
+   своя: без неё ники прыгали бы влево-вправо от строки к строке, и
+   список переставал бы читаться столбцом */
+.fighter-place {
+  flex: 0 0 auto;
+  min-width: 22px;
+  color: var(--muted);
+  font-weight: 800;
+  font-size: 13px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* Свою строку видно и по рамке, но место в ней — то, ради чего рейтинг
+   и открывают: его красим */
+.fighter.me .fighter-place { color: var(--accent); }
+.fighter-elo {
+  flex: 0 0 auto;
+  min-width: 38px;
+  color: var(--gold);
+  font-weight: 800;
+  font-size: 13px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Стрелки под рейтингом. Крайние гасим, а не прячем: кнопка,
+   исчезающая под пальцем, уводит нажатие на соседнюю */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 10px 0 4px;
+}
+.pager-step {
+  min-width: 44px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.pager-step:disabled { opacity: 0.35; cursor: default; }
+.pager-step:not(:disabled):active { transform: scale(0.96); }
+.pager-where {
+  font-size: 12.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- отбор и порядок над списком игроков ----------
+
+   Порядок пузырями, уровень выпадающим списком. Пузыри — потому что
+   порядков два и видны оба сразу; список — потому что уровней десятки,
+   и двадцать пузырей заняли бы весь экран. */
+.sift {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.sift .bubbles { flex: 1 1 auto; margin: 0; }
+.sift-level {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.sift-label { font-size: 12.5px; color: var(--muted); }
+/* Поле уровня узкое: в нём одно-два числа, и во всю ширину оно
+   выглядело бы незаполненным */
+.sift-level .field-input { width: auto; min-width: 72px; padding: 5px 8px; }
+
+/* ---------- рейтинг недели ----------
+
+   Строка та же, что в списке клуба, плюс два числа справа: боёв за
+   неделю и награда за место. Ширина у них своя — иначе ники прыгали бы
+   от строки к строке. */
+.ladder-fights {
+  flex: 0 0 auto;
+  min-width: 34px;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.ladder-prize {
+  flex: 0 0 auto;
+  min-width: 34px;
+  /* Зелёный шкалы здоровья: деньги, которые придут. Золото тут уже
+     занято — им покрашено ELO в той же строке, и две золотые цифры
+     рядом читались бы одним числом */
+  color: var(--hp-green);
+  font-weight: 800;
+  font-size: 12.5px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* Ниже пятидесятого места не платят. Прочерк, а не ноль: ноль читается
+   как «посчитали и вышло нисколько», а здесь не платят вовсе */
+.ladder-prize.ladder-none { color: var(--muted); font-weight: 700; }
+
+/* Своя строка над списком: место и награда или прогресс до порога.
+   Отдельной плашкой, а не в общем списке: своё место ищут глазами, и
+   на второй странице его в списке не видно вовсе */
+.ladder-mine {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 7px 10px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.ladder-left { color: var(--muted); font-weight: 700; font-size: 12px; }
+
+/* Что пришло за прошлую неделю. Награда начисляется сама, и без этой
+   строки лишние кредиты в кармане остались бы без объяснения */
+.ladder-paid {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--gold);
+  border-radius: 8px;
+  padding: 7px 10px;
+  margin-bottom: 8px;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+/* Оборванная загрузка: записка и кнопка «ещё раз». Пустой рейтинг
+   выглядел бы так же, если не сказать словами, что случилось */
+.ladder-oops {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+/* Призовая таблица — под складкой: её смотрят один раз, а место в
+   рейтинге читают каждый день */
+.ladder-prizes { margin-top: 12px; }
+.ladder-prizes summary {
+  font-size: 12.5px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+/* ---------- поиск бойца в статистике ----------
+
+   Поле и «Моя статистика» в строку. Кнопка появляется только когда
+   смотрят чужое: у себя возвращаться некуда */
+.seek { display: flex; gap: 8px; align-items: stretch; margin-bottom: 8px; }
+.seek .field-input { flex: 1 1 140px; min-width: 0; }
+.seek .btn { flex: 0 0 auto; min-width: 0; }
+.seek-found { margin-bottom: 10px; }
+/* Найденная строка — кнопка целиком, кроме значка ℹ️ внутри неё */
+.seek-row { cursor: pointer; }
+.seek-row:active { transform: scale(0.99); }
+.seek-empty { margin: 0; font-size: 12.5px; color: var(--muted); }
+
+/* ---------- знак клана ---------- */
+/* Знак один, и место ему между классом и ником — так строка читается
+   слева направо: кто по классу, чей по семье, как зовут. */
+.clan-sign {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: 4px;
+  object-fit: cover;
+  /* Знак рисует игрок, и прозрачный png на тёмной теме пропал бы:
+     подложка держит его видимым на любом фоне */
+  background: var(--slot);
+}
+.clan-sign.big { width: 28px; height: 28px; border-radius: 6px; }
+.head-clan { display: inline-flex; align-items: center; gap: 5px; }
+/* В шапке карточки знак стоит между значком класса и ником с премиумом,
+   а те рисуются глифами в 17–19 пикселей и занимают около двадцати.
+   Картинка в восемнадцать выглядела рядом с ними мельче всех — в
+   списках, где строка меньше, она на месте, а здесь ей нужен тот же рост */
+.head-clan .clan-sign { width: 20px; height: 20px; border-radius: 5px; }
+/* Значок службы носит ту же одежду, что знак клана, но не квадратный:
+   знаки семей рисуют в рамке, значки служб — жетоном */
+.service-badge { border-radius: 50%; object-fit: contain; }
+
+/* Строка участника клана: кнопки старших уезжают вправо и переносятся
+   под строку, когда их много, — иначе ник сжимается в точку */
+.clan-row { flex-wrap: wrap; }
+.clan-tools { display: flex; gap: 6px; flex: 1 0 100%; }
+.clan-tools .btn { flex: 1 1 auto; padding: 6px 10px; font-size: 13px; }
+
+/* Строка клана в списке особняка: знак, имя и размер слева, значки дел
+   справа. Сама строка — кнопка: по ней клан и открывается, а значки
+   стоят рядом, чтобы нажатие на «выйти» не открывало семью заодно */
+.clan-item {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.clan-item.me { border-color: var(--accent); }
+.clan-open {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.clan-item-pic {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  border-radius: 6px;
+  background: var(--slot);
+}
+.clan-item-pic img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 6px;
+}
+.clan-item-text { display: grid; gap: 2px; min-width: 0; }
+.clan-item-name {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.clan-item-size { color: var(--muted); font-size: 12.5px; }
+/* Значки дел: по одному на дело, и каждый со своей подписью */
+.clan-acts { display: flex; align-items: center; gap: 6px; padding-right: 8px; }
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 6px;
+  border: 1px solid var(--slot-line);
+  border-radius: 8px;
+  background: var(--slot);
+  color: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.icon-btn:active { transform: scale(0.95); }
+.icon-btn.off { opacity: 0.45; }
+
+/* Решётка знаков: выбирают один, и занятые видно сразу — они тусклые и
+   не нажимаются. Пять в ряд на телефоне: знаков семнадцать, и списком в
+   столбик они заняли бы весь экран */
+.sign-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.sign {
+  padding: 4px;
+  border: 1px solid var(--slot-line);
+  border-radius: 8px;
+  background: var(--slot);
+  cursor: pointer;
+}
+.sign img { width: 100%; aspect-ratio: 1; object-fit: contain; display: block; }
+.sign.picked { border-color: var(--accent); border-width: 2px; padding: 3px; }
+/* Занятый знак остаётся на виду: по нему и понятно, что семья с таким
+   уже есть, — но взять его нельзя */
+.sign.taken { opacity: 0.35; cursor: default; }
+
+/* Имя своей семьи в карточке, под местоположением: это вход в состав,
+   поэтому строка выглядит кнопкой — знак, имя, чин */
+/* Семья и служба — строкой, а не плашкой. Рамка вокруг двух слов
+   превращала подпись в кнопку размером с блок, хотя это всего лишь
+   имя клана и должность: читается как строка, ведёт как ссылка */
+.clan-line {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  margin: -6px 0 12px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+/* Подпись службы — та же строка, что у семьи, но не кнопка */
+.duty-line { cursor: default; }
+.clan-line-name { font-weight: 700; color: var(--accent); }
+.duty-line .clan-line-name { color: inherit; }
+.clan-line-rank { color: var(--muted); font-size: 12.5px; }
+
+/* Шапка вкладки «Состав»: знак слева, имя и размер семьи справа */
+.clan-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.clan-head-text { min-width: 0; }
+.clan-head-name { font-weight: 700; font-size: 15px; }
+
+/* Сейф: остаток одним числом — его видит вся семья */
+.vault-sum {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  margin: 2px 0 6px;
+}
+
+/* Хранилище: двенадцать полок, и пустые тоже видно — по ним и понятно,
+   сколько места осталось. Клетка та же, что у знаков: квадрат с рамкой */
+.shelf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.shelf-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  padding: 4px;
+  border: 1px solid var(--slot-line);
+  border-radius: 8px;
+  background: var(--slot);
+  color: inherit;
+  font-size: 22px;
+  cursor: pointer;
+}
+.shelf-slot img { width: 100%; height: 100%; object-fit: contain; }
+.shelf-slot.free { color: var(--muted); border-style: dashed; }
+.shelf-slot.tier { border-color: var(--accent); }
+
+/* ---------- жилой дом ---------- */
+
+/* Что сдают: комнатность слева, свободные места и цена справа. Строка в
+   три колонки, и на узком экране они не рвутся — цена короткая */
+.offer-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 2px;
+  font-size: 13.5px;
+}
+.offer-title { flex: 1 1 auto; min-width: 0; }
+.offer-free { color: var(--muted); font-size: 12.5px; flex: none; }
+.offer-price { font-weight: 700; flex: none; }
+
+/* Квартира в подъезде — строка, а не карточка: номер, комнатность и
+   одна кнопка справа. Шестнадцать карточек на дом читались бы простынёй */
+.flat-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  margin-bottom: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.flat-row.me { border-color: var(--accent); }
+.flat-no { font-weight: 700; flex: none; }
+.flat-kind {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.flat-row .btn { flex: none; padding: 6px 12px; font-size: 13px; }
+.flat-tenant { color: var(--muted); font-size: 12.5px; flex: none; }
+
+/* Срок аренды: пока оплачена — обычная строка, кончилась — тревожная */
+.lease-term { margin: 4px 0 8px; font-weight: 700; font-size: 13.5px; }
+.lease-term.late { color: var(--hp-red); }
+
+/* ---------- житель дома: бармен на картинке ---------- */
+
+/* Картинку рисуют с прозрачным фоном, и она ложится поверх вида изнутри
+   правее середины — там, где в баре и стоит стойка. Сам он кнопка: с него
+   начинается разговор, и нажимать «поговорить» где-то внизу, глядя на
+   нарисованного человека, было бы странно */
+.npc {
+  position: absolute;
+  /* Правее середины, но не в самом углу: считаем от центра самого
+     бармена, а не от его края, — тогда место не поедет от того, какой
+     ширины вышла картинка */
+  left: 64%;
+  transform: translateX(-50%);
+  bottom: 0;
+  height: 86%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  /* Над картинкой — только значок дела, и ему нужен свой слой */
+  display: flex;
+  align-items: flex-end;
+}
+.npc-pic {
+  height: 100%;
+  width: auto;
+  display: block;
+  /* Тень под ногами: без неё он висит в воздухе поверх картинки */
+  filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.45));
+}
+.npc:active .npc-pic { transform: scale(0.98); }
+/* Значок дела: «!» — есть работа, часы — ждёт, галочка — принимает */
+.npc-mark {
+  position: absolute;
+  top: 4%;
+  right: 0;
+  min-width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* ---------- разговор ---------- */
+
+/* Реплика стоит карточкой, ответы — кнопками под ней: разговор читается
+   сверху вниз, как он и идёт */
+.talk {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 12px;
+  margin-bottom: 14px;
+}
+.talk-who { color: var(--muted); font-size: 12.5px; margin-bottom: 6px; }
+.talk-text { margin: 0; white-space: pre-line; line-height: 1.45; }
+.talk-step { margin: 8px 0 0; color: var(--muted); font-size: 12.5px; }
+.talk-prize {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--slot);
+  font-size: 13px;
+}
+.talk-replies { display: grid; gap: 8px; margin-top: 12px; }
+
+/* ---------- выборы мэра ---------- */
+
+/* Плашка в правом нижнем углу: идут выборы и сколько ещё идти. Висит
+   поверх любого экрана — голосование не ждёт, пока на него посмотрят.
+   Отдавшему голос она зелёная: ему торопиться уже некуда */
+/* Плашка выборов: левый нижний угол, поверх любого экрана. Пять секунд
+   видна целиком, дальше сворачивается в кружок — голосование не ждёт,
+   пока на него посмотрят, но и закрывать собой экран ему незачем */
+.vote-chip {
+  position: fixed;
+  left: 12px;
+  bottom: calc(84px + env(safe-area-inset-bottom));
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  /* Серый — не голосовал, зелёный — голос отдан */
+  background: #5b636d;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  transition: width 0.18s ease, padding 0.18s ease;
+}
+.vote-chip.done { background: #2ea043; }
+.vote-chip.mini {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  font-size: 20px;
+}
+
+/* Бюллетень: строки с кружками, выбранная подсвечена */
+.ballot-list { display: grid; gap: 6px; margin: 10px 0; }
+.ballot-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--slot);
+  border: 1px solid var(--line);
+  font-size: 14px;
+}
+.ballot-row.on { border-color: var(--accent); }
+.ballot-row.picked { border-color: #2ea043; font-weight: 700; }
+
+/* Кандидат на экране администрации: имя, голоса и программа под ними */
+.candidate {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.candidate.picked { border-color: #2ea043; }
+.candidate.mine { border-color: var(--accent); }
+.candidate-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.candidate-name { font-weight: 700; font-size: 14px; }
+.candidate-votes { font-weight: 800; white-space: nowrap; }
+.candidate-program {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+}
+
+/* Поле программы: простыню сюда не пишут, но абзац должен помещаться */
+.program {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--slot);
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  resize: vertical;
+}
+
+/* ---------- участок: дежурная часть и дела ---------- */
+
+/* Карточка дела: кто кого и на сколько, под ней состояние строкой.
+   Закрытое дело приглушено — по нему уже ничего не сделать */
+.case {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.case.closed { opacity: 0.62; }
+
+/* Место на службе: та же рамка, что у дела, но вещь другая — и класс
+   другой. Общий однажды уже перепутал одно с другим */
+.duty {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.duty.mine { border-color: var(--accent); }
+.case.wanted { border-color: #b02020; }
+.case-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.case-who { font-weight: 700; font-size: 14px; }
+.case-sum { font-weight: 800; white-space: nowrap; }
+.case-note { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
+
+/* ---------- кто здесь: соседи по дому и ограбления ---------- */
+
+/* Значок в углу карты: сколько народу в доме и идёт ли в нём драка.
+   Красный — дерутся: это и есть то, ради чего на него смотрят */
+.crowd-chip {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.crowd-chip.hot { background: rgba(176, 32, 32, 0.86); }
+/* Второй значок того же угла: машины у здания. Стоит под первым —
+   людей в доме и машин у дома считают по отдельности */
+.crowd-chip.cars { top: 48px; }
+
+/* Строка соседа: имя со значком сети, семья справа, причина отказа
+   под ними. Ушедшего гасим прозрачностью — его карточку открыть можно,
+   а взять за карман нет */
+.neighbour {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.neighbour.away { opacity: 0.6; }
+/* Своя строка в списке: себя в нём ищут первым делом */
+.neighbour.me { border-color: var(--accent); }
+.neighbour.fight { border-color: #b02020; }
+.neighbour-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.neighbour-name { font-weight: 700; font-size: 14px; }
+.neighbour-clan { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.neighbour-note { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
+.neighbour-why { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; }
+
+/* ---------- наём: лица нанятых и прилавок ---------- */
+
+/* Лицо нанятого в строке: кружок размером со значок класса, который он
+   и заменяет. Больше делать нельзя — строка боя и так тесная */
+.npc-face {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  object-fit: cover;
+  vertical-align: middle;
+  background: var(--slot);
+}
+
+/* Прилавок найма: три карточки в ряд, в каждой лицо, ступень и цена */
+.hire-shelf {
+  display: grid;
+  /* `minmax(0, 1fr)`, а не `1fr`: у клетки сетки своя наименьшая ширина
+     по содержимому, и картинка во всю ширину распирала третью карточку
+     за край экрана */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.hire-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--slot);
+  text-align: center;
+}
+/* Рамка под лицо. Не доехавшая картинка заменяется значком класса —
+   текстовым узлом вместо `img`, — и стили самой картинки на него уже
+   не действуют: место держит рамка, иначе карточка складывается */
+.hire-frame {
+  width: 100%;
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+  font-size: 22px;
+  color: var(--muted);
+}
+/* Лицо нанятого — рисунок в полный рост, и квадратная рамка срезала ему
+   голову и ноги: `cover` обрезает всё, что не влезло. Теперь картинка
+   идёт в своих пропорциях — ширина по карточке, высота какая выйдет, —
+   а потолок стоит на случай, если файл окажется вдвое выше обычного:
+   тогда `contain` впишет его целиком, а не раздует карточку */
+.hire-face {
+  width: 100%;
+  height: auto;
+  max-height: 200px;
+  object-fit: contain;
+}
+.hire-title { margin: 0; font-size: 12.5px; font-weight: 700; }
+.hire-note { margin: 0; font-size: 11.5px; color: var(--muted); }
+/* Кнопка цены живёт по ширине своей карточки: общий `min-width` у кнопок
+   рассчитан на строку во весь экран, а здесь их три в ряд — и каждая
+   вылезала за свою рамку. `flex: 0 0 auto` не даёт ей тянуться в
+   высоту: у кнопок клуба стоит `flex: 1 1 auto`, и в колонке карточки
+   она разрасталась на всё свободное место — тем заметнее, чем меньше
+   места заняло лицо. `margin-top: auto` ставит все три на одну черту,
+   как бы ни переносились названия ступеней */
+.hire-card .btn {
+  width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
+  margin-top: auto;
+  padding: 6px 4px;
+  font-size: 12.5px;
+}
+
+/* ---------- автомойка: номерной знак ---------- */
+
+/* Знак рисуем знаком: белое поле, чёрные буквы вразрядку и рамка. Это
+   единственное место, где номер — не строка в таблице, а сама вещь,
+   которую меняют, и выглядеть он должен соответственно */
+.plate {
+  margin: 6px 0;
+  padding: 6px 10px;
+  border: 2px solid #1b1b1b;
+  border-radius: 6px;
+  background: #f2f2f2;
+  color: #1b1b1b;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-align: center;
+}
+/* В розыске — красная рамка: по этому знаку машину и ищут */
+.plate.wanted {
+  border-color: var(--hp-red);
+  box-shadow: 0 0 0 2px rgba(204, 59, 48, 0.25);
+}
+
+/* ---------- турнирная арена ---------- */
+
+/* Доска плей-офф: круг — колонка, слева направо. Пары внутри колонки
+   растянуты поровну (flex: 1 1 0), поэтому середина пары следующего
+   круга сама приходится на стык двух своих — на этом и держатся локти
+   ниже: их рисует рамка псевдоэлемента, без единой картинки и без
+   счёта пикселей. В ширину телефона дерево не лезет: турнир из
+   тридцати двух — пять колонок, и доска ездит вбок */
+.bracket-board {
+  /* Цвет проводов сетки. Не из темы: линии связывают карточки поверх
+     фона и обязаны читаться и на светлой, и на тёмной */
+  --wire: #1fa8bc;
+  display: flex;
+  align-items: stretch;
+  gap: 28px;
+  overflow-x: auto;
+  padding: 2px 2px 8px;
+  -webkit-overflow-scrolling: touch;
+}
+.bracket-col {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  width: 166px;
+}
+.bracket-col-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 18px;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.bracket-col-title { font-weight: 700; }
+.bracket-col-at { white-space: nowrap; }
+.bracket-cells {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+.bracket-cell {
+  position: relative;
+  display: flex;
+  /* Поровну — но не теснее своего содержимого: `min-height` тут не
+     ставится нарочно, потому что `auto` у флекс-клетки и значит «не
+     ужимать меньше карточки». С жёстким полом ярлык «без боя» вылезал
+     из клетки и ложился на соседнюю пару */
+  flex: 1 1 0;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* Локоть: от середины пары вправо и до стыка с соседней. Верхняя пара
+   ведёт линию вниз, нижняя — вверх, и обе приходят в одну точку —
+   туда, где стоит их общая пара следующего круга */
+.bracket-col:not(:last-child) .bracket-cell::after {
+  content: "";
+  position: absolute;
+  left: 100%;
+  width: 14px;
+  height: 50%;
+  border-right: 2px solid var(--wire);
+}
+.bracket-col:not(:last-child) .bracket-cell:nth-child(odd)::after {
+  top: 50%;
+  border-top: 2px solid var(--wire);
+  border-top-right-radius: 8px;
+}
+.bracket-col:not(:last-child) .bracket-cell:nth-child(even)::after {
+  bottom: 50%;
+  border-bottom: 2px solid var(--wire);
+  border-bottom-right-radius: 8px;
+}
+.bracket-col:not(:first-child) .bracket-cell::before {
+  content: "";
+  position: absolute;
+  right: 100%;
+  top: 50%;
+  width: 14px;
+  border-top: 2px solid var(--wire);
+}
+
+/* Пара: двое друг под другом, у каждого клетка исхода */
+.bracket {
+  border: 1.5px solid var(--wire);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 4px 6px;
+}
+.bracket.mine {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(26, 109, 208, 0.22);
+}
+.bracket-side {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 13px;
+}
+.bracket-side + .bracket-side { border-top: 1px solid var(--slot-line); }
+.bracket-name {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bracket-mark {
+  flex: 0 0 auto;
+  min-width: 24px;
+  padding: 0 4px;
+  border: 1px solid var(--slot-line);
+  border-radius: 5px;
+  background: var(--slot);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+.bracket-side.won .bracket-mark {
+  border-color: var(--hp-green);
+  background: var(--hp-green);
+  color: #fff;
+}
+.bracket-side.out .bracket-mark {
+  border-color: var(--hp-red);
+  background: var(--hp-red);
+  color: #fff;
+}
+.bracket-side.out .bracket-name { color: var(--muted); }
+.bracket-side.you .bracket-name { color: var(--accent); }
+.bracket-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* «Без боя» — ярлык под парой, в которой соперника не нашлось */
+.bracket-bye {
+  align-self: center;
+  margin: 6px 0 0;
+  padding: 1px 8px;
+  border: 1px solid var(--gold);
+  border-radius: 999px;
+  color: var(--gold);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Финал: золото, кубок над парой и имя победителя под ней */
+.bracket-col.final .bracket-col-head { color: var(--gold); }
+.bracket-col.final .bracket {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(184, 134, 11, 0.22);
+}
+.bracket-cup {
+  margin-bottom: 6px;
+  font-size: 26px;
+  line-height: 1;
+  text-align: center;
+}
+.bracket-champ {
+  margin: 8px 0 0;
+  padding: 3px 6px;
+  border: 1.5px solid var(--gold);
+  border-radius: 8px;
+  color: var(--gold);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-align: center;
+  text-transform: uppercase;
+}
+.arena-clock { margin-top: 8px; }
+
+/* ---------- бонусный пулл недели ---------- */
+
+/* Дело недели: заголовок с премией, строка о сделанном и лестница под
+   ними. Взятое дело обведено — по рамке видно, за что уже платят */
+.bonus-row {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.bonus-row.earned { border-color: var(--accent); }
+.bonus-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.bonus-name { font-weight: 700; font-size: 14px; }
+.bonus-award { font-weight: 700; font-size: 13.5px; color: var(--accent); }
+.bonus-note { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
+/* Лестница: четыре ступени в ряд, с переносом на узком экране.
+   Пройденные закрашены, текущая обведена — так видно и где стоишь, и
+   сколько ещё ступеней впереди */
+.bonus-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+.bonus-step {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.bonus-step.done { color: var(--text); background: var(--slot); }
+.bonus-step.now { border-color: var(--accent); color: var(--accent); }
+.bonus-split { margin-top: 10px; }
+.bonus-split .bubbles { margin-top: 6px; }
+
+/* ---------- война за территории ---------- */
+
+/* Точка на карте войны: заголовок с доходом, кто держит и кнопка.
+   Своя помечена рамкой — её на карте ищут глазами первой */
+.spot {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 12px;
+  margin-bottom: 10px;
+}
+.spot.mine { border-color: var(--accent); }
+/* Точка под ногами: единственная, с которой собирают отряд */
+.spot.here { border-color: var(--accent); border-width: 2px; }
+.spot-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.spot-title { margin: 0; font-size: 15px; }
+.spot-income { font-weight: 800; white-space: nowrap; }
+.spot-owner { margin: 6px 0 0; font-size: 13px; }
+.spot-note { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
+.spot-state { margin: 8px 0 0; color: var(--muted); font-size: 12.5px; }
+
+/* Сбор отряда: список имён, созвавший со звездой */
+.muster-list { display: grid; gap: 4px; margin: 8px 0; }
+.muster-row {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--slot);
+  font-size: 13px;
+}
+.muster-row.me { border: 1px solid var(--accent); }
+
+/* Зов поставить охрану: единственная строка на экране, которая просит
+   что-то сделать, — и видно её должно быть сразу */
+.hire-call {
+  color: var(--text);
+  border-left: 2px solid var(--accent);
+  padding-left: 8px;
+}
+
+/* ---------- учёба: приёмная и курсы ---------- */
+
+/* Карточка курса устроена как бланк документа: заголовок с ценой, строки
+   полей и кнопка. Это нарочно — курс и есть будущий документ, и смотрят
+   на него так же */
+.course {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 12px;
+  margin-bottom: 10px;
+}
+.course-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.course-title { margin: 0; font-size: 15px; }
+.course-price { font-weight: 800; white-space: nowrap; }
+.course-note { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; }
+/* Сданный курс притушен и кнопки не носит: второй раз на него не идут */
+.course.done { opacity: 0.65; }
+
+/* ---------- журнал заданий ---------- */
+
+.quest-list { display: grid; gap: 8px; }
+.quest {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+/* Значок состояния: галочка у сданного, часы у взятого, номер у того,
+   до которого ещё не дошли */
+.quest-mark {
+  flex: none;
+  min-width: 24px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--muted);
+}
+.quest-body { min-width: 0; }
+.quest-title { font-weight: 700; }
+.quest-task { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.quest-prize { font-size: 12.5px; margin-top: 4px; }
+/* Взятое выделено рамкой, сданное притушено: список читается с одного
+   взгляда — вот что делаю, вот что уже сделал */
+.quest-taken { border-color: var(--accent); }
+.quest-taken.ready .quest-prize { color: var(--hp-green); font-weight: 600; }
+.quest-done { opacity: 0.6; }
+/* Открытое прямо сейчас выделяем: из двадцати строк надо увидеть ту
+   одну, за которой стоит идти к бармену */
+.quest-open { border-color: var(--hp-green); }
+.quest-open .quest-title { font-weight: 800; }
+/* Два замка выглядят по-разному нарочно. «С третьего уровня» игрок
+   исправляет ростом, «ждёт своей очереди» — работой, и один серый цвет
+   на оба не сказал бы, что делать */
+.quest-locked_level { opacity: 0.72; border-style: dashed; }
+.quest-locked_level .quest-title { color: var(--muted); }
+.quest-locked_order { opacity: 0.55; }
+.quest-locked_order .quest-title { color: var(--muted); }
+
+/* ---------- главы журнала ----------
+
+   Двадцать строк подряд не читаются. Главами видно, что пройдено и к
+   чему готовиться, а у закрытой главы притушен весь заголовок разом —
+   не каждая строка по отдельности */
+.chapter { margin-bottom: 14px; }
+.chapter-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 7px;
+  font-size: 14px;
+  font-weight: 800;
+}
+.chapter-note {
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.chapter.shut .chapter-head { color: var(--muted); }
+.chapter .quest { margin-bottom: 6px; }
+
+/* ---------- выписка по карте ---------- */
+
+/* Два числа под сроком: приход и расход. Строка в две колонки — их
+   сравнивают взглядом, а не читают по очереди */
+.log-sums { display: flex; gap: 8px; margin: 8px 0; }
+.log-sum {
+  flex: 1 1 50%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.log-sum-title { color: var(--muted); font-size: 12.5px; }
+.log-sum-money { font-weight: 800; font-size: 16px; white-space: nowrap; }
+/* Не `.plus` и не `.minus`: голым словом `plus` в этом апе зовётся
+   круглая синяя кнопка «пополнить» у кошелька — 22 пикселя и
+   `border-radius: 50%`. Выписка носила то же слово, и сумма прихода
+   получала её одежду: синий кружок вместо знака, число наружу, а рамка
+   «Поступлений» схлопывалась до заголовка — внутри неё лежал кружок */
+.log-sum.log-plus .log-sum-money { color: var(--hp-green); }
+.log-sum.log-minus .log-sum-money { color: var(--hp-red); }
+
+/* Строка выписки: слева за что и когда, справа сумма и остаток после */
+.log-list { display: grid; gap: 6px; }
+.log-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.log-what { flex: 1 1 auto; min-width: 0; }
+.log-note {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.log-when { color: var(--muted); font-size: 12px; }
+/* Комментарий: за что именно платили. Висит под строкой состояния и
+   набран мельче заголовка — заголовок отвечает «где», он «за что» */
+.log-about {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-money { flex: none; text-align: right; white-space: nowrap; }
+.log-sum-value { font-weight: 700; }
+.log-sum-value.log-plus { color: var(--hp-green); }
+.log-sum-value.log-minus { color: var(--hp-red); }
+.log-rest { color: var(--muted); font-size: 12px; }
+
+/* ---------- почта ---------- */
+
+/* Выбранная к отправке вещь обведена: по ней и видно, что уедет */
+.thing.picked { border-color: var(--accent); }
+/* Вернувшаяся посылка стоит особняком: она уже не чья-то, а твоя */
+.parcel.back { border-style: dashed; }
+
+/* Поля в окне стоят друг под другом: передача прав спрашивает двумя
+   списками, сейф — одним числом, и слипаться им незачем */
+#sheet-list .field-input { margin-bottom: 8px; }
+
+/* Смена имени: поле и кнопка в строку, на узком экране — в столбик */
+.clan-rename { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.clan-rename .field-input { flex: 1 1 140px; min-width: 0; }
+.clan-rename .btn { flex: 0 0 auto; }
 .fighter-info,
 .info-btn {
   width: 26px;
@@ -979,6 +2776,17 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   stroke-linejoin: round;
   pointer-events: none;
 }
+/* Своя точка — зелёным по названию. Отдельной отметки для неё нет: на
+   карте важно, кто дом держит, а не чей он тебе, — но пробежать
+   глазами свои всё равно надо */
+.zone-sign.ours { fill: #7ee787; }
+/* Жетон владельца у названия дома: знак семьи или значок службы. Тень
+   под ним та же, что обводка у подписи, — иначе тёмный знак пропадает
+   на тёмном городе */
+.zone-badge {
+  pointer-events: none;
+  filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.9));
+}
 
 /* Отсчёт рейда под вывеской казино. Цвет говорит то же, что и слова:
    синий — скоро откроется, жёлтый — идёт, зелёный — своё уже взял */
@@ -998,6 +2806,61 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .plate-word { font-size: 29px; }
 .plate-clock { font-size: 39px; letter-spacing: 1px; }
+
+/* Флажок войны под вывеской дома-точки: кто её держит и сколько она
+   приносит. Своя — зелёная, чужая — лиловая: рейдовых цветов не берём,
+   иначе под казино две плашки спорили бы одним языком */
+
+/* Плашка под ногами: боец дошёл до точки, и отсюда собирают отряд.
+   Стоит выше стрелки «вниз»: та висит по центру нижнего края, и полоса
+   во всю ширину накрыла бы её целиком */
+/* Плашка точки под ногами — чип в правом нижнем углу: жетон владельца
+   и кнопка, больше ничего. Дом, у двери которого стоишь, подписан на
+   самой карте, а плашка висит поверх города: прежняя, в три строки и
+   во всю ширину, накрывала дверь соседнего дома, и войти в него было
+   нельзя. По той же причине мимо неё проходят нажатия: ловит их
+   только кнопка */
+.turf-band {
+  position: absolute;
+  right: 6px;
+  bottom: calc(84px + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 24px);
+  padding: 4px 5px 4px 7px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #fff;
+  pointer-events: none;
+}
+.turf-band-head {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  font-size: 15px;
+  line-height: 1;
+}
+.band-badge { width: 22px; height: 22px; border-radius: 50%; }
+.turf-band-note {
+  margin: 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.82);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 4px;
+}
+.turf-band .band-go {
+  pointer-events: auto;
+  margin: 0;
+  padding: 5px 10px;
+  width: auto;
+  border-radius: 999px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
 
 /* ---------- стрелки в соседние районы ---------- */
 
@@ -1302,7 +3165,20 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
    Кнопки — не радио, а обычные: выбор уходит на сервер сразу, и подсветка
    показывает то, что сервер уже принял, а не то, что мы нажали. */
 .btn.wide { width: 100%; padding: 11px 10px; }
+/* Кнопка в строке списка: она там не главная, а одна из многих, и
+   занимать половину строки ей незачем */
+.btn.btn-small {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 5px 10px;
+  font-size: 12px;
+}
 .fight-open { display: grid; gap: 8px; margin-bottom: 12px; }
+/* Строка выбора в форме сбора: подпись сверху, чипы под ней. Подпись
+   своя у каждой строки — без неё четыре ряда чипов читались бы как
+   один длинный список, в котором непонятно, что к чему */
+.form-row { display: grid; gap: 4px; }
+.form-label { font-size: 12.5px; color: var(--muted); }
 .fight-card {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1313,6 +3189,9 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .fight-line { margin: 0 0 8px; font-size: 14px; }
 .fight-panel { display: grid; gap: 10px; }
 .fight-round { margin: 0; font-weight: 600; font-size: 14px; }
+/* Один на один доска осталась прежней: обе половины здесь одинаковой
+   высоты — имя, счёт, шкала и отметка, — и выравнивать по низу нечего.
+   Низ появился там, где стороны разной высоты: в рейде и командном бою */
 .fight-board {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
@@ -1352,10 +3231,10 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .zone-columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0 8px;
+  gap: 0 6px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 10px;
+  padding: 10px 8px;
 }
 /* Со вторым оружием столбцов три: два удара и защита */
 .zone-columns.three { grid-template-columns: 1fr 1fr 1fr; }
@@ -1418,12 +3297,16 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Зазор и поля тут считанные: на 320 пикселях в три столбца «Голова+
+   Корпус» помещается впритык, и лишняя пара пикселей по бокам режет ей
+   хвост многоточием. Шрифт ужать нельзя — он и так на своём полу
+   (`--zone-font`), ниже которого не разобрать */
 .zone {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   font-size: var(--zone-font);
-  padding: 6px 2px;
+  padding: 6px 1px;
   border-radius: 6px;
   cursor: pointer;
   white-space: nowrap;
@@ -1461,13 +3344,25 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 /* ---------- рейд ---------- */
 /* Заголовок раздела и кнопка «i» рядом: под ней разворачивается всё, что
    известно о боссе. */
+/* Шапка рейда: заголовок и «i» в строку, рассказ — строкой ниже.
+   Шапка — флексбокс, и рассказ занимает в ней целую строку сам
+   (`flex: 0 0 100%`), а не чужим `grid-column`: от него строка не
+   переносилась вовсе, и рассказ ложился поверх заголовка */
 .raid-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
 }
 .raid-head .shelf-head { margin: 0; flex: 1; min-width: 0; }
+.raid-story {
+  flex: 0 0 100%;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
 .boss-stats {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1485,63 +3380,160 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   margin: 0;
   font-size: 13px;
 }
-/* Отряд слева, босс справа, мечи между ними: обе стороны видно разом.
-   Сорок пять на десять и сорок пять — так просили; в долях, а не в
-   пикселях, чтобы держалось на любом телефоне */
+/* Доска боя — две колоды, по колоде на сторону. Сорок пять на десять и
+   сорок пять — так просили; в долях, а не в пикселях, чтобы держалось на
+   любом телефоне.
+
+   Обе колоды лежат на нижнем краю, и верхняя карта каждой — у самого
+   низа. Ровняемся по низу, а не по верху: колоды разной глубины, а
+   карточка соперника вдобавок высокая — в ней портрет. По верху нижние
+   карты разъезжались так, что твоя шкала оказывалась у соперника на
+   уровне бровей; по низу обе стоят на одной черте и у самых кнопок хода.
+
+   Внутри колоды карты идут снизу вверх: чем глубже карта, тем выше она
+   стоит, и каждая следующая накрывает её низ, оставляя на виду верхний
+   край. Сдвигает их `margin-top`, а порядок слоёв — порядок в разметке.
+   Верхней карте при этом нужен свой слой: карты колоды позиционированы,
+   и без него они рисуются поверх непозиционированной верхней. */
 .raid-board {
   display: grid;
   grid-template-columns: 45fr 10fr 45fr;
-  align-items: start;
-  gap: 4px;
+  align-items: end;
+  gap: 0 4px;
+  /* Колоды стоят впритык к тому, что под ними, и нижняя карта наезжала
+     на приёмы. Отступ снизу — чтобы доска кончалась там, где кончается */
+  margin-bottom: 10px;
 }
+/* Станционная доска: зомби нарисованы в полный рост, и середина кадра
+   приходится им на пояс. В карточке соперника нужна голова */
+.raid-board.station .boss-face { object-position: top; }
+.raid-deck { display: grid; min-width: 0; align-self: end; }
+.raid-deck > .raid-you, .raid-deck > .boss-card {
+  position: relative;
+  z-index: 1;
+}
+/* Каждая карта, кроме самой глубокой, находит на соседку сверху.
+   Четырнадцать пикселей — ровно тот запас, что у карты оставлен снизу:
+   на виду остаётся верхний край с именем и шкалой, и ни пикселем меньше */
+.raid-deck > * + * { margin-top: -14px; }
+.raid-you {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  min-width: 0;
+}
+/* Выбывший блёкнет содержимым, а не целиком: прозрачная карта в колоде
+   показала бы ту, что лежит под ней, — а карта обязана крыть соседку */
+.raid-you.down > * { opacity: 0.55; }
 .boss-card {
   display: grid;
   gap: 2px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--slot);
   padding: 8px;
   min-width: 0;
 }
-/* Портрет под шкалой и во всю ширину столбца: смотрят на здоровье, а
-   лицо здесь для того, чтобы босс не был строкой текста */
+/* Портрет сверху и во всю ширину столбца: на кого смотрят, то и первое,
+   а числа читают уже под ним */
 .boss-face {
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
   border-radius: 6px;
   border: 1px solid var(--slot-line);
-  margin-top: 4px;
+  margin-bottom: 4px;
 }
-.raid-party { display: grid; gap: 6px; min-width: 0; }
-.raid-member {
+/* Кого бьём сейчас: строка над кнопками удара. Стоит первой и заметно,
+   потому что в банде цель меняется каждый ход — нажать удар, не прочитав
+   её, значит ударить не того */
+.raid-aim {
+  margin: 0 0 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--slot);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+/* Тот, с кем стоишь сейчас, обведён синим; все прочие в стопке — серым.
+   Рамка заменила подпись «твой»: цвет читается раньше слова, а на ход
+   даётся полминуты */
+.boss-card.mine { border-color: var(--accent); }
+/* Место соперника, когда пары не досталось: карточка пустая, но стоит —
+   иначе доска съезжает, и непонятно, пропал соперник или карточка */
+.boss-card.empty {
+  border-style: dashed;
+  text-align: center;
+  padding: 14px 8px;
+}
+/* Павший остаётся на табло: по нему и видно, сколько банды уже легло, —
+   а убери их, и отряд не поймёт, идёт ли дело к концу. Блёкнет он
+   содержимым, а не картой: саму карту гасить нельзя, она кроет соседку */
+.boss-card.dropped > *, .stack-card.down > * { opacity: 0.55; }
+.boss-card.dropped .fight-name,
+.stack-card.down .fight-name { text-decoration: line-through; }
+/* Карта колоды. Видна у неё только верхняя часть — имя и шкала: низ
+   прячет соседка, что лежит поверх.
+
+   `position: relative` здесь обязателен: без него отрицательный отступ
+   сдвинет карту, но соседка всё равно нарисуется под ней, и нахлёст
+   получится наизнанку. */
+.stack-card {
+  position: relative;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 6px 8px;
+  /* Снизу у карточки запас: он и есть то, что прячет соседка сверху.
+     Без него нахлёст не на чем показать — карточки сошлись бы встык и
+     читались списком, а не колодой */
+  padding: 4px 6px 18px;
   min-width: 0;
 }
-.raid-member.down { opacity: 0.55; }
-/* Хвост отряда: в подвал ходят вдесятером, и списком они выдавливают с
-   экрана кнопки хода. Трое на виду, остальные — по нажатию */
-.party-more { display: grid; gap: 6px; }
-.party-more-head {
-  font-size: 12px;
-  color: var(--muted);
-  cursor: pointer;
-  padding: 2px 0;
+/* Тень по верхней кромке соседки: ею и видно, что карта лежит под ней, а
+   не нарисована впритык */
+.stack-card { box-shadow: 0 -2px 3px rgba(0, 0, 0, 0.1); }
+
+/* Карты колоды кроют друг друга — значит, должны быть непрозрачными.
+   `--slot` полупрозрачен нарочно: обычно он ложится на фон страницы и
+   даёт мягкую подложку. Здесь под ним лежит другая карта, и её низ
+   просвечивал сквозь верхнюю. Красим в два слоя: сперва фон страницы,
+   поверх — тот же `--slot`. Цвет выходит ровно прежний, но сквозь карту
+   больше ничего не видно */
+.raid-you,
+.boss-card,
+.stack-card {
+  background-color: var(--bg);
+  background-image: linear-gradient(var(--slot), var(--slot));
 }
+.stack-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+.stack-head .fight-name { min-width: 0; }
+.stack-head .fight-hp { white-space: nowrap; }
+.stack-card .fight-bar { margin: 3px 0 0; height: 4px; }
+/* В крупных карточках имя переносится: столбец узкий, а к имени тут
+   прибавляется и команда, и «— ты», и в строку это не влезает. Многоточие
+   вместо второй строки прятало ровно то, ради чего на карточку смотрят */
+.raid-you .fight-name, .boss-card > .fight-name { white-space: normal; }
 /* Имя и счёт в узком столбце: переносить их некуда, поэтому мельче */
 .raid-board .fight-name, .raid-board .fight-hp { font-size: 12px; }
 .raid-board .fight-hp { font-size: 11px; }
+.raid-deck .stack-card .fight-name,
+.raid-deck .stack-card .fight-hp { font-size: 11px; }
 .raid-sizes { display: grid; gap: 8px; }
 /* Кнопка, которой нужен воздух: иначе она липнет к соседней снизу */
 .btn.spaced { margin-bottom: 10px; }
-/* Мечи между отрядом и боссом: кто против кого. Стоят по верху, вровень
-   с первой карточкой отряда, а не посередине столбца — столбцы разной
-   высоты, и середина у них гуляет */
+/* Мечи между тобой и соперником: кто против кого. Стоят по низу, на
+   одной черте с обеими карточками, — середина столбца тут не годится,
+   столбцы разной высоты, и середина у них гуляет */
 .versus {
+  /* Эмодзи рисуется с запасом снизу, и ноль здесь ставит его на ту же
+     черту, что и нижние кромки обеих карточек */
   margin: 0;
-  padding-top: 14px;
   text-align: center;
   font-size: 16px;
   line-height: 1;
@@ -1562,6 +3554,39 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   font-size: 15px;
 }
 .field-input:disabled { opacity: 0.5; }
+
+/* ---------- промокод в «Элите» ----------
+
+   Поле ничего не подсказывает и ничего не обещает: код называют снаружи
+   игры — в объявлении, в рассылке, — и по прилавку его не подобрать.
+   Поэтому и стоит оно под подписками, а не над ними: это не прилавок,
+   а дверь для тех, кому ключ уже дали */
+.promo {
+  margin: 14px 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.promo-head { margin: 0; font-size: 15px; font-weight: 700; }
+.promo-note {
+  margin: 4px 0 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+/* Ответ на попытку: отказ красным, удача зелёной — с одного взгляда
+   видно, сработал код или нет, не вчитываясь в строку */
+.promo-note.bad { color: var(--hp-red); }
+.promo-note.good { color: var(--hp-green); }
+/* Поле и кнопка в строку, на узком экране — в столбик */
+.promo-row { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; }
+.promo-row .field-input {
+  flex: 1 1 150px;
+  min-width: 0;
+  text-transform: uppercase;
+}
+.promo-row .btn { flex: 0 0 auto; min-width: 110px; }
 
 /* Список и «Начать» в одну строку: кнопка по содержимому, список — всё
    остальное. min-width держит его от распирания на узком экране. */
@@ -1742,8 +3767,40 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 /* ---------- приёмы в карточке ---------- */
 
 .skills { margin-top: 16px; }
-.skill-list { display: grid; gap: 8px; }
+/* Приёмы — ряд плиток по четыре, картинка и название под ней. Прежде
+   строка приёма несла и картинку, и цену, и описание: четыре таких
+   подряд читались как список правил, а не как набор приёмов. Цена и
+   описание никуда не делись — они во всплывашке, по нажатию */
+/* Колонки minmax(0, 1fr), а не 1fr: у `1fr` нижняя граница — ширина
+   самого узкого, что в колонку помещается, и длинное название тянуло
+   бы колонку за собой. Ряд уезжал вправо не из-за этого (виновата была
+   картинка, см. `.skill > .skill-pic`), но граница в ноль — то, что
+   держит сетку в своих берегах, когда содержимое длиннее места */
+.skill-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+/* Плитка — ещё и мерная линейка для названия под ней: `container-type`
+   даёт названию знать, сколько места ему досталось (см. `.skill-title`) */
 .skill {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 4px 8px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: inherit;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+/* Строка приёма — там, где его выбирают: на развилке уровня и на
+   прилавке школы. Без описания выбора нет, поэтому картинка, цена и
+   слова стоят рядом, а не прячутся за нажатием */
+.skill-row {
   display: flex;
   gap: 10px;
   align-items: flex-start;
@@ -1752,28 +3809,79 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   background: var(--panel);
   border: 1px solid var(--line);
 }
-/* Картинка приёма горизонтальная, 16:9 — в отличие от квадратных вещей */
-.skill-pic {
+.skill-row .skill-pic {
   flex: 0 0 auto;
   width: 112px;
+  font-size: 26px;
+}
+/* В строке приёма места вдоволь — там название крупное */
+.skill-row .skill-title { font-size: 13.5px; }
+.skill-body { min-width: 0; }
+
+/* В плитке картинка занимает всю ширину по растяжке, а не `width: 100%`:
+   процент тут считался не от плитки, а шире её, и ряд из четырёх плиток
+   уезжал за правый край экрана. Растяжка — родной способ флексбокса
+   занять поперечную ось, и считать проценты в нём не от чего */
+.skill > .skill-pic {
+  width: auto;
+  align-self: stretch;
+}
+
+/* Картинка приёма горизонтальная, 16:9 — в отличие от квадратных вещей */
+.skill-pic {
+  width: 100%;
   aspect-ratio: 16 / 9;
   border-radius: 6px;
   background: var(--slot);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 26px;
+  font-size: 20px;
   overflow: hidden;
 }
 .skill-pic img { width: 100%; height: 100%; object-fit: cover; }
-.skill-body { min-width: 0; }
-.skill-title { font-weight: 700; font-size: 13.5px; }
+/* Слова не переносим: «Критиче-ский удар» читается как опечатка.
+   Строка рвётся по пробелу — «Критический», ниже «удар».
+
+   Но четверть экрана под «Сокрушительный» — четырнадцать букв — мала
+   при любом читаемом кегле: на 390 точках плитке достаётся 80, а слову
+   нужно 90. Поэтому кегль привязан к ширине самой плитки: `cqw` — это
+   её сотая доля, а 11.1 от неё — ровно тот размер, при котором самое
+   длинное название в игре встаёт в строку целиком. Короткие названия
+   от этого не страдают: потолок 11 точек они берут на любом экране
+   шире 99 точек.
+
+   Снизу 7.5: мельче уже не читается, и на совсем узком экране пусть
+   лучше сработает `break-word`, чем название станет нечитаемым. Первая
+   строка — запасная, для движков без контейнерных запросов */
+.skill-title {
+  font-weight: 700;
+  font-size: 9px;
+  font-size: clamp(7.5px, 11.1cqw, 11px);
+  line-height: 1.2;
+  hyphens: manual;
+  overflow-wrap: break-word;
+}
+/* Та же картинка во всплывашке — крупно, во всю её ширину */
+.skill-wide {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 10px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 44px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.skill-wide img { width: 100%; height: 100%; object-fit: cover; }
 .skill-cost { font-size: 11.5px; color: var(--accent); margin-top: 2px; }
 .skill-note {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   margin-top: 3px;
-  line-height: 1.35;
+  line-height: 1.4;
 }
 
 /* Развилка: её нельзя не заметить, поэтому рамка и свой заголовок */
@@ -1894,6 +4002,10 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   object-fit: cover;
   border-radius: inherit;
 }
+/* Билет вдвое шире своей высоты: кроя им квадратную клетку, мы срезали
+   и название рейда, и отрывную часть — три билета делались неразличимы.
+   Такую картинку вписываем целиком, с полями сверху и снизу */
+.gift-pic.wide { object-fit: contain; padding: 2px; }
 .gift.has-pic .gift-icon { display: none; }
 
 /* Зелёная галочка в углу — по ней видно, что за день уже забрано */
@@ -1961,6 +4073,14 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   grid-auto-columns: 1fr;
   gap: 6px;
   margin: 10px 0 12px;
+}
+/* Три кнопки встают в ряд и читаются с одного взгляда. Четвёртая ряд
+   ломает: на четверть телефона «Характеристики» не влезают и обрезаются
+   многоточием. Поэтому четыре кнопки складываются в два этажа по две —
+   ширины там с запасом, и ни одно слово не обрублено */
+.hero-acts.folded {
+  grid-auto-flow: row;
+  grid-template-columns: 1fr 1fr;
 }
 .hero-act {
   display: flex;
@@ -2158,6 +4278,10 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   border-left: 3px solid var(--accent);
 }
 .paper.stale { border-left-color: var(--muted); opacity: 0.78; }
+/* Дошедший до срока вклад — зелёной полосой: его можно забирать */
+.paper.ready { border-left-color: var(--hp-green); }
+/* Строка калькулятора, которую доход не выносит: видна, но не предлагается */
+.rows li.dim { opacity: 0.55; }
 .paper-head { display: flex; align-items: baseline; gap: 8px; }
 .paper-title { margin: 0; font-size: 15px; font-weight: 700; flex: 1; min-width: 0; }
 .paper-state {
@@ -2555,6 +4679,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .job-where { font-size: 12px; color: var(--muted); }
 .job-pay { margin: 7px 0 0; font-size: 12px; color: var(--muted); }
 .job-warn { margin: 6px 0 0; font-size: 12.5px; color: var(--hp-red); }
+/* Сверхурочные — зелёным: это не предупреждение, а прибавка */
+.job-extra { margin: 6px 0 0; font-size: 12.5px; color: var(--hp-green); font-weight: 600; }
 .job .btn { margin-top: 9px; }
 
 /* Полоса недельных часов. Красная — норма под угрозой: в понедельник
@@ -2643,3 +4769,1169 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   color: var(--accent);
 }
 .shift .btn { margin-top: 9px; }
+
+/* ---------- электростанция: «Чёрный пуск» ---------- */
+
+/* Панорама комнаты: она тут не украшение, а единственный способ понять,
+   где стоишь. Подпись ложится поверх снимка снизу — на телефоне место
+   под неё отдельной строкой дороже самой панорамы */
+.blackout-view { position: relative; margin: 0 0 10px; }
+.blackout-pic {
+  width: 100%;
+  border-radius: 12px;
+  display: block;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: var(--panel);
+}
+.blackout-where {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  right: 8px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 13px;
+}
+.blackout-overview { width: 100%; border-radius: 12px; display: block; }
+.blackout-clock { font-variant-numeric: tabular-nums; font-size: 14px; }
+.blackout-clock.hot { color: var(--bad); }
+
+/* Три модуля запуска. Форма рядом с именем — не украшение: задача не
+   должна зависеть от того, различает ли человек бирюзовый и зелёный */
+.blackout-items { display: flex; gap: 6px; flex-wrap: wrap; }
+.blackout-item {
+  flex: 1 1 30%;
+  min-width: 64px;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--panel);
+  text-align: center;
+}
+/* Ненайденное — серым, найденное — в цвете. Это и есть вся подпись:
+   названия ушли в подсказку, а цвет читается боковым зрением */
+.blackout-item-pic {
+  width: 100%;
+  max-width: 76px;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  display: block;
+  margin: 0 auto;
+  filter: grayscale(1) brightness(0.7);
+  opacity: 0.55;
+}
+.blackout-item.have .blackout-item-pic { filter: none; opacity: 1; }
+.blackout-item.have { outline: 1px solid var(--good); }
+/* Карта в колоде соперников нажимается: цель на станции выбирают сами,
+   а по крупной карте открывается, с кем боец имеет дело */
+.stack-pick { cursor: pointer; }
+/* Карточка зомби: портрет, числа и экипировка слотами */
+.foe-face {
+  /* Портрет не во всю ширину: под ним ещё числа и одиннадцать слотов,
+     и во весь экран он выталкивал бы их за край */
+  width: 100%;
+  max-width: 168px;
+  aspect-ratio: 1;
+  object-fit: cover;
+  object-position: top;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  margin: 0 auto 8px;
+  display: block;
+}
+.foe-gear {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 6px;
+  margin-top: 6px;
+}
+.foe-slot {
+  border: 0;
+  padding: 0 0 4px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--slot);
+  box-shadow: inset 0 0 0 1px var(--slot-line);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: center;
+}
+.foe-slot img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
+/* Подпись под вещью: по ней читают, что это, не открывая */
+.foe-slot-name {
+  display: block;
+  padding: 3px 4px 0;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--muted);
+}
+.blackout-shape { font-size: 18px; display: block; opacity: 0.5; }
+.blackout-item.have .blackout-shape { opacity: 1; }
+.blackout-item-tag { font-size: 11px; color: var(--muted); }
+
+/* Телеграф: его видно за ход, и прочитать его надо с одного взгляда */
+.blackout-telegraph {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(220, 150, 40, 0.18);
+  font-size: 13px;
+}
+
+/* ---------- сцена: вид от первого лица ---------- */
+/* Комната рисуется геометрией поверх панорамы зоны: пол, потолок, три
+   стены и проёмы там, где есть ходы. Фотографий на каждую стену в
+   материалах нет — их восемь на всё подземелье */
+.stage {
+  margin: 0 0 8px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #0b0d10;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.stage-canvas { width: 100%; height: auto; display: block; }
+/* Фон приглушён: по нему идут стены, и спорить с ними он не должен */
+.stage-back { opacity: 0.5; }
+/* Своя панорама комнаты — в полную силу: по ней уже ничего не идёт,
+   кроме зомби и ящика, а приглушать фотографию незачем */
+.stage-eye { opacity: 1; }
+
+.stage-floor { fill: #2b2721; opacity: 0.92; }
+.stage-ceiling { fill: #14161a; opacity: 0.95; }
+.stage-wall { fill: #3a342c; opacity: 0.9; stroke: #0006; stroke-width: 2; }
+.stage-wall-left { fill: #332e27; }
+.stage-wall-right { fill: #2e2a24; }
+
+/* Проём: тёмный прямоугольник в стене. Через него видно фон зоны,
+   поэтому он почти прозрачный, а не чёрный */
+.stage-door {
+  fill: #05070a;
+  fill-opacity: 0.55;
+  stroke: #e8c04a;
+  stroke-width: 2;
+  /* Не нажимается: ходят джойстиком. Проём тут показывает, где выход,
+     и только — поэтому и указателя под него нет */
+  pointer-events: none;
+}
+.stage-door.fog { stroke-dasharray: 7 5; }
+.stage-door.danger { stroke: var(--hp-red); }
+.stage-door.goal { stroke: var(--hp-green); }
+.stage-door.shut { stroke: var(--muted); fill-opacity: 0.85; }
+
+.stage-foe { filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.6)); }
+.stage-foe.boss { filter: drop-shadow(0 8px 14px rgba(220, 60, 60, 0.5)); }
+.stage-foe-hp { fill: var(--hp-red); }
+/* Зомби без картинки: силуэт. Не украшение, а замена значку битого
+   файла — сорванная ссылка не должна выглядеть как сломанный экран */
+.stage-foe.shape circle, .stage-foe.shape rect { fill: #2f3a2c; }
+.stage-foe.shape.boss circle, .stage-foe.shape.boss rect { fill: #4a2a2a; }
+
+.stage-loot { cursor: pointer; }
+.stage-loot.shut { cursor: help; opacity: 0.6; }
+.stage-crate {
+  fill: #6b4f2a;
+  stroke: #e8c04a;
+  stroke-width: 2;
+}
+.stage-loot:hover .stage-crate { fill: #8a6634; }
+.stage-crate-mark { font-size: 24px; text-anchor: middle; }
+
+.stage-said {
+  margin: 0;
+  padding: 4px 8px 6px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* ---------- шкала перехода ---------- */
+/* Шаг идёт десять секунд, и это должно быть видно, а не угадываться */
+.walkbar { margin: 0 0 8px; }
+.walkbar-track {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--hp-track);
+  overflow: hidden;
+}
+.walkbar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.25s linear;
+}
+.walkbar-said {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* ---------- джойстик ---------- */
+/* Подземелье узловое, а палец один: вместо списка дверей — круг.
+   Ручка тянется в сторону, подсвечивается дверь, которая в этой
+   стороне лежит на схеме, отпустил — пошёл */
+.stick-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0;
+}
+/* Джойстик, под ним — гнёзда модулей в ряд. Сбоку они отнимали у пада
+   ширину, и на узком телефоне клавиши жались друг к другу */
+.stick-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.stick-row .stick-box { align-self: center; }
+.stick-row .shelf { margin: 0 0 8px; }
+.stick-row .shelf-head { font-size: 13px; margin-bottom: 6px; }
+.stick-row .blackout-item { flex: 1 1 0; }
+/* Шесть клавиш крестом: четыре шага и два поворота по бокам. Шаг
+   считается от взгляда, поэтому на них стрелки, а не стороны света */
+.stick-pad {
+  display: grid;
+  grid-template-columns: repeat(4, 46px);
+  grid-template-rows: repeat(2, 46px);
+  gap: 6px;
+  justify-content: center;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--line);
+  touch-action: manipulation;
+  user-select: none;
+}
+.stick-key {
+  font: inherit;
+  font-size: 19px;
+  line-height: 1;
+  border-radius: 10px;
+  border: 1px solid var(--slot-line);
+  background: var(--slot);
+  color: var(--ink);
+  cursor: pointer;
+}
+.stick-key:hover:not(:disabled) { border-color: var(--accent); }
+.stick-key:disabled { opacity: 0.35; cursor: default; }
+.stick-key.wall { opacity: 0.3; }
+.stick-key.shut { border-color: var(--muted); color: var(--muted); }
+.stick-key.danger { border-color: var(--bad); color: var(--bad); }
+.key-turn { font-size: 21px; }
+/* Раскладка креста: повороты по краям, шаги в середине */
+.key-turn-left { grid-area: 1 / 1; }
+.key-up { grid-area: 1 / 2 / 2 / 4; }
+.key-turn-right { grid-area: 1 / 4; }
+.key-left { grid-area: 2 / 1; }
+.key-down { grid-area: 2 / 2 / 3 / 4; }
+.key-right { grid-area: 2 / 4; }
+/* Румб вокруг круга: куда отсюда есть ход. Цвет — вторым признаком
+   после значка: ☣ опасно, ✕ закрыто, ▸ свободно */
+.stick-said {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  min-height: 18px;
+  text-align: center;
+}
+
+/* ---------- миникарта ---------- */
+/* Комнаты, а не точки: скруглённая плита, коридор между ними, код и
+   фишки тех, кто там стоит. Непройденное — пунктиром */
+.minimap {
+  margin-top: 12px;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--panel);
+}
+.minimap-head {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+}
+/* Схема вписывается в свой прямоугольник, а не растёт по форме этажа.
+   Этажи станции бывают и вытянутыми в длину: такой без потолка занял
+   бы пол-экрана, а под ним остались бы отряд и склянки, до которых
+   пришлось бы листать */
+.minimap-canvas {
+  width: 100%;
+  height: auto;
+  max-height: 42vh;
+  display: block;
+}
+.minimap-said { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+
+.minimap-hall {
+  stroke: var(--slot-line);
+  stroke-width: 10;
+  stroke-linecap: round;
+}
+.minimap-hall.fog { stroke-dasharray: 14 12; opacity: 0.4; }
+
+.minimap-plate {
+  fill: var(--slot);
+  stroke: var(--slot-line);
+  stroke-width: 2;
+}
+.minimap-room.fog .minimap-plate {
+  fill: transparent;
+  stroke-dasharray: 10 8;
+  opacity: 0.5;
+}
+.minimap-room.done .minimap-plate { fill: rgba(80, 200, 120, 0.12); }
+.minimap-room.danger .minimap-plate {
+  stroke: var(--bad);
+  fill: rgba(220, 70, 70, 0.14);
+}
+.minimap-room.goal .minimap-plate { stroke: var(--good); }
+.minimap-room.here .minimap-plate {
+  fill: var(--accent);
+  stroke: var(--ink);
+  stroke-width: 3;
+}
+.minimap-room.here .minimap-code { fill: var(--bg); }
+.minimap-code {
+  fill: var(--ink);
+  font-size: 20px;
+  font-weight: 600;
+  text-anchor: middle;
+  opacity: 0.85;
+}
+.minimap-room.fog .minimap-code { opacity: 0.4; }
+/* Подпись лестницы: вверх или вниз и на какой этаж. Плашка цвета
+   панели кроет коридор, чтобы его линия не шла сквозь буквы */
+.minimap-stairs-plate { fill: var(--panel); }
+.minimap-stairs {
+  fill: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-anchor: middle;
+}
+.minimap-mark { font-size: 16px; text-anchor: middle; fill: var(--muted); }
+.minimap-room.goal .minimap-mark { fill: var(--good); }
+.minimap-room.danger .minimap-mark { fill: var(--bad); }
+
+/* Фишка бойца на схеме: своя светлая, чужая серая, упавший тусклый */
+.minimap-chip {
+  fill: var(--muted);
+  stroke: var(--bg);
+  stroke-width: 2;
+}
+.minimap-chip.me { fill: var(--accent); stroke: var(--ink); }
+/* Куда смотрит свой боец: на схеме это единственная стрелка */
+.minimap-arrow {
+  fill: var(--accent);
+  stroke: var(--ink);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+.minimap-chip.down { fill: var(--bad); opacity: 0.7; }
+.minimap-chip.walking { stroke-dasharray: 4 3; }
+.minimap-letter {
+  fill: var(--bg);
+  font-size: 11px;
+  font-weight: 700;
+  text-anchor: middle;
+}
+
+/* ---------- казино ---------- */
+/* Камерный зал после турнира: тёмный металл, латунь, сукно. Цвет меняет
+   игра, расположение мест, баланса и кнопок остаётся знакомым */
+.casino {
+  --felt: #15423a;
+  --brass: #c6a469;
+}
+.casino.dice { --felt: #10403f; }
+.casino.roulette { --felt: #4a1623; }
+.casino.highcard { --felt: #14243f; }
+.casino.blackjack { --felt: #0f3a28; }
+
+.casino-cashier {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  border-radius: 12px;
+  background: var(--panel);
+  margin-bottom: 12px;
+}
+.casino-cashier input {
+  flex: 1 1 90px;
+  min-width: 80px;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--slot-line);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+.casino-chips {
+  font-weight: 700;
+  color: var(--brass, #c6a469);
+}
+
+/* Стол в лобби: обложка, название и одна строка — занятость и
+   кнопка. Серой плиты под ним нет: четыре серых прямоугольника на
+   экране читаются как четыре формы, а не как четыре стола */
+.casino-game {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--slot-line);
+}
+.casino-game:last-child { border-bottom: none; }
+.casino-game h3 { margin: 0 0 2px; font-size: 16px; }
+.casino-about { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+.casino-tables { display: flex; flex-direction: column; gap: 6px; }
+.casino-table-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.casino-table-row .btn { flex: 0 0 auto; min-width: 120px; }
+.casino-taken {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.casino-phase { font-size: 12px; color: var(--muted); }
+
+/* Стол: сукно, над ним тёплый свет, игровой объект в середине */
+.casino-felt {
+  position: relative;
+  border-radius: 16px;
+  padding: 14px 12px 16px;
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(255, 228, 170, 0.22), transparent 60%),
+    var(--felt);
+  color: #f3efe6;
+  box-shadow: inset 0 0 0 2px rgba(198, 164, 105, 0.45);
+}
+.casino-seats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.casino-seat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 2px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.24);
+  border: 2px solid transparent;
+  min-height: 86px;
+  font-size: 11px;
+  text-align: center;
+}
+.casino-seat.me { border-color: var(--brass); }
+.casino-seat.turn { border-color: #ffe9a8; box-shadow: 0 0 10px #ffe9a833; }
+.casino-seat.empty { opacity: 0.45; }
+.casino-seat-face { font-size: 22px; line-height: 1; }
+.casino-seat-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.casino-seat-sum { font-weight: 700; color: #ffe9a8; }
+.casino-seat-bet { color: #d8ccb0; }
+.casino-seat-said { font-size: 10px; color: #ffd98a; }
+
+.casino-middle {
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.casino-clock {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: #ffe9a8;
+}
+.casino-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.18);
+  overflow: hidden;
+  width: 100%;
+  max-width: 320px;
+}
+.casino-bar span {
+  display: block;
+  height: 100%;
+  background: var(--brass);
+}
+.casino-shout {
+  font-size: 20px;
+  font-weight: 700;
+  color: #ffe9a8;
+  text-align: center;
+}
+.casino-mine {
+  margin-top: 10px;
+  font-size: 13px;
+  text-align: center;
+  color: #e8dfcc;
+}
+/* Разбор партии: итог, числа и объяснение словами */
+.casino-outcome { font-size: 17px; font-weight: 700; }
+.casino-outcome.won { color: #8ee6a8; }
+.casino-outcome.lost { color: #ff9b9b; }
+.casino-outcome.even { color: #ffe9a8; }
+.casino-sums { font-size: 12px; color: #d8ccb0; }
+.casino-why {
+  margin: 6px auto 0;
+  max-width: 340px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #f1ead9;
+  background: rgba(0, 0, 0, 0.26);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+/* Кости: лоток с бортиком и две кости по половинам */
+.casino-tray {
+  position: relative;
+  width: 100%;
+  max-width: 300px;
+  height: 120px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.25);
+  box-shadow: inset 0 0 0 3px rgba(198, 164, 105, 0.5);
+  overflow: hidden;
+}
+.casino-die {
+  position: absolute;
+  top: 28px;
+  width: 64px;
+  height: 64px;
+  border-radius: 12px;
+  display: grid;
+  grid-template: repeat(3, 1fr) / repeat(3, 1fr);
+  padding: 7px;
+  box-shadow: 0 6px 10px rgba(0, 0, 0, 0.45);
+}
+.casino-die.first { left: 36px; background: #efe6d2; }
+.casino-die.second { right: 36px; background: #2c3330; }
+.casino-die.first i { background: #22262a; }
+.casino-die.second i { background: #f2efe6; }
+.casino-die i { border-radius: 50%; width: 12px; height: 12px; align-self: center; justify-self: center; }
+.casino-die.rolling { animation: casino-roll 1.2s ease-out; }
+@keyframes casino-roll {
+  0% { transform: translateX(var(--from, -120px)) rotate(0deg); }
+  60% { transform: translateX(10px) rotate(380deg); }
+  80% { transform: translateX(-6px) rotate(350deg); }
+  100% { transform: translateX(0) rotate(360deg); }
+}
+
+/* Рулетка: диск и шарик — два слоя, как и просит ТЗ */
+.casino-wheel {
+  position: relative;
+  width: 232px;
+  height: 232px;
+}
+.casino-wheel canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.casino-fields {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  width: 100%;
+}
+.casino-field {
+  padding: 10px 4px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(0, 0, 0, 0.22);
+  color: #f3efe6;
+  font: inherit;
+  font-size: 12px;
+  min-height: 44px;
+}
+.casino-field.red { background: #8d2230; }
+.casino-field.black { background: #1b1f22; }
+.casino-field.on { outline: 2px solid var(--brass); }
+.casino-field .chip-count { display: block; font-size: 11px; color: #ffe9a8; }
+.casino-numbers {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  width: 100%;
+}
+.casino-numbers button {
+  min-height: 44px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  font: inherit;
+  font-size: 13px;
+  color: #fff;
+  background: #1b1f22;
+}
+.casino-numbers button.red { background: #8d2230; }
+.casino-numbers button.zero { background: #176b3a; grid-column: span 6; }
+
+/* Карты: рубашка, лицо и переворот на 240 мс */
+.casino-cards { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.casino-card {
+  width: 46px;
+  height: 66px;
+  border-radius: 7px;
+  background: #faf7f0;
+  color: #1b1f22;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 17px;
+  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.4);
+  transition: transform 0.24s ease;
+}
+.casino-card.small { width: 32px; height: 46px; font-size: 13px; }
+.casino-card.red { color: #a3202f; }
+.casino-card.back {
+  background: repeating-linear-gradient(45deg, #37506e, #37506e 5px, #2a3c54 5px, #2a3c54 10px);
+  color: transparent;
+}
+.casino-card.flip { transform: scaleX(0.05); }
+.casino-hand { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.casino-hand-title { font-size: 12px; color: #d8ccb0; }
+
+.casino-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.casino-actions button { flex: 1 1 110px; min-height: 44px; }
+.casino-stakes { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.casino-stakes button {
+  flex: 1 1 60px;
+  min-height: 44px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.24);
+  color: #f3efe6;
+  font: inherit;
+}
+.casino-stakes button.on { outline: 2px solid var(--brass); }
+
+/* Своя ставка: поле и кнопка в строку. Лесенка быстрых сумм покрывает
+   привычное, поле — всё остальное: на столе с минимумом в двадцать и
+   потолком в тысячу промежуточных ставок больше, чем кнопок в ряду */
+.casino-stake-box { margin-top: 8px; }
+.casino-own { display: flex; gap: 6px; margin-top: 6px; }
+.casino-own .field-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.24);
+  color: #f3efe6;
+}
+/* Стрелки числового поля в казино только мешают: шаг у ставки свой,
+   и прибавлять по единице нечем */
+.casino-own .field-input::-webkit-outer-spin-button,
+.casino-own .field-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.casino-own .field-input { -moz-appearance: textfield; appearance: textfield; }
+.casino-own-go {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.24);
+  color: #f3efe6;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.casino-own-go:active { transform: scale(0.97); }
+/* Отказ теми же словами, что и у службы: правило одно, и читаться оно
+   должно одинаково — до нажатия и после */
+.casino-own-oops {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  color: #ff9a8a;
+  min-height: 1em;
+}
+.casino-picks { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.casino-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.24);
+  color: #f3efe6;
+  font: inherit;
+  text-align: left;
+}
+.casino-pick.on { outline: 2px solid var(--brass); background: rgba(198, 164, 105, 0.22); }
+.casino-pick .odds { margin-left: auto; color: #ffe9a8; font-size: 12px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .casino-die.rolling { animation: none; }
+  .casino-card { transition: none; }
+}
+
+/* Обложка стола: в лобби маленькой, над столом — во всю ширину */
+.casino-game-head { display: flex; gap: 10px; align-items: flex-start; }
+.casino-game-head > div { flex: 1; min-width: 0; }
+.casino-cover {
+  width: 84px;
+  height: 84px;
+  border-radius: 12px;
+  object-fit: cover;
+  flex: none;
+}
+
+/* Ожидание круга: подпись и полоса. Секунд тут нет намеренно —
+   часы телефона и сервера расходятся, и цифра от этого дёргалась */
+.casino-wait {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.casino-bar span { transition: width 0.25s linear; }
+
+/* Подпись над рядом кнопок: ряд из цифр сам по себе не говорит, что
+   это — номинал фишки, номер места или сумма в кармане */
+.casino-hint {
+  margin: 10px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+/* Что уйдёт по нажатию: сумма и поле словами, над самими кнопками */
+.casino-chosen {
+  margin: 10px 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* Ночью залы закрыты: записка вместо столов. Касса при этом работает —
+   фишки деньги игрока, и сдать их он вправе в любой час */
+.casino-shut {
+  margin: 16px 0;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--panel);
+  text-align: center;
+  color: var(--muted);
+}
+
+/* «Карусель удачи»: своя игра и свой цвет. Стоит поверх столов — это
+   не стол, мест у неё нет и садиться за неё не надо */
+.casino-draw-card {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  margin-bottom: 14px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #5b2a86, #2b1b49 70%);
+  color: #f6efff;
+  box-shadow: inset 0 0 0 2px rgba(214, 178, 255, 0.5);
+}
+.casino-draw-words { flex: 1; min-width: 0; }
+.casino-draw-card h3 { margin: 0 0 2px; font-size: 17px; }
+.casino-draw-card .casino-about { color: #d9c9f2; }
+.casino-draw-card .btn { margin-top: 6px; }
+
+.casino.carousel { --felt: #2b1b49; --brass: #d6b2ff; }
+/* В рамке карусели только лента, и рамка скроена по ней: ни подписи,
+   ни пустого поля под ней больше нет */
+.casino.carousel .casino-felt { padding: 8px; }
+/* Итог вращения стоит под рамкой, а не в ней, — и несёт сукно с
+   собой: его цвета рассчитаны на тёмное поле, а под рамкой светло */
+.casino.carousel .casino-middle {
+  min-height: 0;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--felt);
+  box-shadow: inset 0 0 0 2px rgba(214, 178, 255, 0.45);
+}
+
+/* Лента: едет справа налево, под меткой останавливается приз */
+.casino-belt {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  box-shadow: inset 0 0 0 2px rgba(214, 178, 255, 0.45);
+  padding: 10px 0;
+}
+/* Лента едет кадрами, а не разметкой: CSS-анимацию нельзя остановить
+   на нужном предмете, а в карусели вся соль в остановке. Смещение
+   ставит `card.js`, тут — только раскладка */
+.casino-belt-run {
+  display: flex;
+  gap: 8px;
+  width: max-content;
+  will-change: transform;
+}
+.casino-belt-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 3px;
+  margin-left: -1px;
+  background: #ffe9a8;
+  box-shadow: 0 0 10px #ffe9a8;
+}
+.casino-prize {
+  width: 104px;
+  flex: none;
+  padding: 8px 6px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  text-align: center;
+  font-size: 11px;
+}
+.casino-prize img {
+  width: 100%;
+  height: 54px;
+  object-fit: contain;
+  display: block;
+  margin-bottom: 4px;
+}
+.casino-prize-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.casino-prize-price { color: #ffe9a8; }
+/* Значок жетона: он стоит в строке рядом с числом, а не отдельной
+   картинкой, — размер берём по строке, чтобы не прыгала высота */
+.chip-coin {
+  height: 1.05em;
+  width: auto;
+  vertical-align: -0.15em;
+}
+.casino-prize-price .chip-coin { height: 1em; }
+.casino-prize.kind-car { background: rgba(255, 233, 168, 0.18); }
+.casino-prize.kind-chips { background: rgba(142, 230, 168, 0.16); }
+
+
+/* ---------- шкала опыта ----------
+
+   Четыре строки — «Опыт», «Уровень», «До уровня», «До апгрейда» —
+   говорили то же самое, но вразнобой: сколько пройдено, понимал только
+   тот, кто делил одно число на другое в уме. Шкала показывает это одним
+   взглядом, а числа остаются под ней.
+
+   Цвета берём из темы, а роли — из макета: залитое оранжевое, взятый
+   апгрейд золотой, невзятый серый, уровень впереди красный. */
+.xp {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  padding: 10px 0 4px;
+}
+.xp-level {
+  flex: 0 0 auto;
+  min-width: 58px;
+  padding-right: 14px;
+  border-right: 2px solid var(--hp-red);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.xp-level-number {
+  font-size: 42px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.xp-level-word {
+  margin-top: 5px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+}
+.xp-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.xp-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+/* Черта между «ОПЫТ» и счётом апгрейдов тянется на всё свободное место:
+   в макете она и есть то, что связывает шапку шкалы в одну строку */
+.xp-head i {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--line);
+}
+/* Поля по бокам — под числа крайних засечек: у последней засечка стоит
+   на самом конце дорожки, и её число иначе уехало бы за край панели.
+   Сверху поле под флажки с номерами: флажок поднимается на 31 точку над
+   дорожкой, и при тридцати он наезжал на строку «ОПЫТ — АПГРЕЙДЫ».
+   Снизу поле под числа засечек, ровно такое же: зазоры сверху и снизу
+   одинаковые, иначе шкала висит выше середины своего блока */
+.xp-scale {
+  position: relative;
+  height: 13px;
+  margin: 40px 22px 30px 10px;
+}
+.xp-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--hp-track);
+}
+.xp-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #d4571a, #f0922a);
+  box-shadow: 0 0 10px rgba(226, 100, 31, 0.4);
+}
+.xp-mark {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+/* Ромб — повёрнутый квадрат, поэтому всё, что внутри, поворачиваем
+   обратно: иначе галочка и номер уровня лежали бы на боку */
+.xp-gem {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  border: 2px solid var(--slot-line);
+  background: var(--panel);
+  transform: rotate(45deg);
+}
+.xp-gem i {
+  transform: rotate(-45deg);
+  font-style: normal;
+  font-weight: 800;
+  font-size: 10px;
+  line-height: 1;
+}
+.xp-mark.taken .xp-gem {
+  border-color: var(--hp-yellow);
+  background: var(--hp-yellow);
+  color: #2a1a05;
+}
+.xp-mark-level .xp-gem {
+  width: 22px;
+  height: 22px;
+  border-color: var(--hp-red);
+  color: var(--hp-red);
+}
+.xp-mark-level .xp-gem i { font-size: 11px; }
+/* Флажок с номером апгрейда стоит над ромбом — как в макете, стрелкой
+   вверх: взятые золотые, следующий серый */
+.xp-flag {
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  transform: translate(-50%, -10px);
+  min-width: 19px;
+  padding: 2px 5px 3px;
+  border-radius: 4px 4px 2px 2px;
+  background: var(--slot-line);
+  color: var(--panel);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.25;
+  text-align: center;
+}
+.xp-flag::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: var(--slot-line);
+}
+.xp-mark.taken .xp-flag {
+  background: var(--hp-yellow);
+  color: #2a1a05;
+}
+.xp-mark.taken .xp-flag::after { border-top-color: var(--hp-yellow); }
+.xp-at {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translate(-50%, 9px);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.xp-total {
+  margin-top: 2px;
+  font-size: 22px;
+  font-weight: 800;
+  text-align: center;
+  letter-spacing: 0.01em;
+}
+.xp-next {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+/* На потолке засечек нет вовсе, и дорожка залита целиком: идти некуда */
+.xp.capped .xp-scale { margin-right: 10px; }
+
+/* На узком экране шкале тесно: числа под засечками у поздних уровней
+   пятизначные, и четыре таких в строку не встают. Сперва ужимаем всё,
+   что ужимается, а на совсем узких числа под засечками убираем вовсе —
+   главные два всё равно стоят крупно под дорожкой */
+@media (max-width: 400px) {
+  .xp { gap: 10px; }
+  .xp-level { min-width: 46px; padding-right: 10px; }
+  .xp-level-number { font-size: 34px; }
+  .xp-level-word { font-size: 8.5px; letter-spacing: 0.1em; }
+  .xp-head { font-size: 9.5px; letter-spacing: 0.07em; }
+  .xp-scale { margin-left: 6px; margin-right: 20px; }
+  .xp-at { font-size: 10px; }
+  .xp-total { font-size: 20px; }
+  .xp-next { font-size: 11.5px; }
+}
+@media (max-width: 345px) {
+  .xp-at { display: none; }
+  .xp-scale { margin-bottom: 16px; }
+}
+
+/* ---------- шкала опыта отдельным блоком ----------
+
+   Прежде она стояла строкой среди характеристик, между двумя чертами.
+   Теперь это свой блок наверху карточки, сразу под семьёй: уровень —
+   первое, что о бойце спрашивают, и искать его в середине списка не
+   должно быть нужно. Цвета свои, игровые: красная черта у уровня,
+   оранжевая дорожка — те же, что в бою */
+.xp-panel {
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+/* Правая половина по высоте выравнивается с числом уровня: шапка,
+   дорожка и числа стоят посередине, а не висят от верхнего края */
+.xp-panel .xp-main {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.xp-panel .xp { padding: 0; }
+/* Число под дорожкой чуть меньше: оно не заголовок блока, а подпись к
+   нему — крупнее уровня слева ему быть незачем */
+.xp-panel .xp-total { font-size: 18px; }
+.xp-panel .xp-next { font-size: 11.5px; }
+
+/* ---------- кошельки над рюкзаком ----------
+
+   Счёт и наличные в один ряд: деньги стояли строкой среди боевых
+   показателей, где им делать нечего, а нужны они ровно здесь — рядом
+   с тем, что покупают */
+.wallets {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.wallet-tile {
+  padding: 8px 10px 9px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.wallet-tile-head {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+/* Сумма и плюс стоят в одной строке. Плюс своей строкой растягивал
+   плашку наличных на три ряда, а плашку счёта — нет, и ряд из двух
+   одинаковых плашек переставал быть рядом из двух одинаковых плашек */
+.wallet-tile-sum {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 17px;
+  font-weight: 800;
+}
+/* Кнопка пополнения стоит у наличных: звёзды приходят кредитами в
+   карман, а не на счёт */
+.wallet-tile .plus { flex: 0 0 auto; }
+
+/* ---------- машина у здания ----------
+
+   В рамке сама машина: название с номером, картинка и чья она. Кнопки
+   под рамкой, в один ряд: рамка — про машину, а не про то, что с ней
+   делать */
+/* У машины рамка своя, в одну колонку: название, под ним сама машина,
+   под ней хозяин. Общая рамка вещи делит место надвое — картинка слева,
+   текст справа, — и машина в ней выходила маркой на полях */
+.car-here {
+  display: block;
+}
+.car-here .thing-title { text-align: center; }
+.car-here-pic {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  background: var(--avatar-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 34px;
+  overflow: hidden;
+  margin: 8px 0;
+}
+.car-here-pic img { width: 100%; height: 100%; object-fit: cover; }
+.car-here .thing-note { text-align: center; }
+.car-here-acts {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 14px;
+}
+.car-here-acts .btn { flex: 1 1 0; }

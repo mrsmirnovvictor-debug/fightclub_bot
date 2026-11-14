@@ -19,7 +19,10 @@ from bot.game.classes import Stats
 from bot.game.equipment import CATALOGUE, OwnedItem, Slot
 from bot.game.health import now_ts
 from bot.game.potions import ActiveEffect
+from bot.game.raid import CELLAR_RAID
 from bot.game.store import PACKS
+from bot.game.clans import Clan, Rank, Standing
+from bot.game.estate import Lease
 from bot.models import Player
 from bot.game.locations import Service
 from bot.webapp.card import build_card, build_magic, build_shop, build_topup
@@ -32,23 +35,40 @@ async_playwright = pytest.importorskip(
 
 
 def find_chromium() -> str | None:
-    """Плейрайт в этом окружении держит браузеры отдельно от пакета."""
+    """Плейрайт в этом окружении держит браузеры отдельно от пакета.
+
+    Папка с бинарником зовётся по-разному: у сборок постарше это
+    `chrome-linux`, у новых — `chrome-linux64`. Ищем обе: иначе на новой
+    машине браузер «не находится», и все проверки витрины молча
+    пропускаются — а молчание выглядит точно как зелёный прогон.
+    """
     roots = [os.environ.get("PLAYWRIGHT_BROWSERS_PATH"), "/opt/pw-browsers"]
+    layouts = ("chromium-*/chrome-linux/chrome", "chromium-*/chrome-linux64/chrome")
     for root in filter(None, roots):
-        for chrome in sorted(Path(root).glob("chromium-*/chrome-linux/chrome")):
-            return str(chrome)
+        for layout in layouts:
+            for chrome in sorted(Path(root).glob(layout)):
+                return str(chrome)
     return None
 
 
 CHROMIUM = find_chromium()
-# Всё, что рисуется картинкой: у лавки клуба jpeg, у мага png
-IMAGES = "**/*.{jpeg,jpg,png}"
+# Всё, что рисуется картинкой: у лавки клуба jpeg, у мага png, у
+# столов казино webp. Пропустить расширение нельзя: пропущенное идёт в
+# настоящую сеть, не доходит и выглядит как «картинки нет»
+IMAGES = "**/*.{jpeg,jpg,png,webp}"
 
 # Однопиксельный png для тех тестов, где картинка должна загрузиться. По
 # умолчанию страница картинок не грузит вовсе — до бакета из тестов не
 # дотянуться, — и вёрстку с картинками иначе было бы не проверить
 PIXEL = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+# Картинка вдвое выше своей ширины (2×4): пиксель на все случаи не
+# годится там, где проверяют обрезку — у квадрата её не видно ни при
+# каком `object-fit`. Лица нанятых нарисованы в полный рост, и рамка
+# им как раз не квадратная
+TALL_PIXELS = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAECAIAAAArjXluAAAAFklEQVR42mM4oaEBRAwaASeACEZBBAGDXAlhbolbAwAAAABJRU5ErkJggg=="
 )
 pytestmark = pytest.mark.skipif(CHROMIUM is None, reason="Chromium не найден")
 
@@ -126,38 +146,84 @@ EMPTY_HISTORY = {
 }
 
 
-def hr_state(job: str = "", taken=(), blocked=()) -> dict:
-    """Агентство, как его отдаёт сервер: доска из пяти мест."""
+def hr_state(
+    job: str = "", taken=(), blocked=(), minutes: int = 6 * 60,
+    diplomas=(), months: int = 0,
+) -> dict:
+    """Агентство, как его отдаёт сервер: вся доска города."""
     from bot.game.health import now_ts
     from bot.webapp.work import build_hr
-    from bot.game.work import COOLDOWN_SECONDS, VACANCIES
+    from bot.game.work import COOLDOWN_SECONDS, MONTH_SECONDS, agency_board
+    from bot.work_service import lacking
 
     moment = now_ts()
     player = make_player("office_building")
+    player.diplomas = list(diplomas)
+    player.job_experience = months * MONTH_SECONDS
     if job:
         player.job_code = job
         player.job_since = moment - 3 * 24 * 60 * 60
         player.job_week = moment - 2 * 24 * 60 * 60
-        player.job_minutes = 6 * 60
+        player.job_minutes = minutes
         player.account_number = "VB-1234-5678-9012"
-    rows = [
-        {
-            "vacancy": one,
-            "taken_by": ("Тайлер" if one.code == job
-                         else "Марла" if one.code in taken else ""),
-            "mine": one.code == job,
-            "blocked_until": moment + COOLDOWN_SECONDS if one.code in blocked else 0,
-            "block_reason": "test" if one.code in blocked else "",
-        }
-        for one in VACANCIES
-    ]
+    rows = []
+    # Доска агентства, а не весь список мест города: полицейских на ней
+    # нет — в полицию приходят в полицию
+    for one in agency_board():
+        holders = []
+        if one.code == job:
+            holders = ["Тайлер"]
+        elif one.code in taken:
+            # Занимаем все кресла: так проверяется «мест нет»
+            holders = [f"Марла-{number}" for number in range(one.seats)]
+        rows.append(
+            {
+                "vacancy": one,
+                "holders": holders,
+                "taken_by": ", ".join(holders),
+                "taken_seats": len(holders),
+                "free_seats": (
+                    max(0, one.seats - len(holders)) if one.limited else one.cap
+                ),
+                "limited": one.limited,
+                "mine": one.code == job,
+                "blocked_until": (
+                    moment + COOLDOWN_SECONDS if one.code in blocked else 0
+                ),
+                "block_reason": "test" if one.code in blocked else "",
+                "lacks": lacking(player, one, moment),
+            }
+        )
     return build_hr(player, rows, moment)
 
 
-def work_state(job: str = "bartender", shift: bool = False, today: int = 0) -> dict:
+class EmptyCity:
+    """База, в которой никто нигде не работает и заявок ни на что нет.
+
+    Экранам работы в этих проверках нужна не база, а ответ сервера:
+    кто где сидит, они и так рисуют по готовому json.
+    """
+
+    async def taken_jobs(self) -> dict:
+        return {}
+
+    async def job_blocks_of(self, user_id: int, now: int) -> dict:
+        return {}
+
+    async def bids_of(self, user_id: int) -> list:
+        return []
+
+    async def mayor(self) -> dict:
+        """Кресло мэра пустое: назначать за город в этих проверках нечего."""
+        return {"user_id": 0, "since": 0, "day": ""}
+
+
+async def work_state(
+    job: str = "bartender", shift: bool = False, today: int = 0
+) -> dict:
     """Рабочее место, как его отдаёт сервер."""
     from bot.game.health import now_ts
-    from bot.game.work import get_vacancy, moscow_day
+    from bot.game.work import get_vacancy, work_day
     from bot.webapp.work import build_work
 
     moment = now_ts()
@@ -168,11 +234,381 @@ def work_state(job: str = "bartender", shift: bool = False, today: int = 0) -> d
         player.job_since = moment - 3 * 24 * 60 * 60
         player.job_week = moment - 2 * 24 * 60 * 60
         player.job_minutes = 6 * 60
-        player.shift_day = moscow_day(moment).isoformat()
+        player.shift_day = work_day(moment)
         player.shift_minutes = today
         if shift:
             player.shift_until = moment + 1_800
-    return build_work(player, moment)
+    return await build_work(EmptyCity(), player, moment)
+
+
+def school_state(
+    stage: str = "new", wrong: int = 0, seconds: int = 900,
+    tried_at: int = 0,
+) -> dict:
+    """Экран автошколы в нужном шаге — тем же сборщиком, что и в бою.
+
+    `tried_at` — час неудачной попытки: по нему школа и решает, пересдача
+    ли это и не в том ли окне боец уже сидел за билетом.
+    """
+    from bot.game.driving import EXAM_SECONDS, School
+    from bot.game.health import now_ts
+    from bot.webapp.driving import build_school
+
+    moment = now_ts()
+    player = make_player("driving_school")
+    player.credits = 1000
+    if stage == "study":
+        player.school = School(course_at=moment)
+    elif stage == "ready":
+        player.school = School(
+            course_at=moment - 4 * 24 * 3600, tried_at=tried_at
+        )
+    elif stage == "exam":
+        player.school = School(
+            course_at=moment - 4 * 24 * 3600,
+            exam_until=moment + seconds,
+            wrong=wrong,
+        )
+    elif stage == "passed":
+        player.school = School(passed_at=moment)
+    body = build_school(player, moment)
+    # Часы приёма в прогоне настоящие, а экран нужен открытым: иначе
+    # половина проверок зависела бы от того, среда сегодня или четверг
+    if stage in ("ready", "exam"):
+        body["open"] = True
+        # По той же причине и «сегодня уже сдавал»: попал ли час попытки
+        # в нынешнее окно, зависит от дня прогона. Само правило проверяет
+        # `tests/test_driving.py`, здесь — то, как экран его показывает
+        if tried_at:
+            body["tried_today"] = tried_at > moment - 3 * 60 * 60
+    assert body["stage"] == stage or stage == "new", body["stage"]
+    assert seconds == EXAM_SECONDS or stage != "exam" or body["seconds_left"]
+    return body
+
+
+def mansion_state(**changes) -> dict:
+    """Ответ особняка: цена, свои заявки и кланы города."""
+    from bot.webapp.clans import build_mansion
+
+    body = build_mansion(make_player("mafia_mansion"), [], [], TOKEN)
+    body.update(changes)
+    return body
+
+
+def a_family(vault: int = 0) -> tuple:
+    """Семья для экранов: Дон, приближённая и мафиози — и её сейф."""
+    from bot.game.clans import Clan, Member, Rank, Roster
+    from bot.game.health import now_ts
+
+    moment = now_ts()
+    clan = Clan(
+        id=1, name="Коза Ностра", don=42, created_at=moment,
+        sign="black_ravens", members=3, vault=vault,
+    )
+    don = make_player("mafia_mansion")
+    don.clan = Standing(clan=clan, rank=Rank.DON, joined_at=moment)
+    roster = Roster(
+        clan=clan,
+        members=[
+            Member(
+                user_id=42, rank=Rank.DON, nickname="Растафарайчик", level=5,
+                class_code="warrior", joined_at=moment,
+            ),
+            Member(
+                user_id=43, rank=Rank.CAPO, nickname="Марла", level=7,
+                class_code="rogue", pro_until=moment + 600, joined_at=moment,
+            ),
+            Member(
+                user_id=44, rank=Rank.SOLDIER, nickname="Ангел", level=2,
+                class_code="tank", joined_at=moment,
+            ),
+        ],
+    )
+    return don, roster
+
+
+def clan_state(**changes) -> dict:
+    """Ответ `api/clan`: семья, какой её видит Дон в окне из карточки."""
+    from bot.webapp.clans import build_clan
+
+    don, roster = a_family()
+    body = build_clan(don, roster, [], [], TOKEN)
+    body.update(changes)
+    return body
+
+
+def stored_things(*codes: str) -> list:
+    """Вещи на полках хранилища: по одной на каждый код."""
+    from bot.game.clans import Stored
+
+    return [
+        Stored(
+            id=number + 1, code=code, max_wear=20, by_id=43, by_name="Марла",
+            put_at=now_ts(),
+        )
+        for number, code in enumerate(codes)
+    ]
+
+
+async def mansion_pages(page, listing: dict, opened: dict) -> None:
+    """Особняк на две страницы: список кланов и открытый клан.
+
+    Подменённая ручка отвечает одним и тем же на любой запрос, а особняк
+    теперь спрашивает по-разному: список — без клана, клан — с номером.
+    Отсюда своя подмена: по адресу и видно, что просили.
+    """
+    async def answer(route):
+        url = route.request.url
+        body = opened if ("clan=" in url or route.request.method == "POST") else listing
+        await route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        )
+
+    await page.route("**/api/mafia*", answer)
+
+
+def don_mansion(
+    vault: int = 400, items=(), bag=("bandana",), opened: bool = True,
+    requests=(), invites=(), **changes,
+) -> dict:
+    """Особняк глазами Дона. `opened` — клан уже открыт из списка."""
+    from bot.webapp.clans import build_clan_page, build_estate, build_mansion
+
+    don, roster = a_family(vault)
+    don.gear = [
+        OwnedItem(item=CATALOGUE[code], id=number + 1)
+        for number, code in enumerate(bag)
+    ]
+    page = (
+        build_clan_page(
+            don, roster, list(requests), list(invites),
+            build_estate(don, list(items)), TOKEN,
+        )
+        if opened
+        else {}
+    )
+    body = build_mansion(don, [roster.clan], [], TOKEN, opened=page)
+    body.update(changes)
+    return body
+
+
+def flats_state(
+    number: int = 0, vault: int = 0, kept=(), bag=("bandana",), paid: bool = True,
+    cars=(), keys=(), **changes,
+) -> dict:
+    """Ответ жилого дома: подъезд, а при `number` — ещё и своя квартира."""
+    from bot.game.estate import GRACE_SECONDS, Kept, RENT_SECONDS, flat_at
+    from bot.webapp.estate import build_house
+
+    moment = now_ts()
+    player = make_player("residential_apartment")
+    player.credits = 2000
+    player.gear = [
+        OwnedItem(item=CATALOGUE[code], id=index + 1)
+        for index, code in enumerate(bag)
+    ]
+    taken = {
+        2: {
+            "user_id": 43, "nickname": "Марла", "paid_until": moment, "rooms": 1,
+        }
+    }
+    items = [
+        Kept(id=index + 1, code=code, max_wear=20, put_at=moment)
+        for index, code in enumerate(kept)
+    ]
+    if number:
+        flat = flat_at("residential_apartment", number)
+        # Просроченная квартира заперта, но из списка не уходит: неделя
+        # у хозяина ещё есть
+        until = (
+            moment + RENT_SECONDS if paid else moment - GRACE_SECONDS // 2
+        )
+        player.flat = Lease(
+            id=1, user_id=player.user_id, house="residential_apartment",
+            number=number, rooms=flat.rooms, rented_at=moment - RENT_SECONDS,
+            paid_until=until, vault=vault,
+        )
+        taken[number] = {
+            "user_id": player.user_id, "nickname": "Растафарайчик",
+            "paid_until": until, "rooms": flat.rooms,
+        }
+    body = build_house(
+        player, "residential_apartment", taken, items,
+        parking=list(cars), keys=list(keys),
+    )
+    body.update(changes)
+    return body
+
+
+def parked(code: str = "street_compact", mine: bool = True, owner: str = "ты") -> dict:
+    """Машина на парковке так, как её отдаёт служба."""
+    from bot.game.cars import get_car
+
+    car = get_car(code)
+    return {
+        "code": car.code, "title": car.title, "image": car.image,
+        "times": car.times, "times_text": car.times_text, "note": car.note,
+        "id": 1 if mine else 2, "user_id": 42 if mine else 43,
+        "owner": owner, "mine": mine,
+        "own": True, "left": 0, "left_text": "",
+    }
+
+
+def car_keys(*codes: str) -> list[dict]:
+    """Ключи при бойце: то, что он может поставить на парковку."""
+    from bot.game.cars import get_car
+
+    return [
+        {
+            "code": get_car(code).code, "title": get_car(code).title,
+            "image": get_car(code).image, "times": get_car(code).times,
+            "note": "", "service": False, "own": True, "until": 0,
+            "left": 0, "left_text": "", "driving": False,
+            "parked": "", "parked_text": "",
+        }
+        for code in codes
+    ]
+
+
+def quest_log(done=("ring",), taken: str = "", marks=()) -> dict:
+    """Журнал заданий для экрана: что сдано и что сейчас на руках."""
+    from bot.game.progress import DONE, QuestLog
+
+    moment = now_ts()
+    log = {
+        code: QuestLog(code=code, state=DONE, taken_at=moment, done_at=moment)
+        for code in done
+    }
+    if taken:
+        log[taken] = QuestLog(
+            code=taken, marks=frozenset(marks), taken_at=moment
+        )
+    return log
+
+
+def bar_state(
+    done=("ring",), taken: str = "", marks=(), level: int = 4, **changes
+) -> dict:
+    """Ответ бара: бармен, разговор и журнал заданий."""
+    from bot.webapp.bar import build_bar
+
+    player = make_player("bar")
+    # Четвёртый уровень по умолчанию: все главы открыты, и проверке
+    # экрана не приходится обходить замки
+    player.level = level
+    body = build_bar(player, quest_log(done, taken, marks), now_ts())
+    body.update(changes)
+    return body
+
+
+def quests_state(done=("ring",), taken: str = "", marks=(), level: int = 4) -> dict:
+    """Ответ журнала заданий — вкладка «Квесты» в карточке."""
+    from bot.webapp.bar import chapters_payload
+
+    player = make_player("bar")
+    player.level = level
+    chapters = chapters_payload(player, quest_log(done, taken, marks))
+    rows = [one for chapter in chapters for one in chapter["quests"]]
+    return {
+        "chapters": chapters,
+        "quests": rows,
+        "level": player.level,
+        "done": sum(1 for row in rows if row["state"] == "done"),
+        "total": len(rows),
+        "giver": "Бармен в Баре",
+    }
+
+
+def study_state(house: str = "university", course: str = "", lessons: int = 0,
+                **changes) -> dict:
+    """Ответ учёбы: приёмная этого дома и свой курс, если он есть."""
+    from bot.webapp.study import build_study
+
+    moment = now_ts()
+    player = make_player(house)
+    player.credits = 5_000
+    if course:
+        player.study_code = course
+        player.study_since = moment
+        player.study_lessons = lessons
+    body = build_study(player, moment)
+    body.update(changes)
+    return body
+
+
+def post_state(inbox=(), outbox=(), bag=("bandana",), **changes) -> dict:
+    """Ответ почты: рюкзак на отправку и обе полки посылок."""
+    from bot.webapp.post import build_post
+
+    moment = now_ts()
+    player = make_player("post_office")
+    player.credits = 2_000
+    player.gear = [
+        OwnedItem(item=CATALOGUE[code], id=index + 1)
+        for index, code in enumerate(bag)
+    ]
+    body = build_post(player, list(inbox), list(outbox), moment)
+    body.update(changes)
+    return body
+
+
+def a_parcel(
+    number: int = 1, code: str = "pipe", price: int = 0, mine: bool = False,
+    days: int = 5, back: bool = False,
+) -> object:
+    """Посылка для экрана: от Марлы бойцу или от бойца Марле."""
+    from bot.game.post import DAY, Parcel
+
+    moment = now_ts()
+    return Parcel(
+        id=number,
+        from_id=42 if mine else 43,
+        to_id=43 if mine else 42,
+        code=code,
+        max_wear=20,
+        price=price,
+        sent_at=moment - 3_600,
+        keep_until=moment + days * DAY if days else 0,
+        back=back,
+        from_name="Растафарайчик" if mine else "Марла",
+        to_name="Марла" if mine else "Растафарайчик",
+    )
+
+
+def statement_state(rows=(), days: int = 30, **changes) -> dict:
+    """Выписка по карте так, как она уезжает вкладкой банка."""
+    from bot.models import CardMove
+    from bot.webapp.bank import statement_payload
+
+    moment = now_ts()
+    # Строка — четвёркой, а с комментарием пятёркой: у старых операций
+    # комментария нет вовсе, и такую строку экран тоже должен нарисовать
+    moves = [
+        CardMove(
+            moment - (index + 1) * 3_600, row[0], row[1], row[2], row[3],
+            about=row[4] if len(row) > 4 else "",
+        )
+        for index, row in enumerate(rows)
+    ]
+    income = sum(one.amount for one in moves if one.amount > 0)
+    spent = -sum(one.amount for one in moves if one.amount < 0)
+    body = statement_payload(moves, days=days, income=income, spent=spent, now=moment)
+    body.update(changes)
+    return body
+
+
+def police_state(passed: bool = True, licence: bool = False) -> dict:
+    from bot.game.driving import School
+    from bot.game.health import now_ts
+    from bot.webapp.driving import build_police
+
+    moment = now_ts()
+    player = make_player("vcpd")
+    player.school = School(
+        passed_at=moment if passed or licence else 0,
+        licence_at=moment if licence else 0,
+    )
+    return build_police(player, moment)
 
 
 def bank_state(
@@ -182,9 +618,18 @@ def bank_state(
     balance: int = 3_000,
     cash: int = 1_200,
     prefers: str = "card",
+    job: str = "",
+    deposits: list | None = None,
+    loan=None,
 ) -> dict:
-    """Банк, как его отдаёт сервер: счёт, карта, банкомат и прайс скидок."""
+    """Банк, как его отдаёт сервер: счёт, карта, банкомат и прайс скидок.
+
+    `job` — место работы: от его жалованья банк считает кредит, и без
+    работы кредита нет вовсе. `deposits` и `loan` кладут готовыми: в
+    базу этот сбор не ходит, и подделывать её незачем.
+    """
     from bot.game.classes import Stats
+    from bot.game.credit import LOAN_ACCOUNT_AGE
     from bot.game.health import now_ts
     from bot.models import Player
     from bot.webapp.bank import build_bank
@@ -192,17 +637,52 @@ def bank_state(
     moment = now_ts()
     player = Player(
         user_id=42, nickname="Тайлер", class_code="warrior", location="bank",
-        credits=cash, pay_from=prefers,
+        credits=cash, pay_from=prefers, job_code=job,
         **Stats(strength=10, agility=10, intuition=10, endurance=10).as_dict(),
     )
     if account:
         player.account_number = "VB-1234-5678-9012"
         player.account_balance = balance
+        # Счёт старше недели: иначе банк откажет не по тому поводу,
+        # который проверяет тест
+        player.account_at = moment - LOAN_ACCOUNT_AGE
     if card and account:
         player.card_at = moment - 1_000
         # Не обслужена — значит, оплаченный год позади
         player.card_paid_until = moment + 1_000 if works else moment - 1
-    return build_bank(player, moment)
+    return build_bank(player, moment, deposits=deposits, loan=loan)
+
+
+def made_deposit(amount: int = 2_000, months: int = 3, ripe: bool = False):
+    """Готовый вклад для витрины: дошедший до срока или ещё лежащий."""
+    from bot.game.credit import MONTH, Deposit
+    from bot.game.health import now_ts
+
+    moment = now_ts()
+    opened = moment - MONTH * months if ripe else moment
+    return Deposit(
+        id=1, user_id=42, amount=amount, months=months,
+        opened_at=opened, paid_until=opened + MONTH * months,
+    )
+
+
+def made_loan(amount: int = 10_000, months: int = 12, late: bool = False):
+    """Готовый кредит для витрины: по графику или просроченный."""
+    from bot.game.credit import DAY, MONTH, Loan, monthly_payment
+    from bot.game.health import now_ts
+
+    moment = now_ts()
+    payment = monthly_payment(amount, months)
+    if not late:
+        return Loan(
+            user_id=42, amount=amount, months=months, payment=payment,
+            left=months, taken_at=moment, due_at=moment + MONTH,
+        )
+    return Loan(
+        user_id=42, amount=amount, months=months, payment=payment,
+        left=months - 1, taken_at=moment - MONTH, due_at=moment + MONTH,
+        owed=payment, penalty=0, penalty_at=moment - DAY * 10,
+    )
 
 
 def purse_state(
@@ -378,7 +858,7 @@ BOSS_CARD = {
     "code": "cellar_boss", "title": "Босс Казино", "emoji": "🩸",
     "image": "", "raid_name": "Ограбление Босса Казино",
     "tagline": "Он тут всё построил и всех похоронил.", "live": False,
-    "levels_above": 4, "level": 9, "fclass": "Танк", "fclass_emoji": "🛡️",
+    "alone": True, "levels_above": 4, "level": 9, "fclass": "Танк", "fclass_emoji": "🛡️",
     "max_hp": 304, "weapon": "Кувалда", "weapon_icon": "🔨", "damage": [15, 25],
     "stats": {"strength": 16, "agility": 2, "intuition": 11, "endurance": 33},
     "combat": {
@@ -436,9 +916,23 @@ EMPTY_RAID = {
         {"zone": "chest", "title": "Корпус + Живот"},
     ],
     "min_party": 1, "max_party": 10, "can_fight": True,
+    "kind": {
+        "code": "cellar", "title": "Ограбление Босса Казино", "emoji": "🩸",
+        "tagline": "Он тут всё построил и всех похоронил.", "house": "casino",
+        # Рассказ о рейде берём настоящий: он стоит под заголовком, и
+        # переписывать его в стенде значило бы проверять свою же выдумку
+        "story": CELLAR_RAID.story,
+        "clones": False,
+        "min_party": 1, "max_party": 10, "purse": 100, "split": True,
+        "alone": True, "foes": 1, "grows": False, "foe_level": 0,
+        "schedule": "сегодня с 8:00 до 10:00 и с 16:00 до 18:00 мск",
+        "next_window": "с 00:00 до 02:00 мск",
+    },
     "raid": None, "lobby": None, "lobbies": [], "boss": BOSS_CARD,
+    "roster": [BOSS_CARD],
     "gate": {
-        "pass_code": "raid_pass", "pass_title": "Рейд-пасс", "pass_price": 10,
+        "pass_code": "raid_pass", "pass_title": "Билет в казино",
+        "pass_price": 10,
         "pass_emoji": "🎟", "passes": 2, "schedule": "0–2, 8–10, 12–14, 16–18, 20–22 мск",
         "open": True, "window": "с 20:00 до 22:00 мск",
         "next_window": "с 00:00 до 02:00 мск", "won": False, "spent": False,
@@ -481,7 +975,8 @@ def to_rgb(hexed: str) -> str:
 
 
 def city_map(
-    here: str = "fight_club", road: dict | None = None, raid: dict | None = None
+    here: str = "fight_club", road: dict | None = None, raid: dict | None = None,
+    cars: list | None = None,
 ) -> dict:
     """Карта города так, как её отдаёт сервер."""
     from bot.game.classes import get_class
@@ -493,20 +988,37 @@ def city_map(
         user_id=42, nickname="Тайлер", class_code="warrior", location=here,
         **fclass.base_stats.as_dict(),
     )
-    body = build_map(walker)
+    body = build_map(walker, cars=cars)
     if road:
         body["road"] = {**body["road"], **road}
     if raid:
-        body["raid"] = {**body["raid"], **raid}
+        # Плашка под своим домом: у казино и стадиона расписания разные,
+        # и на карте у каждого свой отсчёт
+        body["raids"] = {here if here in ("casino", "stadium") else "casino": raid}
     return body
+
+
+def empty_cars() -> dict:
+    """Салон, в котором нечего показать: так его видит любой другой экран."""
+    return {
+        "title": "Автосалон", "place": "car_dealership", "garage": False,
+        "credits": 0, "has_licence": False, "job": "", "driving": None,
+        "keys": [], "shelf": [], "note": "", "said": "",
+    }
 
 
 async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
     battle=None, city=None, workshop=None, hospital=None, trade=None,
-    insurance=None, gym=None, bank=None, hr=None, work=None,
-    images=False, telegram="",
+    insurance=None, gym=None, bank=None, hr=None, work=None, school=None,
+    police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
+    quests=None, study=None, turf=None, crowd=None, elections=None,
+    cars=None, keys=None, dorm=None, charge=None, dojo=None, barber=None,
+    court=None, blackout=None, casino=None, ladder=None,
+    images=False,
+    telegram="",
+    loader_wait=False,
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -518,11 +1030,19 @@ async def open_page(
         executable_path=CHROMIUM, args=["--no-proxy-server"]
     )
     page = await browser.new_page(viewport={"width": 420, "height": 900})
+    # Заставку проверки не высиживают: её порог в две секунды здесь ни
+    # о чём не говорит, а на пяти сотнях проверок стоит четверть часа.
+    # Саму заставку проверяет отдельный тест — он просит порог обратно
+    if not loader_wait:
+        await page.add_init_script(
+            "window.LOADER_LEAST_MS = 0; window.LOADER_FADE_MS = 0;"
+        )
     await page.route("**/api/card*", canned(card))
     await page.route("**/api/shop*", canned(shop or {}))
     await page.route("**/api/topup*", canned(topup or {"credits": 0, "packs": []}))
     await page.route("**/api/looks*", canned(looks or {"looks": [], "credits": 0}))
     await page.route("**/api/club*", canned(club or {"fighters": [], "total": 0}))
+    await page.route("**/api/ladder*", canned(ladder or ladder_state()))
     await page.route("**/api/magic*", canned(magic or {"items": [], "credits": 0}))
     await page.route("**/api/fights*", canned(fights or EMPTY_RING))
     await page.route("**/api/history*", canned(history or EMPTY_HISTORY))
@@ -540,7 +1060,36 @@ async def open_page(
     # Без звёздочки на конце, и это не придирка: `**/api/work*` ловит и
     # `/api/workshop`, а перехват в Playwright выигрывает последний — и
     # мастерская начинала получать ответ рабочего места
-    await page.route("**/api/work", canned(work or work_state()))
+    await page.route("**/api/work", canned(work or await work_state()))
+    await page.route("**/api/school", canned(school or school_state()))
+    await page.route("**/api/police", canned(police or police_state()))
+    await page.route("**/api/mafia", canned(mafia or mansion_state()))
+    await page.route("**/api/flats", canned(flats or flats_state()))
+    await page.route("**/api/post", canned(post or post_state()))
+    await page.route("**/api/bar", canned(bar or bar_state()))
+    await page.route("**/api/quests", canned(quests or quests_state()))
+    await page.route("**/api/study", canned(study or study_state()))
+    await page.route("**/api/turf", canned(turf or {"spots": []}))
+    await page.route("**/api/crowd", canned(crowd or {"crowd": []}))
+    await page.route("**/api/elections", canned(
+        elections or {"candidates": [], "phase": "quiet"}
+    ))
+    await page.route("**/api/clan", canned(clan or {"in_clan": False, "clan": {},
+                                                    "ranks": [], "said": ""}))
+    await page.route("**/api/cars", canned(cars or empty_cars()))
+    await page.route("**/api/dorm", canned(dorm or {}))
+    await page.route("**/api/charge", canned(charge or {}))
+    await page.route("**/api/dojo", canned(dojo or {}))
+    await page.route("**/api/barber", canned(barber or {}))
+    # Ключи — либо один список машин на руках, либо весь ответ целиком:
+    # у этого экрана есть и вторая полка, «У этого здания»
+    await page.route("**/api/keys", canned(
+        keys if isinstance(keys, dict) else {"keys": keys or []}
+    ))
+    await page.route("**/api/court", canned(court or {}))
+    await page.route("**/api/blackout", canned(blackout or {}))
+    await page.route("**/api/casino*", canned(casino or {}))
+
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
     # Обычно телеграмовского скрипта нет вовсе — страница умеет и без него.
@@ -579,6 +1128,13 @@ async def weapon_page(db):
 async def fan_page(db):
     """Прилавок фанатского магазина: линия своей команды целиком."""
     async for page in shop_screen(db, Service.FAN):
+        yield page
+
+
+@pytest.fixture
+async def jewel_page(db):
+    """Прилавок ювелира: две полки — ожерелья и кольца."""
+    async for page in shop_screen(db, Service.JEWEL):
         yield page
 
 
@@ -660,29 +1216,37 @@ async def test_the_clothes_shop_holds_everything_but_weapons(shop_page):
     titles = await visible_titles(shop_page)
     assert "Кастет" not in titles, "оружие торгуют у оружейника"
 
-    # футболки на прилавке: пять штук, часть открыта по уровню
+    # футболки на прилавке: девять штук, часть открыта по уровню
     shirts = next(head for head in heads if "Футболки" in head)
-    assert "из 5" in shirts
+    assert "из 9" in shirts
     assert "Майка-алкоголичка" in titles
 
 
 async def test_the_weapon_shop_holds_only_what_you_hold(weapon_page):
-    """У оружейника две полки: оружие и щиты."""
+    """У оружейника три полки: оружие, щиты и билеты на рейды.
+
+    Билеты не пьют, их предъявляют на входе — и стоят они тут, а не в
+    аптеке, куда попали когда-то за компанию со склянками.
+    """
     heads = await shelves(weapon_page)
-    assert [head.split("\n")[0] for head in heads] == ["Оружие", "Щиты"]
+    assert [head.split("\n")[0] for head in heads] == [
+        "Оружие", "Щиты", "Билеты"
+    ]
 
     titles = await visible_titles(weapon_page)
     assert "Кастет" in titles  # открыто по уровню
     assert "Бита" not in titles  # закрыто, лежит под кнопкой
+    assert "Билет в казино" in titles
 
 
 async def test_the_fan_shop_shows_its_own_line(fan_page):
     """«Северный Вал» одевает целиком: бита и кроссовки одной команды."""
     heads = await shelves(fan_page)
-    # восемь полок: своей линии нет только в перчатках, и пустой полки тут нет
+    # Одиннадцать полок: линия закрыла все слоты, перчатки приехали
+    # последними. Пустых полок тут нет вовсе
     assert [head.split("\n")[0] for head in heads] == [
-        "Голова", "Оружие", "Щиты", "Футболки", "Пояс",
-        "Верхняя одежда", "Ноги", "Обувь",
+        "Голова", "Ожерелья", "Оружие", "Щиты", "Футболки", "Пояс",
+        "Перчатки", "Кольца", "Верхняя одежда", "Ноги", "Обувь",
     ]
     assert await fan_page.locator("#shop-title").inner_text() == (
         "🧣 Магазин «Северный Вал»"
@@ -691,6 +1255,37 @@ async def test_the_fan_shop_shows_its_own_line(fan_page):
     note = await fan_page.locator("#shop-note").inner_text()
     assert "десятый уровень" in note
     assert "Бита с гвоздями" not in await visible_titles(fan_page)
+
+
+async def test_the_jeweller_shows_two_shelves(jewel_page):
+    """У ювелира ровно две полки, и кольца на одной: клеток три, полка одна."""
+    heads = await shelves(jewel_page)
+    assert [head.split("\n")[0] for head in heads] == ["Ожерелья", "Кольца"]
+    assert await jewel_page.locator("#shop-title").inner_text() == (
+        "💍 Ювелирный магазин"
+    )
+    titles = await visible_titles(jewel_page)
+    assert "Кольцо силы" in titles  # открыто с первого уровня
+    assert "Кулон героя" not in titles  # девятый уровень, лежит под кнопкой
+
+
+async def test_the_necklace_lies_in_a_wide_cell_on_the_counter(jewel_page):
+    """Ожерелье и на прилавке полоса 3:1, а не квадрат.
+
+    Картинка цепи втрое шире своей высоты, и в квадратной клетке её
+    срезало с боков: на витрине было не разглядеть, что покупаешь. Клетка
+    теперь та же, что в кукле, и форму ей задаёт слот, а не страница.
+    """
+    shelf = jewel_page.locator("#shop-club .shelf").nth(0)
+    assert "Ожерелья" in await shelf.locator(".shelf-head").inner_text()
+    chain = await shelf.locator(".thing-pic").nth(0).bounding_box()
+    assert chain["width"] / chain["height"] == pytest.approx(3, abs=0.15)
+
+    # А кольцо осталось квадратным: клетка под него одна единица на одну
+    rings = jewel_page.locator("#shop-club .shelf").nth(1)
+    assert "Кольца" in await rings.locator(".shelf-head").inner_text()
+    ring = await rings.locator(".thing-pic").nth(0).bounding_box()
+    assert ring["width"] / ring["height"] == pytest.approx(1, abs=0.05)
 
 
 async def test_an_empty_shelf_says_the_goods_are_coming(server):
@@ -722,13 +1317,14 @@ async def test_type_filter_leaves_one_shelf(weapon_page):
 
     # значков в заголовках полок нет: тип и так назван словом
     assert [head.split("\n")[0] for head in await shelves(weapon_page)] == ["Оружие"]
-    assert all(
-        title
-        in ("Кастет", "Деревянная бита", "Выкидуха", "Строительный нож",
-            "Монтировка", "Нож", "Дубинка бойца", "Трость шулера",
-            "Кувалда вышибалы")
-        for title in await visible_titles(weapon_page)
-    )
+    # На полке остаётся только оружие — и ничего, кроме него. Список
+    # берём из витрины, а не переписываем сюда: оружия в лавке два
+    # десятка, и каждый новый пак дописывал бы его в тест
+    from bot.game.equipment import SHOWCASE
+
+    weapons = {item.title for item in SHOWCASE if item.is_weapon}
+    titles = await visible_titles(weapon_page)
+    assert titles and set(titles) <= weapons, set(titles) - weapons
 
 
 async def test_buying_asks_before_it_spends(shop_page):
@@ -1226,6 +1822,9 @@ async def test_the_bottom_bar_switches_four_screens(server):
 
     Магазинов на панели больше нет — они дома на карте, и лавка мага тоже
     (теперь это элитный магазин). Панель стала короче ровно настолько.
+
+    Клана на панели нет: состав и имущество семьи лежат в особняке, а
+    быстрая правка состава открывается окном из карточки.
     """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
@@ -1235,7 +1834,8 @@ async def test_the_bottom_bar_switches_four_screens(server):
         await page.wait_for_selector("#hero:not(.hidden)")
 
         assert await page.locator("#bar").is_visible()
-        assert await page.locator(".bar-tab").count() == 4
+        assert await page.locator(".bar-tab:visible").count() == 4
+        assert await page.locator("#tab-clan").count() == 0
         # открывается карточка персонажа, её вкладка и подсвечена
         assert await page.locator("#tab-hero").get_attribute("class") == "bar-tab active"
 
@@ -1257,7 +1857,11 @@ async def test_the_bottom_bar_switches_four_screens(server):
 
 
 async def test_plus_next_to_the_credits_opens_the_cashdesk(server):
-    """Кнопка «+» рядом с кредитами ведёт в кассу и возвращает обратно."""
+    """Кнопка «+» у наличных ведёт в кассу и возвращает обратно.
+
+    Кошельки стоят над рюкзаком, а не строкой среди боевых показателей:
+    деньги нужны там, где покупают, а не рядом с рейтингом.
+    """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
@@ -1266,12 +1870,16 @@ async def test_plus_next_to_the_credits_opens_the_cashdesk(server):
             pw, server, card, build_shop(player), topup=build_topup(player)
         )
         await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
 
-        assert "214" in await page.locator("#record").inner_text()
-        await page.locator("#record .plus").click()
+        assert "214" in await page.locator("#wallets").inner_text()
+        assert "214" not in await page.locator("#record").inner_text()
+        await page.locator("#wallets .plus").click()
 
         await page.wait_for_selector("#topup:not(.hidden)")
         assert await page.locator("#card").is_hidden()
+        # Касса открывается пустой: пачки приезжают ответом сервера
+        await page.wait_for_selector(".pack-title")
         titles = await page.locator(".pack-title").all_inner_texts()
         assert len(titles) == len(PACKS)
         assert PACKS[0].title in titles[0]
@@ -1280,7 +1888,7 @@ async def test_plus_next_to_the_credits_opens_the_cashdesk(server):
         assert await page.locator(".pack-profit").count() == len(PACKS) - 1
 
         await page.get_by_role("button", name="← Назад").click()
-        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector("#bag:not(.hidden)")
         await browser.close()
 
 
@@ -1319,40 +1927,93 @@ async def test_a_stranger_sees_no_plus(server):
 # ---------- образ и снятие вещей ----------
 
 
-def wardrobe(current: str = "rookie", gender: str = "male") -> dict:
-    """Гардероб, как его отдаёт сервер: только образы своего пола."""
+def look_row(look, current: str, owned: bool) -> dict:
+    return {
+        "code": look.code,
+        "title": look.title,
+        "emoji": look.emoji,
+        "image": "",
+        "gender": look.gender,
+        "price": look.price,
+        "note": look.note,
+        "owned": owned,
+        "current": look.code == current,
+        "affordable": True,
+    }
+
+
+def wardrobe(
+    current: str = "rookie", gender: str = "male", bought: tuple = (),
+) -> dict:
+    """Гардероб, как его отдаёт сервер: только свои образы.
+
+    Витриной он быть перестал: платные лица продают в барбершопе и в
+    салоне красоты, а в карточке лежит купленное и открытое всем.
+    """
     from bot.game.looks import LOOKS
 
     return {
         "credits": 1200,
         "looks": [
-            {
-                "code": look.code,
-                "title": look.title,
-                "emoji": look.emoji,
-                "image": "",
-                "gender": look.gender,
-                "price": look.price,
-                "note": look.note,
-                "owned": not look.paid,
-                "current": look.code == current,
-                "affordable": True,
-            }
+            look_row(look, current, True)
             for look in LOOKS
             # Старая выдача видна только своему хозяину, чужой пол — никому
-            if not look.pro and look.gender == gender
+            if not look.pro
+            and look.gender == gender
+            and (not look.paid or look.code in bought)
         ],
     }
 
 
+def barber_shelf(
+    place: str = "barbershop", gender: str = "male", mine: bool = True,
+    current: str = "rookie", bought: tuple = (),
+) -> dict:
+    """Полка дома: все образы его пола, с ценой и причиной отказа."""
+    from bot.game.locations import get_location
+    from bot.game.looks import GENDER_TITLES, LOOK_PRICE, LOOKS
+
+    shelf = []
+    for look in LOOKS:
+        if look.pro or look.gender != gender:
+            continue
+        row = look_row(look, current, not look.paid or look.code in bought)
+        row["can_buy"] = bool(not row["owned"] and mine)
+        row["why"] = (
+            ""
+            if row["can_buy"]
+            else "Этот образ и так твой: надевай в карточке."
+            if row["owned"]
+            else "Здесь делают мужские образы, и берут их мужчины."
+        )
+        shelf.append(row)
+    return {
+        "title": get_location(place).title,
+        "place": place,
+        "sells": gender,
+        "sells_title": GENDER_TITLES[gender],
+        "mine": mine,
+        "price": LOOK_PRICE,
+        "credits": 1200,
+        "shelf": shelf,
+        "note": "Образ покупается раз и навсегда.",
+        "said": "",
+    }
+
+
 async def test_tapping_the_avatar_opens_the_wardrobe(server):
-    """По аватару открывается выбор образа: три своих и три за кредиты."""
+    """По аватару открывается своё: три открытых и купленное.
+
+    Витрины в гардеробе больше нет — цен на нём не осталось вовсе, и
+    записка говорит, куда идти за новым лицом.
+    """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
     async with async_playwright() as pw:
         browser, page = await open_page(
-            pw, server, card, build_shop(player), looks=wardrobe()
+            pw, server, card, build_shop(player),
+            looks=wardrobe(bought=("veteran",)),
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         assert await page.locator("#sheet").is_hidden()
@@ -1360,11 +2021,14 @@ async def test_tapping_the_avatar_opens_the_wardrobe(server):
         await page.locator("#hero-avatar").click()
         await page.wait_for_selector("#sheet:not(.hidden)")
 
-        assert await page.locator(".look").count() == 6
+        assert await page.locator(".look").count() == 4
         assert await page.locator(".look.current .look-title").inner_text() == "Новичок"
-        # платные подписаны ценой, свои — словом
+        # Цен в гардеробе нет: всё на нём уже своё
         tags = await page.locator(".look-tag").all_inner_texts()
-        assert sum(1 for tag in tags if "💰" in tag) == 3
+        assert not [tag for tag in tags if "💰" in tag]
+        assert "куплен" in tags
+        note = await page.locator("#sheet-note").inner_text()
+        assert "барбершопе" in note and "салоне красоты" in note
 
         await page.locator("#sheet-close").click()
         assert await page.locator("#sheet").is_hidden()
@@ -1384,6 +2048,9 @@ async def test_the_wardrobe_of_a_woman_holds_womens_looks(server):
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#hero-avatar").click()
         await page.wait_for_selector("#sheet:not(.hidden)")
+        # Всплывашка открывается пустой: гардероб приезжает ответом
+        # сервера, и `all_inner_texts` его не ждёт
+        await page.wait_for_selector(".look-title")
 
         titles = await page.locator(".look-title").all_inner_texts()
         assert "Бунтарка" in titles and "Барменша" in titles
@@ -1576,7 +2243,7 @@ async def test_the_body_cell_holds_the_jacket_and_the_shirt_under_it(server):
         await page.wait_for_selector("#hero:not(.hidden)")
 
         cells = page.locator("#hero-slots-left .slot")
-        body = cells.nth(2)  # голова, оружие, тело, пояс
+        body = cells.nth(3)  # голова, ожерелье, оружие, тело, пояс
         hint = await body.get_attribute("title")
 
         assert "Косуха — верхняя одежда" in hint
@@ -1584,7 +2251,7 @@ async def test_the_body_cell_holds_the_jacket_and_the_shirt_under_it(server):
         assert "empty" not in (await body.get_attribute("class"))
 
         # клетка без вещей называет место, а не вещь
-        empty = await page.locator("#hero-slots-right .slot").nth(1).get_attribute(
+        empty = await page.locator("#hero-slots-right .slot").nth(4).get_attribute(
             "title"
         )
         assert empty == "Пусто: вторая рука"
@@ -1607,19 +2274,71 @@ async def test_only_the_shirt_still_fills_the_body_cell(server):
             asyncio.ensure_future(dialog.dismiss())
 
         page.on("dialog", on_dialog)
-        body = page.locator("#hero-slots-left .slot").nth(2)
+        body = page.locator("#hero-slots-left .slot").nth(3)
 
         assert "empty" not in (await body.get_attribute("class"))
         assert "Клубная футболка — футболка" in await body.get_attribute("title")
 
         # Снимают в инвентаре: на экране персонажа клетка только рассказывает
         await page.locator("#tab-bag").click()
-        await page.locator("#slots-left .slot").nth(2).click()
+        await page.locator("#slots-left .slot").nth(3).click()
         await page.wait_for_selector("#sheet:not(.hidden)")
 
         assert "Клубная футболка" in await page.locator("#sheet-title").inner_text()
         assert await page.locator("#sheet .thing-buttons .btn").count() == 2
         assert not asked, "спросили окном вместо створки"
+        await browser.close()
+
+
+async def test_a_ring_asks_which_cell_instead_of_three_buttons(server):
+    """У кольца одна кнопка «Надеть», а клетку выбирают в окне.
+
+    Клеток под кольцо три, и они равноправны. Три кнопки подряд ничего об
+    этом не говорили: вторая и третья звались «Во вторую руку» — подпись
+    от оружия, к кольцу не имеющая отношения. Теперь кнопка одна, а окно
+    показывает все три клетки и то, что в них лежит: пустую видно пустой,
+    занятую — с её кольцом, и нажатие на такую кольцо меняет.
+    """
+    player = make_player()
+    worn = CATALOGUE["set_sport_ring"]
+    # Одно кольцо уже на бойце, второе лежит в рюкзаке
+    player.gear.append(OwnedItem(item=worn, id=2, slot=Slot.RING_MIDDLE))
+    player.gear.append(OwnedItem(item=CATALOGUE["ring_strength"], id=3))
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    calls = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
+
+        async def equip(route):
+            calls.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json", body=json.dumps(card)
+            )
+
+        await page.route("**/api/equip", equip)
+
+        # Кнопка одна, и она ничего не надевает сама
+        row = page.locator("#bag-list .thing", has_text="Кольцо силы")
+        buttons = row.locator(".thing-buttons .btn")
+        assert await buttons.nth(0).inner_text() == "Надеть"
+        await buttons.nth(0).click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert not calls, "кольцо надели, не спросив клетку"
+
+        assert "В какой слот?" in await page.locator("#sheet-title").inner_text()
+        cells = page.locator(".ring-cell")
+        assert await cells.count() == 3
+        names = await page.locator(".ring-cell-name").all_inner_texts()
+        # Средняя клетка занята, две другие пусты — и это видно
+        assert names == ["Пусто", worn.title, "Пусто"]
+
+        # Нажатие на занятую клетку меняет кольцо именно в ней
+        await cells.nth(1).click()
+        await page.locator("#sheet").wait_for(state="hidden")
+        assert calls == [{"item_id": 3, "slot": "ring_middle"}]
         await browser.close()
 
 
@@ -1801,7 +2520,7 @@ async def test_the_bag_counts_the_fights_a_thing_has_left(server):
 
 
 async def test_the_hero_screen_reads_without_extra_icons(server):
-    """Характеристики без значков, броня по строке на зону, «До улучшения»."""
+    """Характеристики без значков, броня по строке на зону, шкала опыта."""
     player = make_player()
     player.gear = [OwnedItem(item=CATALOGUE["moto_helmet"], id=1, slot=Slot.HEAD)]
     card = build_card(player, TOKEN, viewer_id=player.user_id)
@@ -1811,10 +2530,15 @@ async def test_the_hero_screen_reads_without_extra_icons(server):
         await page.wait_for_selector("#hero:not(.hidden)")
 
         stats = await page.locator("#stats li .label").all_inner_texts()
-        assert stats == ["Сила", "Ловкость", "Интуиция", "Выносливость"]
+        assert stats == ["Сила", "Проворство", "Интуиция", "Выносливость"]
 
+        # На месте прежних четырёх строк — шкала: ни «До уровня», ни
+        # «До улучшения», ни «ап» в ней не осталось
         progress = await page.locator("#progress").inner_text()
-        assert "До улучшения" in progress and "До апа" not in progress
+        assert "До следующего апгрейда" in progress
+        assert "До улучшения" not in progress and "До апа" not in progress
+        assert "До уровня" not in progress
+        assert await page.locator("#progress .xp").count() == 1
 
         combat = await page.locator("#combat li .label").all_inner_texts()
         assert "🩸 Крит" in combat  # крит помечен каплей крови
@@ -1953,6 +2677,50 @@ async def test_a_slot_tells_what_is_worn_when_you_hover_it(server):
         await browser.close()
 
 
+async def test_the_necklace_is_a_strip_and_the_rings_are_a_row(server):
+    """Ожерелье — полоса втрое шире своей высоты, кольца — три в ряд.
+
+    Форму клетки называет сервер (`Slot.shape`), а страница по ней решает,
+    рисовать клетку одну или собрать три в ряд. Проверяем не классы, а
+    саму геометрию: класс можно поставить и не получить формы.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.set_viewport_size({"width": 400, "height": 1000})
+        await page.wait_for_timeout(200)
+
+        # Ожерелье стоит сразу под головой и той же ширины, что и она
+        head = await page.locator("#hero-slots-left .slot.square").first.bounding_box()
+        chain = await page.locator("#hero-slots-left .slot.wide").bounding_box()
+        assert round(chain["width"]) == round(head["width"])
+        assert abs(chain["width"] / chain["height"] - 3) < 0.15, chain
+        assert chain["y"] > head["y"]
+
+        # Три колечка — одним рядом, слева направо и каждое квадратное
+        rings = page.locator("#hero-slots-right .slot-row.rings .slot.ring")
+        assert await rings.count() == 3
+        boxes = [await rings.nth(number).bounding_box() for number in range(3)]
+        assert len({round(box["y"]) for box in boxes}) == 1, "кольца не в ряд"
+        assert boxes[0]["x"] < boxes[1]["x"] < boxes[2]["x"]
+        for box in boxes:
+            assert abs(box["width"] / box["height"] - 1) < 0.15, box
+        # И ряд целиком не шире обычной клетки
+        row = await page.locator("#hero-slots-right .slot-row.rings").bounding_box()
+        assert round(row["width"]) == round(head["width"])
+
+        # Правая клетка — первая: кольца надеваются справа налево, и
+        # порядок на кукле тот же, что и порядок надевания
+        order = await rings.evaluate_all(
+            "nodes => nodes.map(one => one.title)"
+        )
+        assert all("кольцо" in one for one in order)
+        await browser.close()
+
+
 async def test_an_empty_slot_falls_back_to_its_icon(server):
     """Подложка не доехала — слот гаснет и показывает значок, как раньше."""
     player = make_player()
@@ -1967,8 +2735,8 @@ async def test_an_empty_slot_falls_back_to_its_icon(server):
         await page.wait_for_timeout(300)
 
         empty = page.locator("#bag .slot.empty")
-        assert await empty.count() == 8
-        assert await page.locator("#bag .slot.empty.no-art").count() == 8
+        assert await empty.count() == 12
+        assert await page.locator("#bag .slot.empty.no-art").count() == 12
         assert "🎩" in await page.locator("#slots-left .slot").first.inner_text()
         await browser.close()
 
@@ -1976,10 +2744,56 @@ async def test_an_empty_slot_falls_back_to_its_icon(server):
 # ---------- бойцовский клуб ----------
 
 
-def club_of(*fighters) -> dict:
+def club_of(*fighters, **kwargs) -> dict:
     from bot.webapp.card import build_club
 
-    return build_club(list(fighters), 42)
+    body = build_club(list(fighters), 42, **kwargs)
+    body.setdefault("sort", "rating")
+    body.setdefault("level", 0)
+    body.setdefault("levels", sorted({one.level for one in fighters}))
+    return body
+
+
+def ladder_state(*rows, mine=0, my_place=0, last=None, now=None, **kwargs) -> dict:
+    """Рейтинг недели для страницы.
+
+    `rows` — то, что вернул `ladder_rank`: место, недельный счёт и сам
+    боец. Трое вместе, потому что строка экрана и собирается из трёх:
+    место считает рейтинг, счёт лежит в журнале боёв, а прозвище и
+    уровень — у бойца.
+    """
+    from bot.game.health import now_ts
+    from bot.webapp.ladder import build_ladder, build_payout
+
+    body = build_ladder(
+        [(place, one) for place, one, _ in rows],
+        {player.user_id: player for _, _, player in rows},
+        42,
+        now=now_ts() if now is None else now,
+        mine=mine,
+        my_place=my_place,
+        **kwargs,
+    )
+    body["period"] = "2026-11-08"
+    body["last"] = build_payout(last)
+    return body
+
+
+def ladder_rank(place: int, player, fights=10, wins=5, losses=5):
+    """Строка рейтинга недели: место, недельный счёт и сам боец."""
+    from bot.game.ladder import Standing
+
+    return (
+        place,
+        Standing(
+            user_id=player.user_id,
+            rating=player.rating,
+            fights=fights,
+            wins=wins,
+            losses=losses,
+        ),
+        player,
+    )
 
 
 async def test_the_club_lists_everyone_and_opens_a_card(server):
@@ -2008,8 +2822,8 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
-        # вкладка открывается на боях: за списком идём в «Игроки»
-        await page.get_by_role("button", name="Игроки", exact=True).click()
+        # Кнопка внизу открывает справочную, и открывается она сразу на
+        # рейтинге: списку бойцов больше не надо искать свой раздел
         await page.wait_for_selector(".fighter")
 
         assert await page.locator(".fighter").count() == 2
@@ -2024,9 +2838,9 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         await page.wait_for_selector(".sheet-doll")
 
         assert "Марла [7]" in await page.locator("#sheet-title").inner_text()
-        # в карточке соседа есть и аватар, и все восемь слотов
+        # в карточке соседа есть и аватар, и все двенадцать клеток
         assert await page.locator(".sheet-doll .avatar").count() == 1
-        assert await page.locator(".sheet-doll .slot").count() == 8
+        assert await page.locator(".sheet-doll .slot").count() == 12
 
         # и ничего никуда не наезжает: рамка аватара кончается там, где
         # начинается правый ряд слотов
@@ -2035,7 +2849,7 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         assert face["x"] + face["width"] <= right["x"] + 0.5
 
         card_text = await page.locator("#sheet-list").inner_text()
-        for line in ("Сила", "Ловкость", "Интуиция", "Выносливость"):
+        for line in ("Сила", "Проворство", "Интуиция", "Выносливость"):
             assert line in card_text
         for line in ("Уровень", "Опыт", "Побед", "Поражений", "Ничьих",
                      "Рейды", "Рейтинг"):
@@ -2066,7 +2880,6 @@ async def test_a_fighter_row_has_one_way_in_and_it_is_the_card(server):
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
-        await page.get_by_role("button", name="Игроки", exact=True).click()
         await page.wait_for_selector(".fighter")
 
         row = page.locator(".fighter").first
@@ -2108,7 +2921,6 @@ async def test_a_fighter_card_shows_health_and_leads_to_the_stats(server):
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
-        await page.get_by_role("button", name="Игроки", exact=True).click()
         await page.locator(".fighter").nth(1).locator(".fighter-info").click()
         await page.wait_for_selector(".sheet-doll")
 
@@ -2149,7 +2961,7 @@ async def test_the_hero_screen_shows_the_slots_too(server):
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#hero:not(.hidden)")
 
-        assert await page.locator("#hero .slot").count() == 8
+        assert await page.locator("#hero .slot").count() == 12
         assert await page.locator("#hero-avatar").is_visible()
         # надетая вещь видна и здесь, и в инвентаре
         assert await page.locator("#hero .slot:not(.empty)").count() == 1
@@ -2255,8 +3067,144 @@ async def test_the_mage_sells_for_stars_and_never_for_credits(server):
         await browser.close()
 
 
-async def test_the_pro_card_always_leads_the_mage_counter(server):
-    """Подписка стоит первой, показывает акцию и забирается одной кнопкой."""
+async def test_the_promo_field_sends_the_code_and_shows_what_it_gave(server):
+    """Поле промокода в «Элите»: ввёл слово — получил подписку.
+
+    Поле ничего не подсказывает: код называют снаружи игры, и перебирать
+    его по прилавку нельзя. Страница только относит слово — что оно
+    даёт и действует ли, решает сервер.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    magic = build_magic(player)
+    sent = []
+
+    async def give(route):
+        sent.append(json.loads(route.request.post_data))
+        await route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "card": card,
+                    "magic": magic,
+                    "promo": {
+                        "code": "VEGAS1334",
+                        "title": "Подписка PRO",
+                        "term": "месяц",
+                        "days": 30,
+                        "renewed": False,
+                        "seconds_left": 30 * 24 * 3600,
+                    },
+                }
+            ),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), magic=magic
+        )
+        await page.route("**/api/promo", give)
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "magic")
+        await page.wait_for_selector("#promo-box")
+
+        # Поле пустое и не называет ни одного кода
+        said = await page.locator("#promo-box").inner_text()
+        assert "VEGAS" not in said, "прилавок подсказал код"
+        assert await page.locator("#promo-input").input_value() == ""
+
+        await page.locator("#promo-input").fill("vegas1334")
+        await page.locator("#promo-go").click()
+        await page.wait_for_function(
+            "() => el('promo-note').classList.contains('good')"
+        )
+
+        # Набранное ушло как есть: приводит его к виду кода сервер
+        assert sent == [{"code": "vegas1334"}]
+        note = await page.locator("#promo-note").inner_text()
+        assert "Код принят" in note and "месяц" in note
+        # И поле очистилось: вводить второй раз нечего
+        assert await page.locator("#promo-input").input_value() == ""
+        await browser.close()
+
+
+async def test_a_refused_code_says_why_and_keeps_what_was_typed(server):
+    """Отказ виден в том же месте, и набранное никуда не девается.
+
+    Стирать чужой ввод на отказе значит заставлять набирать заново —
+    а ошибка чаще всего в одной букве.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    magic = build_magic(player)
+
+    async def refuse(route):
+        await route.fulfill(
+            status=409,
+            content_type="application/json",
+            body=json.dumps({"error": "Такого промокода нет."}),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), magic=magic
+        )
+        await page.route("**/api/promo", refuse)
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "magic")
+        await page.wait_for_selector("#promo-box")
+
+        await page.locator("#promo-input").fill("CLUB0000")
+        await page.locator("#promo-go").click()
+        await page.wait_for_function(
+            "() => el('promo-note').classList.contains('bad')"
+        )
+
+        assert "Такого промокода нет." in await page.locator(
+            "#promo-note"
+        ).inner_text()
+        assert await page.locator("#promo-input").input_value() == "CLUB0000"
+
+        # Начал править — подсказка вернулась: прежний отказ про прежнее
+        # слово рядом с новым читался бы как отказ про новое
+        await page.locator("#promo-input").fill("CLUB0001")
+        await page.wait_for_function(
+            "() => !el('promo-note').classList.contains('bad')"
+        )
+        await browser.close()
+
+
+async def test_an_empty_field_is_refused_without_asking_the_server(server):
+    """Пустое поле сервер не беспокоит: отвечать тут нечего."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    tries = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), magic=build_magic(player)
+        )
+        await page.route("**/api/promo", lambda route: tries.append(1))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "magic")
+        await page.wait_for_selector("#promo-box")
+
+        await page.locator("#promo-input").fill("   ")
+        await page.locator("#promo-go").click()
+        await page.wait_for_function(
+            "() => el('promo-note').classList.contains('bad')"
+        )
+
+        assert tries == [], "за пустым полем ходили на сервер"
+        assert "поле пустое" in await page.locator("#promo-note").inner_text()
+        await browser.close()
+
+
+async def test_both_subscription_cards_lead_the_mage_counter(server):
+    """Ступени стоят первыми, младшая сверху, и акция забирается кнопкой."""
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
     magic = build_magic(player)
@@ -2292,27 +3240,41 @@ async def test_the_pro_card_always_leads_the_mage_counter(server):
         await open_screen(page, "magic")
         await page.wait_for_selector("#pro-card .thing")
 
-        pro = page.locator("#pro-card .thing")
-        text = await pro.inner_text()
-        assert "Подписка PRO" in text
-        # Три строки и ничего больше: ни вещей, ни образа, ни значка
-        assert "150% опыта за бой" in text
-        assert "Аналитик-помощник во время боя" in text
-        assert "Страховка жизни и здоровья" in text
-        assert "Клинок" not in text and "Образ" not in text
-        assert "Значок" not in text
+        cards = page.locator("#pro-card .thing")
+        assert await cards.count() == 2, "ступеней на прилавке должно быть две"
 
-        # подписка идёт раньше любого товара прилавка
-        first = page.locator("#magic .thing").first
-        assert "Подписка PRO" in await first.inner_text()
+        junior = cards.nth(0)
+        senior = cards.nth(1)
+        first = await junior.inner_text()
+        second = await senior.inner_text()
+
+        assert "Подписка PRO" in first and "Подписка PREMIUM" in second
+        assert "150% опыта за бой" in first
+        assert "200% опыта за бой" in second
+        assert "Аналитик-помощник во время боя" in first
+        # Полис обещает только старшая: у младшей его нет
+        assert "Страховка жизни и здоровья" not in first
+        assert "Страховка жизни и здоровья" in second
+        # Ни вещей, ни образа, ни значка — ни на одной
+        for text in (first, second):
+            assert "Клинок" not in text and "Образ" not in text
+            assert "Значок" not in text
+        # Цена у каждой своя
+        assert "500 ⭐" in second
+
+        # Подписки идут раньше любого товара прилавка
+        head = page.locator("#magic .thing").first
+        assert "Подписка PRO" in await head.inner_text()
 
         if magic["pro"]["promo"]:
-            assert "Бесплатно · 7 дней" in text
-            assert "До 1 сентября" in text
-            assert await pro.locator(".btn").inner_text() == "Забрать бесплатно"
+            assert "Бесплатно · 7 дней" in first
+            assert "До 1 сентября" in first
+            assert (
+                await junior.locator(".btn").inner_text() == "Забрать бесплатно"
+            )
 
             page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
-            await pro.locator(".btn").click()
+            await junior.locator(".btn").click()
             await page.wait_for_timeout(200)
             assert taken == ["{}"]
         await browser.close()
@@ -2339,7 +3301,7 @@ async def test_the_bag_warns_before_one_elixir_puts_out_another(server):
                         "card": card,
                         "used": {
                             "code": "boost_agility",
-                            "title": "Эликсир ловкости",
+                            "title": "Эликсир проворства",
                             "healed": 0,
                             "extended": False,
                             "seconds_left": 7200,
@@ -2575,24 +3537,389 @@ async def open_ring(pw, server, fights):
         pw, server, build_card(make_player(), TOKEN, viewer_id=42), fights=fights
     )
     await page.wait_for_selector("#hero:not(.hidden)")
-    await page.locator("#tab-club").click()
+    # Бои живут в здании клуба, а не под кнопкой внизу: кнопка ведёт в
+    # справочную, где рейтинг и статистика
+    await page.evaluate("openClub()")
     await page.wait_for_selector("#club:not(.hidden)")
+    # Вкладка показывается сразу, а бои приезжают ответом сервера. Без
+    # этой строки проверка читала пустой ринг и падала не там, где сломано
+    await page.wait_for_function("() => fightsData !== null")
     return browser, page
 
 
-async def test_the_club_tab_opens_on_the_ring_and_switches_to_players(server):
-    """Два раздела на одной вкладке: бои и игроки."""
+def a_rated(user_id, nick, level, rating, fclass="warrior"):
+    """Боец с местом в рейтинге: прозвище, уровень и ELO."""
+    one = make_player()
+    one.user_id = user_id
+    one.nickname = nick
+    one.level = level
+    one.class_code = fclass
+    one.rating = rating
+    return one
+
+
+def a_rating(*fighters, offset=0, total=None, viewer=42, **kwargs):
+    from bot.webapp.card import build_club
+
+    body = build_club(
+        list(fighters), viewer, offset=offset, total=total, **kwargs
+    )
+    # То же, что дописывает ручка: порядок, отбор и уровни на выбор
+    body.setdefault("sort", "rating")
+    body.setdefault("level", 0)
+    body.setdefault("levels", sorted({one.level for one in fighters}))
+    return body
+
+
+async def test_the_club_button_opens_the_information_desk(server):
+    """Кнопка внизу ведёт в справочную, а не в здание клуба.
+
+    Драться идут ногами, в дом на карте. Справочная к месту не
+    привязана: рейтинг и чужая статистика нужны отовсюду — поэтому у
+    неё нет ни вида изнутри, ни выхода на карту. Показывать панораму
+    того, во что не входили, не из чего, а возвращать на карту того,
+    кто на неё и не уходил, некуда.
+    """
+    me = make_player()
+    card = build_card(me, TOKEN, viewer_id=42)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, club=a_rating(a_rated(42, "Тайлер", 4, 1100))
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+
+        assert (
+            await page.locator("#club-title").inner_text()
+            == "ℹ️ Информация о клубе"
+        )
+        chips = await page.locator("#club-sections .chip").all_inner_texts()
+        assert chips == [
+            "Список игроков", "Рейтинг недели", "Статистика игрока"
+        ]
+        # Ни панорамы, ни выхода на карту
+        assert await page.locator("#club-interior").is_hidden()
+        assert await page.locator("#club-back").is_hidden()
+        # А счётчик записанных остаётся: ради него сюда и заходят
+        assert "1 боец" in await page.locator("#club-count").inner_text()
+        # Боёв отсюда не ведут вовсе: это справка, а не ринг
+        assert await page.locator("#club-fights").is_hidden()
+        assert await page.locator("#club-battle").is_hidden()
+        await browser.close()
+
+
+async def test_the_rating_row_shows_the_place_and_the_elo(server):
+    """Строка доски почёта: место слева, ELO справа, порядок по ELO.
+
+    Уровень на места не влияет: четвёртый уровень с полутора тысячами
+    стоит выше четырнадцатого с девятью сотнями.
+    """
+    crowd = a_rating(
+        a_rated(43, "Марла", 4, 1620, "rogue"),
+        a_rated(42, "Тайлер", 14, 1180),
+        a_rated(44, "Бо", 9, 870, "tank"),
+        total=3,
+    )
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, club=crowd)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector(".fighter")
+
+        places = await page.locator(".fighter-place").all_inner_texts()
+        names = await page.locator(".fighter-name").all_inner_texts()
+        elo = await page.locator(".fighter-elo").all_inner_texts()
+        assert places == ["1", "2", "3"]
+        assert names == ["Марла", "Тайлер", "Бо"]
+        assert [one.replace(" ", " ") for one in elo] == [
+            "1 620", "1 180", "870"
+        ]
+
+        # Знаки класса в строке остались: по ним видно, кто как дерётся
+        assert await page.locator(".fighter-class").count() == 3
+        # Своя строка обведена, и место в ней выделено цветом
+        assert await page.locator(".fighter.me").count() == 1
+        mine = page.locator(".fighter.me")
+        assert await mine.locator(".fighter-place").inner_text() == "2"
+        await browser.close()
+
+
+async def test_the_rating_turns_pages_of_fifty(server):
+    """Листалка под рейтингом: «← 1–50 из 137 →».
+
+    На первой странице левая стрелка погашена, на последней — правая.
+    Гасим, а не прячем: кнопка, исчезающая под пальцем, уводит нажатие
+    на соседнюю.
+    """
+    first = a_rating(
+        *[a_rated(100 + one, f"Боец {one + 1}", 5, 2000 - one) for one in range(50)],
+        offset=0, total=137, viewer=100,
+    )
+    second = a_rating(
+        *[a_rated(200 + one, f"Второй {one + 1}", 5, 1900 - one) for one in range(50)],
+        offset=50, total=137, viewer=100,
+    )
+    pages = {1: first, 2: second}
+    asked = []
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+
+    async def give(route):
+        # Номер страницы уже не последний в запросе: за ним идут
+        # порядок и отбор, поэтому режем по первому же «&»
+        number = int(route.request.url.split("page=")[-1].split("&")[0])
+        asked.append(number)
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(pages.get(number, first)),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, club=first)
+        await page.route("**/api/club*", give)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-pager:not(.hidden)")
+
+        where = await page.locator("#club-where").inner_text()
+        assert where.replace(" ", " ") == "1–50 из 137"
+        assert await page.locator("#club-prev").is_disabled(), "назад с первой"
+        assert not await page.locator("#club-next").is_disabled()
+
+        await page.locator("#club-next").click()
+        await page.wait_for_function(
+            "() => el('club-where').textContent.includes('51')"
+        )
+        assert asked[-1] == 2
+        assert await page.locator(".fighter-place").first.inner_text() == "51"
+        assert not await page.locator("#club-prev").is_disabled()
+        await browser.close()
+
+
+async def test_a_club_of_one_page_has_no_arrows(server):
+    """Одна страница — стрелок нет: листать некуда."""
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card,
+            club=a_rating(a_rated(42, "Тайлер", 4, 1100), total=1),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector(".fighter")
+
+        assert await page.locator("#club-pager").is_hidden()
+        await browser.close()
+
+
+async def test_the_stats_search_finds_a_fighter_and_opens_his_fights(server):
+    """Чужую статистику смотрят по нику: набрал кусок — выбрал — открылось.
+
+    Через рейтинг так не выйдет: в нём верхние полсотни, а спрашивают
+    чаще про того, с кем только что дрались.
+    """
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    found = a_rating(a_rated(43, "Марла", 7, 1450, "rogue"))
+    his = dict(HISTORY, user_id=43, name="Марла")
+    asked = []
+
+    async def seek(route):
+        asked.append(route.request.url)
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(found, ensure_ascii=False),
+        )
+
+    async def story(route):
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(his if "user_id=43" in route.request.url else HISTORY,
+                            ensure_ascii=False),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, history=HISTORY)
+        await page.route("**/api/players*", seek)
+        await page.route("**/api/history*", story)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.get_by_role(
+            "button", name="Статистика игрока", exact=True
+        ).click()
+        await page.wait_for_selector("#club-stats:not(.hidden)")
+
+        # Пока смотришь своё, возвращаться некуда — и кнопки нет
+        assert await page.locator("#stats-mine").is_hidden()
+        assert await page.locator("#stats-found").is_hidden()
+
+        await page.locator("#stats-seek").fill("мар")
+        await page.wait_for_selector("#stats-found .fighter")
+        assert "q=" in asked[-1]
+        assert await page.locator("#stats-found .fighter-name").inner_text() == "Марла"
+
+        await page.locator("#stats-found .fighter").click()
+        await page.wait_for_function(
+            "() => el('stats-note').textContent.includes('Марла')"
+        )
+        # Поле очистилось, список спрятался, кнопка возврата появилась
+        assert await page.locator("#stats-seek").input_value() == ""
+        assert await page.locator("#stats-found").is_hidden()
+        assert await page.locator("#stats-mine").is_visible()
+
+        await page.locator("#stats-mine").click()
+        await page.wait_for_function(
+            "() => el('stats-note').textContent.includes('Растафарайчик')"
+        )
+        assert await page.locator("#stats-mine").is_hidden()
+        await browser.close()
+
+
+async def test_one_letter_does_not_send_the_search_anywhere(server):
+    """На одну букву на сервер не ходим: совпадёт полклуба.
+
+    И пустой ответ рисуем словами, а не пустым местом: молчание в ответ
+    на поиск читается как поломка.
+    """
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    asked = []
+
+    async def seek(route):
+        asked.append(route.request.url)
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({"fighters": [], "total": 0}),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, history=HISTORY)
+        await page.route("**/api/players*", seek)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.get_by_role(
+            "button", name="Статистика игрока", exact=True
+        ).click()
+        await page.wait_for_selector("#club-stats:not(.hidden)")
+
+        await page.locator("#stats-seek").fill("м")
+        await page.wait_for_timeout(400)
+        assert asked == [], "за одной буквой сходили на сервер"
+        assert await page.locator("#stats-found").is_hidden()
+
+        await page.locator("#stats-seek").fill("мяу")
+        await page.wait_for_selector(".seek-empty")
+        assert asked, "за тремя буквами не сходили"
+        assert "Никого" in await page.locator(".seek-empty").inner_text()
+        await browser.close()
+
+
+async def test_the_fight_club_is_a_house_on_the_map_like_any_other(server):
+    """В здании клуба горит «Карта», а не «Клуб»: туда пришли ногами.
+
+    Экран клуба обслуживает и дома, и справочную за нижней кнопкой, и
+    зажигал он всегда «Клуб» — Бойцовский клуб был единственным домом
+    города, выпадавшим из «Карты».
+    """
+    me = make_player("fight_club")
+    card = build_card(me, TOKEN, viewer_id=42)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        # Кнопка внизу ведёт в справочную — там и горит «Клуб»
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+        assert "active" in await page.locator("#tab-club").get_attribute("class")
+        assert "active" not in await page.locator("#tab-map").get_attribute("class")
+
+        # А здание — дом как всякий другой: горит «Карта»
+        await page.evaluate("openClub()")
+        await page.wait_for_selector("#club-fights:not(.hidden)")
+        assert "active" in await page.locator("#tab-map").get_attribute("class"), (
+            "в здании клуба не горит «Карта»"
+        )
+        assert "active" not in await page.locator("#tab-club").get_attribute("class")
+        await browser.close()
+
+
+async def test_the_raid_house_also_lights_the_map(server):
+    """Казино, стадион и часть — тоже дома: у них горит «Карта»."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.evaluate("openRaidHouse('casino')")
+        await page.wait_for_selector("#club-raid:not(.hidden)")
+
+        assert "active" in await page.locator("#tab-map").get_attribute("class")
+        assert "active" not in await page.locator("#tab-club").get_attribute("class")
+        await browser.close()
+
+
+async def test_the_club_building_keeps_the_view_from_inside(server):
+    """Вид изнутри в здании клуба не пропадает после справочной.
+
+    Справочная прятала картинку и не возвращала её: правило стояло в
+    отрисовке разделов, а не там, где картинку рисуют, — и, зайдя в
+    здание после справочной, боец видел дом без интерьера до следующей
+    отрисовки карточки.
+    """
+    me = make_player("fight_club")
+    card = build_card(me, TOKEN, viewer_id=42)
+    assert card["place"]["interior"], "у клуба нет вида изнутри — проверять нечего"
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, images=True)
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        # Сперва справочная: там вида изнутри быть не должно
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+        assert await page.locator("#club-interior").is_hidden()
+
+        # Теперь само здание — и картинка на месте, без перерисовки карточки
+        await page.evaluate("openClub()")
+        await page.wait_for_selector("#club-fights:not(.hidden)")
+        assert await page.locator("#club-interior").is_visible(), (
+            "интерьер пропал при входе в здание"
+        )
+        assert card["place"]["interior"] in await page.locator(
+            "#club-pic"
+        ).get_attribute("src")
+
+        # И обратно в справочную — снова без интерьера
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+        assert await page.locator("#club-interior").is_hidden()
+        await browser.close()
+
+
+async def test_the_club_building_offers_fights_and_squads(server):
+    """В здании клуба два дела: бой один на один и бой отрядом.
+
+    Рейтинг и статистика сюда не идут: это не дело, а справка, и за ней
+    не ходят ногами через весь город.
+    """
     async with async_playwright() as pw:
         browser, page = await open_ring(pw, server, None)
 
         sections = await page.locator("#club-sections .chip").all_inner_texts()
         # рейда среди пузырей нет: в подвал спускаются из казино
-        assert sections == ["Бои", "Отряд", "Игроки", "Статистика"]
+        assert sections == ["Бои", "Отряд"]
+        assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
         assert await page.locator("#club-fights").is_visible()
         assert await page.locator("#club-players").is_hidden()
+        # В здание пришли ногами — значит, есть куда вернуться
+        assert await page.locator("#club-back").is_visible()
 
-        await page.get_by_role("button", name="Игроки", exact=True).click()
-        assert await page.locator("#club-players").is_visible()
+        await page.get_by_role("button", name="Отряд", exact=True).click()
+        # Смотрим на класс, а не на пиксели: пока состав не приехал,
+        # раздел пуст, и «видимым» его не считает даже открытым
+        await page.wait_for_selector("#club-battle:not(.hidden)", state="attached")
         assert await page.locator("#club-fights").is_hidden()
         await browser.close()
 
@@ -2853,6 +4180,9 @@ async def test_the_damage_is_coloured_by_the_kind_of_strike(server):
     async with async_playwright() as pw:
         browser, page = await open_ring(pw, server, ring_with_duel())
 
+        # Журнал приезжает ответом сервера, а `all_inner_texts` ничего не
+        # ждёт: без этой строки проверка иногда читала пустой список
+        await page.wait_for_selector(".fight-log .dmg")
         marks = page.locator(".fight-log .dmg")
         assert await marks.all_inner_texts() == ["−5", "−60"]
         assert await marks.nth(0).get_attribute("class") == "dmg"
@@ -2971,16 +4301,24 @@ async def test_the_end_of_the_fight_shows_the_result(server):
 # ---------- рейд ----------
 
 
+BOSS_IN_WAVE = {
+    "number": -1, "code": "cellar_boss", "title": "Босс Подвала",
+    "emoji": "🩸", "image": "", "fclass": "Танк", "fclass_emoji": "🛡️",
+    "level": 9, "hp": 180, "max_hp": 300, "percent": 60, "alive": True,
+    "weapon": "кувалдой", "against": 42, "yours": True,
+}
+
+
 def raid_with_wave(over=None) -> dict:
     """Ответ подвала: идёт волна, один боец уже отработал."""
     raid = {
         "id": 1, "wave": 2, "in_app": True, "resting": False,
         "finished": False, "summary": [],
-        "boss": {
-            "code": "cellar_boss", "title": "Босс Подвала", "emoji": "🩸",
-            "image": "", "level": 9, "hp": 180, "max_hp": 300, "percent": 60,
-            "weapon": "кувалдой",
-        },
+        "boss": BOSS_IN_WAVE,
+        "gang": [BOSS_IN_WAVE],
+        # В казино сервер цели не присылает: босс один, и подпись «бьём
+        # его» сказала бы очевидное
+        "foe": None,
         "party": [
             {
                 "user_id": 42, "name": "Растафарайчик", "level": 5, "emoji": "⚔️",
@@ -3021,7 +4359,8 @@ def raid_with_wave(over=None) -> dict:
         ],
     }
     raid.update(over or {})
-    return {**EMPTY_RAID, "raid": raid, "boss": {**BOSS_CARD, "live": True}}
+    live = {**BOSS_CARD, "live": True}
+    return {**EMPTY_RAID, "raid": raid, "boss": live, "roster": [live]}
 
 
 async def open_raid(pw, server, raid=None, telegram="", images=False):
@@ -3031,8 +4370,9 @@ async def open_raid(pw, server, raid=None, telegram="", images=False):
     казино на карте. Сам раздел жив, и тесты рейда — про него, а не про
     дорогу до казино; её проверяет test_locations_app.
     """
-    # Подвал открывает дверь казино, и только она: кнопка внизу — клуб,
-    # где бы боец ни стоял. Потому и идём сюда через карту
+    # Дорога та же, что у человека: карта, дверь казино, кнопка «Рейд» в
+    # шапке зала. Дверь открывает игорный зал — в казино приходят
+    # играть, — а рейд живёт за той же кнопкой, что и работа
     browser, page = await open_page(
         pw, server, build_card(make_player("casino"), TOKEN, viewer_id=42),
         raid=raid, city=city_map("casino"), telegram=telegram, images=images,
@@ -3041,25 +4381,225 @@ async def open_raid(pw, server, raid=None, telegram="", images=False):
     await page.locator("#tab-map").click()
     await page.wait_for_selector(".zone-house")
     await page.locator(".zone-house").filter(has_text="Казино").click()
+    await page.wait_for_selector("#casino:not(.hidden)")
+    await page.locator(".raid-entry").click()
     await page.wait_for_selector("#club-raid:not(.hidden)")
     return browser, page
 
 
-async def test_the_raid_names_the_boss_and_opens_his_numbers(server):
-    """Заголовок раздела и кнопка «i»: под ней всё, с чем босс выйдет."""
+def hooligan(number: int, title: str, hp: int, against=None, yours=False) -> dict:
+    """Один гопник на табло, как его отдаёт сервер."""
+    return {
+        "number": number, "code": "gang_rogue", "title": title, "emoji": "🤸",
+        "image": "", "fclass": "Трикстер", "fclass_emoji": "🤸", "level": 10,
+        "hp": hp, "max_hp": 240, "percent": round(hp * 100 / 240),
+        "alive": hp > 0, "weapon": "зонтом", "against": against, "yours": yours,
+    }
+
+
+GANG = [
+    hooligan(-1, "Лидер банды", 300, against=42, yours=True),
+    hooligan(-2, "Трикстер", 0),
+    hooligan(-3, "Воин", 120, against=43),
+    hooligan(-4, "Ассасин №1", 240),
+    hooligan(-5, "Ассасин №2", 240),
+]
+
+
+def raid_with_gang(over=None) -> dict:
+    """Та же волна, но против банды из пяти, и один из них уже лёг."""
+    body = raid_with_wave(
+        {"gang": GANG, "boss": GANG[0], "foe": GANG[0], **(over or {})}
+    )
+    body["kind"] = {
+        **body["kind"], "code": "hooligans", "alone": False,
+        "title": "Стычка с футбольными фанатами", "house": "stadium",
+        "min_party": 3, "foes": 5, "grows": True, "foe_level": 10,
+    }
+    body["roster"] = [{**BOSS_CARD, "live": True, "alone": False}]
+    return body
+
+
+async def test_the_gang_stands_on_the_board_one_card_each(server):
+    """Твой соперник — верхняя карта колоды, прочие под ним.
+
+    Пять портретов в колонку не влезают, да и ищут на этом табло не лицо.
+    Во всю величину лежит тот, с кем дерёшься сейчас; прочие уходят в
+    колоду, и у каждого видна верхняя часть карты — имя и шкала.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid_with_gang())
+
+        # Крупная карточка одна, и это твой соперник: рамка синяя
+        big = page.locator(".raid-foes > .boss-card")
+        assert await big.count() == 1
+        assert await page.locator(".boss-card.mine").count() == 1
+        assert "Лидер банды" in await big.inner_text()
+        # Подписи «твой» больше нет: рамку видно быстрее слова
+        assert "твой" not in await page.locator("#raid-body").inner_text()
+
+        # Остальные четверо — в колоде, и своего соперника там уже нет
+        rest = page.locator(".raid-foes .stack-card")
+        assert await rest.count() == 4
+        # В разметке колода идёт снизу вверх, поэтому читаем с конца
+        names = await rest.evaluate_all(
+            "nodes => nodes.map(one => one.querySelector('.fight-name')"
+            ".textContent).reverse()"
+        )
+        assert not [one for one in names if "Лидер банды" in one]
+        # Павший уходит на дно колоды сам, где бы сервер его ни прислал
+        assert "💀" in names[-1] and "Трикстер" in names[-1]
+        assert await page.locator(".raid-foes .stack-card.down").count() == 1
+        assert "готов" in await rest.first.inner_text()
+
+        # Портрет только у крупной карточки — в стопке лиц нет
+        assert await page.locator(".raid-foes .boss-face").count() == 0
+        await browser.close()
+
+
+async def test_the_face_stands_above_the_name_and_the_bar(server):
+    """Сначала лицо, под ним имя и шкала — в таком порядке на него и смотрят.
+
+    Портрет стоял под шкалой: сначала числа, потом лицо. На экране из
+    одной карточки это читалось наоборот — глаз цеплялся за картинку и
+    уходил вверх, мимо имени, которое к ней и относится.
+    """
+    boss = {**BOSS_IN_WAVE, "image": "https://pub-test.r2.dev/bosses/cellar.png"}
+    raid = raid_with_wave({"boss": boss, "gang": [boss]})
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid, images=True)
+        await page.wait_for_selector(".boss-face")
+
+        order = await page.locator(".raid-foes > .boss-card").evaluate(
+            "node => Array.from(node.children).map(one => one.className)"
+        )
+        assert order == ["boss-face", "fight-name", "fight-hp", "fight-bar"]
+
+        face = await page.locator(".boss-face").bounding_box()
+        name = await page.locator(".boss-card .fight-name").bounding_box()
+        bar = await page.locator(".boss-card .fight-bar").bounding_box()
+        assert face["y"] + face["height"] <= name["y"], "имя заехало на портрет"
+        assert name["y"] < bar["y"]
+        await browser.close()
+
+
+async def test_the_foe_deck_turns_with_the_queue(server):
+    """Наверху тот, с кем размен сейчас; за ним — следующий по кругу.
+
+    Круг идёт по порядку, в котором банда выставляет своих, и колода
+    крутится вместе с ним: добили одного — наверх выходит следующий, а
+    тот, с кем только что дрались, уходит в конец. Павшие при этом
+    ложатся глубже всех, где бы их ни застал круг.
+    """
+    gang = raid_with_gang()["raid"]["gang"]
+    # Банда выставляет своих в этом порядке: Лидер, Трикстер (он уже
+    # лёг), Воин, Ассасин №1, Ассасин №2. Прицел смотрящего дошёл до
+    # четвёртого — до «Ассасина №1»
+    aimed = {**gang[3], "against": 42, "yours": True}
+    raid = raid_with_gang({
+        "gang": [*gang[:3], aimed, gang[4]],
+        "foe": aimed,
+    })
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid)
+
+        assert "Ассасин №1" in await page.locator(
+            ".raid-foes > .boss-card"
+        ).inner_text()
+        # В разметке колода идёт снизу вверх: первой стоит самая глубокая
+        # карта, последней — ближайшая к верхней. Читаем снизу вверх, то
+        # есть в порядке самой колоды
+        names = await page.locator(".raid-foes .stack-card .fight-name").evaluate_all(
+            "nodes => nodes.map(one => one.textContent).reverse()"
+        )
+        # Круг пошёл дальше с четвёртого, обошёл конец и вернулся к началу
+        assert [one.split(" ")[-1] for one in names] == [
+            "№2", "банды", "Воин", "Трикстер"
+        ], names
+        # Лидер в колоде ниже «Ассасина №2»: круг дошёл до конца списка и
+        # пошёл сначала, а не прыгнул к первому по порядку
+        assert "Ассасин" in names[0] and "Лидер" in names[1]
+        # Павший — глубже всех, то есть в самом верху экрана
+        assert "💀" in names[-1]
+        top = await page.locator(".raid-foes .stack-card").first.bounding_box()
+        rest = await page.locator(".raid-foes .stack-card").nth(1).bounding_box()
+        assert top["y"] < rest["y"], "павший не ушёл наверх"
+        await browser.close()
+
+
+async def test_the_board_says_who_we_are_hitting_right_now(server):
+    """Цель в банде меняется каждый ход — её имя стоит над кнопками удара.
+
+    Без этой строки боец жмёт удар, не зная, по кому: на табло из пяти
+    рамка «твой» видна, а под пальцем — нет.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid_with_gang())
+
+        aim = page.locator(".raid-aim")
+        assert await aim.count() == 1
+        said = await aim.inner_text()
+        assert "Бьём" in said and "Лидер банды" in said
+        assert "300/240" in said or "300" in said
+        await browser.close()
+
+
+async def test_the_cellar_does_not_say_whom_to_hit(server):
+    """В подвале босс один, и подпись сказала бы очевидное."""
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid_with_wave())
+
+        assert await page.locator(".raid-aim").count() == 0
+        await browser.close()
+
+
+async def test_the_stadium_tells_the_party_what_it_is_walking_into(server):
+    """Перед сбором экран называет, сколько их и что они не подстроятся."""
+    async with async_playwright() as pw:
+        empty = raid_with_gang()
+        empty["raid"] = None
+        browser, page = await open_raid(pw, server, empty)
+
+        body = await page.locator("#raid-body").inner_text()
+        assert "Стычка с футбольными фанатами" in body
+        assert "выходит 5 человек 10-го уровня" in body
+        assert "за каждого бойца сверх 3" in body
+        assert "Нужно собрать хотя бы 3" in body
+        await browser.close()
+
+
+async def test_the_raid_tells_its_story_and_opens_the_numbers(server):
+    """Под заголовком — рассказ о рейде, под «i» — одни числа.
+
+    Прежде под куклой босса стояли две строки: его повадка и объяснение,
+    как он подстраивается под отряд. Про рейд теперь рассказывает
+    рассказ под заголовком, а карточка под «i» осталась числами —
+    уровень, здоровье, урон, броня.
+    """
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server)
 
         head = await page.locator(".raid-head").inner_text()
         assert "Ограбление Босса Казино" in head
+        assert "Доход от казино растёт с каждым днём" in head
+        assert "2 раза в день" in head
         assert await page.locator(".boss-stats").count() == 0
+
+        # Рассказ стоит строкой ниже, а не поверх заголовка: шапка —
+        # флексбокс, и целую строку рассказ должен занимать сам
+        title = await page.locator(".raid-head .shelf-head").bounding_box()
+        story = await page.locator(".raid-story").bounding_box()
+        info = await page.locator("#boss-info").bounding_box()
+        assert story["y"] >= title["y"] + title["height"]
+        assert story["y"] >= info["y"] + info["height"]
 
         await page.locator("#boss-info").click()
         await page.wait_for_selector(".boss-stats")
 
         card = await page.locator(".boss-stats").inner_text()
-        assert "Он тут всё построил" in card
-        assert "на 4 уровня выше отряда" in card  # прикидка, а не живой босс
+        # Под куклой ничего не пишем: ни повадки, ни объяснений
+        assert "Он тут всё построил" not in card
+        assert "выше отряда" not in card
         for line in ("Уровень", "304", "Кувалда", "15–25", "🪨 Сопротивление", "31%"):
             assert line in card
         assert "Броня: Голова" in card and "Броня: Ноги" not in card  # нулевую не пишем
@@ -3078,14 +4618,21 @@ async def test_the_raid_names_the_boss_and_opens_his_numbers(server):
         await browser.close()
 
 
-async def test_the_boss_card_of_a_live_raid_says_so(server):
+async def test_the_boss_card_stays_numbers_only_in_a_live_raid(server):
+    """И в идущем рейде под куклой числа, а не рассказ о нём."""
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, raid_with_wave())
 
         await page.locator("#boss-info").click()
         await page.wait_for_selector(".boss-stats")
 
-        assert "босс идущего рейда" in await page.locator(".boss-stats").inner_text()
+        card = await page.locator(".boss-stats").inner_text()
+        assert "босс идущего рейда" not in card
+        assert "Уровень" in card and "Броня" in card
+        # Рассказ при этом на месте — он у рейда, а не у босса
+        assert "Доход от казино растёт" in await page.locator(
+            ".raid-head"
+        ).inner_text()
         await browser.close()
 
 
@@ -3097,8 +4644,8 @@ async def test_an_empty_cellar_asks_for_a_pass(server):
         browser, page = await open_raid(pw, server)
 
         body = await page.locator("#raid-body").inner_text()
-        assert "Подвал открыт с 20:00 до 22:00 мск" in body
-        assert "В инвентаре: 2 шт." in body
+        assert "Открыто с 20:00 до 22:00 мск" in body
+        assert "Билет в казино, в инвентаре: 2 шт." in body
         assert await page.locator("#raid-size").count() == 0
 
         async def catch(route):
@@ -3119,7 +4666,7 @@ async def test_an_empty_cellar_asks_for_a_pass(server):
         await page.locator("#raid-open").click()
         await page.wait_for_timeout(200)
         assert sent == []
-        assert "Вы используете Рейд-пасс из инвентаря" in asked[0]
+        assert "Вы используете Билет в казино из инвентаря" in asked[0]
         assert "Останется: 1" in asked[0]
 
         page.remove_listener("dialog", on_dialog)
@@ -3153,16 +4700,18 @@ async def test_an_empty_pocket_offers_to_buy_a_pass(server):
         await page.locator("#raid-open").click()
         await page.wait_for_selector("#raid-go")
 
-        assert "Купить Рейд-пасс за 10 кредитов и войти?" in asked[0]
+        assert "Купить Билет в казино за 10 кредитов и войти?" in asked[0]
         assert sent == [{"action": "open", "buy": True}]
         await browser.close()
 
 
-async def test_the_board_puts_the_party_and_the_boss_side_by_side(server):
-    """Отряд слева, мечи посередине, босс справа — и всё это в один ряд.
+async def test_the_board_deals_two_decks(server):
+    """Две колоды на нижнем краю: верхняя карта внизу, глубокие — выше.
 
-    Раньше босс стоял сверху во всю ширину, а отряд списком под ним, и на
-    телефоне половина отряда уезжала за край экрана.
+    Верхняя карта колоды — та, что ближе всех к смотрящему: слева ты,
+    справа твой соперник. Лежит она у самого низа и во всю величину, а
+    каждая следующая карта колоды выглядывает из-под неё сверху — видно
+    только верхний край с именем и шкалой.
     """
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, raid_with_wave())
@@ -3171,19 +4720,52 @@ async def test_the_board_puts_the_party_and_the_boss_side_by_side(server):
         assert await body.locator(".versus").inner_text() == "⚔️"
         order = await body.evaluate(
             "node => Array.from(node.querySelectorAll("
-            "'.raid-party, .versus, .boss-card')).map(one => one.className)"
+            "'.raid-board > *')).map(one => one.className)"
         )
-        assert order == ["raid-party", "versus", "boss-card"]
+        assert order == ["raid-deck raid-mates", "versus", "raid-deck raid-foes"]
 
-        # Три столбца на одной высоте, и ширины 45 / 10 / 45
+        # Обе колоды и мечи между ними стоят на одной нижней черте
         board = await body.locator(".raid-board").bounding_box()
-        party = await body.locator(".raid-party").bounding_box()
+        you = await body.locator(".raid-you").bounding_box()
         swords = await body.locator(".versus").bounding_box()
         boss = await body.locator(".boss-card").bounding_box()
-        assert abs(round(party["y"]) - round(boss["y"])) <= 1, "столбцы разъехались"
-        assert party["x"] < swords["x"] < boss["x"]
-        for box, share in ((party, 0.45), (swords, 0.10), (boss, 0.45)):
+        bottoms = [round(box["y"] + box["height"]) for box in (you, swords, boss)]
+        assert max(bottoms) - min(bottoms) <= 2, f"низ разъехался: {bottoms}"
+        assert you["x"] < swords["x"] < boss["x"]
+        for box, share in ((you, 0.45), (swords, 0.10), (boss, 0.45)):
             assert abs(box["width"] / board["width"] - share) < 0.04, box["width"]
+
+        # Верхняя карта — последняя в колоде и самая нижняя на экране
+        deck = page.locator(".raid-mates > *")
+        assert "raid-you" in (await deck.last.get_attribute("class"))
+        cards = [
+            await deck.nth(number).bounding_box()
+            for number in range(await deck.count())
+        ]
+        tops = [round(box["y"]) for box in cards]
+        assert tops == sorted(tops), f"колода не идёт сверху вниз: {tops}"
+        assert cards[-1]["y"] + cards[-1]["height"] == pytest.approx(
+            bottoms[0], abs=2
+        )
+
+        # Карты лежат внахлёст, и видно у каждой верхний край
+        for over, under in zip(cards, cards[1:]):
+            assert under["y"] < over["y"] + over["height"], "карты сошлись встык"
+        name = await body.locator(
+            ".raid-mates .stack-card .fight-name"
+        ).last.bounding_box()
+        assert name["y"] + name["height"] <= cards[-1]["y"] + 1, "имя закрыто"
+
+        # Проверяем не правило, а что видно: в полосе нахлёста палец
+        # попадает в верхнюю карту, а не в ту, что лежит под ней. Без слоя
+        # («z-index») позиционированная карта колоды рисуется поверх
+        # непозиционированной верхней, и колода ложится не той стороной
+        on_top = await page.evaluate(
+            "point => { const node = document.elementFromPoint(point.x, point.y);"
+            " return node && node.closest('.raid-you, .stack-card').className; }",
+            {"x": round(you["x"] + you["width"] / 2), "y": round(you["y"]) + 2},
+        )
+        assert on_top == "raid-you", on_top
         await browser.close()
 
 
@@ -3227,7 +4809,7 @@ async def test_a_beaten_boss_closes_the_window(server):
         browser, page = await open_raid(pw, server, done)
 
         body = await page.locator("#raid-body").inner_text()
-        assert "Босс повержен: в это окно ты своё взял" in body
+        assert "Своё в это окно ты уже взял" in body
         assert "с 00:00 до 02:00 мск" in body
         assert await page.locator("#raid-open").is_disabled()
         await browser.close()
@@ -3242,7 +4824,7 @@ async def test_a_shut_cellar_says_when_it_opens(server):
         browser, page = await open_raid(pw, server, shut)
 
         body = await page.locator("#raid-body").inner_text()
-        assert "Подвал закрыт. Босса бьют 0–2, 8–10, 12–14, 16–18, 20–22 мск." in body
+        assert "Закрыто. Пускают 0–2, 8–10, 12–14, 16–18, 20–22 мск." in body
         assert "Ближайшее окно с 00:00 до 02:00 мск." in body
         assert await page.locator("#raid-open").is_disabled()
         await browser.close()
@@ -3377,25 +4959,45 @@ async def test_the_wave_shows_the_boss_and_the_whole_party(server):
         boss = await page.locator(".boss-card").inner_text()
         assert "Босс Подвала [9]" in boss and "180/300" in boss
 
-        members = await page.locator(".raid-member").all_inner_texts()
-        assert "⏳ ⚔️ Растафарайчик [5] — ты" in members[0]
-        assert "✅" in members[1]  # Марла отработала волну
-        assert "💀" in members[2]  # Зеваку вынесли
-        assert await page.locator(".raid-member.down").count() == 1
+        # Ты — крупной карточкой, с уроном: по нему считают, кому вещь
+        you = await page.locator(".raid-you").inner_text()
+        assert "⏳ ⚔️ Растафарайчик [5] — ты" in you and "урона 45" in you
+
+        # Остальные — в колоде, по карте на человека. В разметке она идёт
+        # снизу вверх, поэтому читаем с конца — в порядке самой колоды
+        mates = list(reversed(
+            await page.locator(".raid-mates .stack-card").all_inner_texts()
+        ))
+        assert len(mates) == 2
+        assert "✅" in mates[0] and "Марла" in mates[0]  # Марла отработала волну
+        assert "💀" in mates[1] and "Зевака" in mates[1]  # Зеваку вынесли
+        assert await page.locator(".raid-mates .stack-card.down").count() == 1
         await browser.close()
 
 
-async def test_the_fallen_sink_to_the_bottom_of_the_party(server):
-    """Живые сверху, павшие внизу: помочь можно только тем, кто дерётся."""
+async def test_the_fallen_sink_to_the_bottom_of_the_deck(server):
+    """Павший уходит на дно колоды — то есть в самый верх экрана.
+
+    Помочь и добить можно только живых, а павший посреди колоды каждый
+    раз сбивает счёт. Сервер прислал его первым — на дно он ляжет всё
+    равно.
+    """
     party = raid_with_wave()["raid"]["party"]
     # Зеваку вынесли, и в ответе сервера он идёт первым
     raid = raid_with_wave({"party": [party[2], party[0], party[1]]})
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, raid)
 
-        members = await page.locator(".raid-member").all_inner_texts()
-        assert "Растафарайчик" in members[0] and "Марла" in members[1]
-        assert "Зевака" in members[2] and "💀" in members[2]
+        assert "Растафарайчик" in await page.locator(".raid-you").inner_text()
+        cards = page.locator(".raid-mates .stack-card")
+        mates = list(reversed(await cards.all_inner_texts()))
+        assert "Марла" in mates[0]
+        assert "Зевака" in mates[1] and "💀" in mates[1]
+
+        # И на экране павший выше всех — глубже в колоде некуда
+        boxes = [await cards.nth(number).bounding_box() for number in range(2)]
+        assert boxes[0]["y"] < boxes[1]["y"]
+        assert "Зевака" in await cards.first.inner_text()
         await browser.close()
 
 
@@ -3411,34 +5013,34 @@ def crowd(size: int) -> list[dict]:
     ]
 
 
-async def test_a_big_party_hides_all_but_three(server):
-    """В подвал ходят вдесятером: трое на виду, остальные по нажатию.
+async def test_a_big_party_fits_into_the_stack_whole(server):
+    """В подвал ходят вдесятером, и видно всех — стопка на то и стопка.
 
-    Десять карточек списком выдавливают с экрана кнопки хода — то, ради
-    чего в рейд и заходят.
+    Списком десять карточек выдавливали с экрана кнопки хода, и хвост
+    приходилось прятать под «ещё N». В стопке карточки лежат внахлёст, и
+    девятеро занимают меньше, чем занимали трое списком.
     """
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, raid_with_wave({"party": crowd(10)}))
 
-        shown = page.locator(".raid-party > .raid-member")
-        assert await shown.count() == 3
-        more = page.locator(".party-more")
-        assert "ещё 7" in await more.locator("summary").inner_text()
-        assert await more.locator(".raid-member").count() == 7
-        # Хвост свёрнут, пока его не открыли
-        assert await more.get_attribute("open") is None
-        await more.locator("summary").click()
-        assert await more.locator(".raid-member").first.is_visible()
-        await browser.close()
-
-
-async def test_a_small_party_has_no_tail_at_all(server):
-    """Троих и меньше показываем целиком: сворачивать нечего."""
-    async with async_playwright() as pw:
-        browser, page = await open_raid(pw, server, raid_with_wave())
-
-        assert await page.locator(".raid-member").count() == 3
+        cards = page.locator(".raid-mates .stack-card")
+        assert await cards.count() == 9, "кого-то спрятали"
+        assert await page.locator(".raid-you").count() == 1
+        # Все на виду: прятать больше нечего, и раскрывать нечего
         assert await page.locator(".party-more").count() == 0
+        assert await cards.first.is_visible() and await cards.last.is_visible()
+
+        # Карточки лежат внахлёст: каждая следующая начинается выше, чем
+        # кончилась предыдущая
+        boxes = await cards.evaluate_all(
+            "nodes => nodes.map(one => {"
+            "const box = one.getBoundingClientRect();"
+            "return [box.top, box.bottom];})"
+        )
+        for (_, bottom), (top, _) in zip(boxes, boxes[1:]):
+            assert top < bottom, "карточки сошлись встык, а не стопкой"
+        # И при этом у каждой видно имя со шкалой
+        assert await page.locator(".raid-mates .stack-card .fight-bar").count() == 9
         await browser.close()
 
 
@@ -3986,7 +5588,7 @@ async def open_stats(pw, server, history=None, fight_log=None):
     )
     await page.wait_for_selector("#hero:not(.hidden)")
     await page.locator("#tab-club").click()
-    await page.get_by_role("button", name="Статистика", exact=True).click()
+    await page.get_by_role("button", name="Статистика игрока", exact=True).click()
     await page.wait_for_selector("#club-stats:not(.hidden)")
     # История приходит запросом: ждём, пока «Открываем...» сменится ответом
     await page.wait_for_function(
@@ -4095,34 +5697,147 @@ async def open_squad(pw, server, battle=None):
         pw, server, build_card(make_player(), TOKEN, viewer_id=42), battle=battle
     )
     await page.wait_for_selector("#hero:not(.hidden)")
-    await page.locator("#tab-club").click()
+    # Отряд собирают в здании клуба, а не под кнопкой внизу: кнопка
+    # ведёт в справочную, где рейтинг и статистика
+    await page.evaluate("openClub()")
     await page.get_by_role("button", name="Отряд", exact=True).click()
-    await page.wait_for_selector("#club-battle:not(.hidden)")
+    await page.wait_for_selector("#club-battle:not(.hidden)", state="attached")
+    # Раздел открывается сразу, а содержимое приезжает ответом сервера.
+    # Без этого ожидания проверка читала пустой `#battle-body` — не
+    # всегда, а когда машина под полным прогоном отвечала медленнее
+    await page.wait_for_function("battleData !== null")
     return browser, page
 
 
 async def test_the_squad_section_offers_both_kinds_of_group_fight(server):
+    """Оба боя стоят первой строкой формы: выбрать можно любой."""
     async with async_playwright() as pw:
         browser, page = await open_squad(pw, server)
 
         body = await page.locator("#battle-body").inner_text()
-        assert "Командный бой на 2" in body
-        assert "Королевская битва на 8" in body
+        assert "Командный бой" in body and "Королевская битва" in body
+        assert "Собрать состав" in body
         assert "Собери состав" in await page.locator("#battle-note").inner_text()
         await browser.close()
 
 
 async def test_the_group_round_shows_the_board_and_the_pair(server):
+    """Та же доска, что и в рейде: ты и твоя пара крупно, прочие стопкой.
+
+    Строки «против такого-то» на карточке больше нет и не нужно: с кем
+    тебя свёл этот ход, стоит напротив — лицом к лицу и в синей рамке.
+    """
     async with async_playwright() as pw:
         browser, page = await open_squad(pw, server, battle_with_round())
 
         head = await page.locator(".fight-round").inner_text()
         assert "Командный бой — раунд 2" in head
-        board = await page.locator(".raid-party").inner_text()
-        assert "Растафарайчик" in board and "против Марла" in board
-        assert "Красные" in board and "Синие" in board
+
+        you = await page.locator("#club-battle .raid-you").inner_text()
+        assert "Растафарайчик" in you and "Красные" in you and "— ты" in you
+        rival = page.locator("#club-battle .boss-card")
+        assert "Марла" in await rival.inner_text()
+        assert "Синие" in await rival.inner_text()
+        assert "mine" in (await rival.get_attribute("class")), "пара не обведена"
+
+        # В этом бою по одному с каждой стороны — стопки пустые
+        assert await page.locator("#club-battle .stack-card").count() == 0
         # столбцов два: одна рука и блок
         assert await page.locator("#club-battle .zone-list").count() == 2
+        await browser.close()
+
+
+async def test_the_group_board_stacks_everyone_else(server):
+    """Остальные бойцы ложатся стопками: свои слева, чужие справа."""
+    battle = battle_with_round()
+    party = battle["battle"]["party"]
+    battle["battle"]["party"] = party + [
+        {
+            "user_id": 44, "name": "Тайлер", "level": 6, "emoji": "🛡️",
+            "hp": 50, "max_hp": 110, "percent": 45, "damage_dealt": 20,
+            "alive": True, "team": 0, "team_title": "Красные",
+            "rival_id": None, "rival": None, "ready": True, "you": False,
+        },
+        {
+            "user_id": 45, "name": "Зевака", "level": 3, "emoji": "🤸",
+            "hp": 0, "max_hp": 80, "percent": 0, "damage_dealt": 5,
+            "alive": False, "team": 1, "team_title": "Синие",
+            "rival_id": None, "rival": None, "ready": True, "you": False,
+        },
+    ]
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, battle)
+
+        ours = await page.locator("#club-battle .raid-mates .stack-card").all_inner_texts()
+        theirs = await page.locator("#club-battle .raid-foes .stack-card").all_inner_texts()
+        assert len(ours) == 1 and "Тайлер" in ours[0]
+        assert len(theirs) == 1 and "Зевака" in theirs[0] and "💀" in theirs[0]
+        await browser.close()
+
+
+async def test_the_board_cards_hide_what_lies_under_them(server):
+    """Карточки колоды непрозрачны: низ нижней карты не просвечивает.
+
+    Карты лежат внахлёст, и `--slot` у них полупрозрачный — на обычном
+    экране он ложится на фон страницы, а в колоде под ним оказывалась
+    соседняя карта. Выбывший блёкнет содержимым, а не картой: погаси
+    карту целиком, и сквозь неё снова видно нижнюю.
+    """
+    battle = battle_with_round()
+    party = battle["battle"]["party"]
+    battle["battle"]["party"] = party + [
+        {
+            "user_id": 44, "name": "Тайлер", "level": 6, "emoji": "🛡️",
+            "hp": 50, "max_hp": 110, "percent": 45, "damage_dealt": 20,
+            "alive": True, "team": 0, "team_title": "Красные",
+            "rival_id": None, "rival": None, "ready": True, "you": False,
+        },
+        {
+            "user_id": 45, "name": "Зевака", "level": 3, "emoji": "🤸",
+            "hp": 0, "max_hp": 80, "percent": 0, "damage_dealt": 5,
+            "alive": False, "team": 0, "team_title": "Красные",
+            "rival_id": None, "rival": None, "ready": True, "you": False,
+        },
+    ]
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, battle)
+
+        # Ни одна карта доски не прозрачна: ни фоном, ни целиком
+        opaque = await page.evaluate(
+            """() => [...document.querySelectorAll(
+                '#club-battle .raid-you, #club-battle .boss-card,'
+                + ' #club-battle .stack-card')].map((one) => {
+                const style = getComputedStyle(one);
+                return [one.className, style.backgroundColor, style.opacity];
+            })"""
+        )
+        assert opaque, "доска пуста — проверять нечего"
+        for name, colour, alpha in opaque:
+            assert "rgba" not in colour, f"{name}: фон просвечивает ({colour})"
+            assert alpha == "1", f"{name}: карта погашена целиком"
+
+        # Выбывший всё равно блёклый — но блёкнет его содержимое
+        fallen = page.locator("#club-battle .stack-card.down").first
+        inside = await fallen.locator(".stack-head").evaluate(
+            "(one) => getComputedStyle(one).opacity"
+        )
+        assert inside == "0.55"
+        await browser.close()
+
+
+async def test_the_group_board_keeps_the_place_of_a_missing_rival(server):
+    """Пары в этом ходу не досталось — место соперника всё равно занято."""
+    battle = battle_with_round()
+    battle["battle"]["party"][0] = {
+        **battle["battle"]["party"][0], "rival_id": None, "rival": None
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, battle)
+
+        empty = page.locator("#club-battle .boss-card.empty")
+        assert await empty.count() == 1
+        assert "без пары" in await empty.inner_text()
+        assert await page.locator("#club-battle .boss-card.mine").count() == 0
         await browser.close()
 
 
@@ -4606,31 +6321,40 @@ async def test_the_arrows_lead_to_the_neighbouring_districts(server):
         await browser.close()
 
 
-async def test_a_house_without_a_trade_says_when_it_opens(server):
-    """Стадион на карте есть, зайти можно, а услуги пока нет.
+async def test_a_house_that_promises_more_still_opens_its_own_screen(server, db):
+    """«Скоро» у дома больше не значит «внутри пусто».
 
-    Раньше такой дом отвечал всплывашкой, и боец оставался на карте — то
-    есть внутрь не заходил вовсе. Теперь у дома свой экран: вид изнутри и
-    записка о том, чего тут ждать.
+    Раньше такой дом открывал общий экран с одной запиской — других у
+    него и не было. Теперь домов без услуги в городе нет вовсе
+    (`tests/test_travel.py`), и строка «скоро» значит лишь, что сверх
+    нынешнего обещано ещё: общежитие даёт комнату, а койка пока не
+    лечит. Дверь на карте обязана вести к услуге, а не к записке.
     """
-    walker = make_player(location="stadium")
+    from bot.webapp.dorm import build_dorm
+    from tests.test_dorm import student
+
+    walker = await student(db)
+    body = await build_dorm(db, walker)
     card = build_card(walker, TOKEN, viewer_id=walker.user_id)
     async with async_playwright() as pw:
         browser, page = await open_map(
-            pw, server, city_map("stadium"), card, images=True
+            pw, server, city_map("dormitory"), card, images=True
         )
+        await page.route("**/api/dorm*", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(body, ensure_ascii=False),
+        ))
 
-        await page.locator(".zone-house").filter(has_text="Стадион").click()
-        await page.wait_for_selector("#house:not(.hidden)")
+        await page.locator(".zone-house").filter(has_text="Общежитие").click()
+        await page.wait_for_selector("#dorm:not(.hidden)")
 
-        assert await page.locator("#house-title").inner_text() == "Стадион"
-        note = await page.locator("#house-soon").inner_text()
-        assert "Скоро" in note and "элитный рейд" in note
-        # Пока в доме стоишь, на панели горит «Карта»: оттуда и пришли
-        assert "active" in (await page.locator("#tab-map").get_attribute("class"))
-        # Обратно — на карту, кнопкой в углу
-        await page.locator("#house-back").click()
-        await page.wait_for_selector("#map:not(.hidden)")
+        # Экран общежития, а не общая записка «скоро». Записку наполняет
+        # ответ сервера, и ждать надо его: экран открывается раньше
+        await page.wait_for_function(
+            "() => el('dorm-note').textContent.trim().length > 0"
+        )
+        assert await page.locator("#house:not(.hidden)").count() == 0
+        assert "Комната студенту" in await page.locator("#dorm-note").inner_text()
         await browser.close()
 
 
@@ -4638,10 +6362,19 @@ async def test_a_house_without_a_trade_says_when_it_opens(server):
 
 
 def hurt_card(player, hours: int = 10, minutes: int = 15):
-    """Карточка бойца с тяжёлой травмой ноги."""
+    """Карточка бойца с тяжёлой травмой ноги.
+
+    Срок берётся с запасом в полминуты, и это не придирка: остаток
+    показывается с округлением вниз, а браузер открывается не в ту же
+    секунду, в какую собрана карточка. Ровные «десять часов пятнадцать
+    минут» превращались в четырнадцать, как только прогон шёл чуть
+    медленнее обычного, — и тест падал через раз на полном наборе.
+    """
     from bot.game.injuries import ActiveInjury
 
-    player.injury = ActiveInjury("broken_leg", now_ts() + hours * 3600 + minutes * 60)
+    player.injury = ActiveInjury(
+        "broken_leg", now_ts() + hours * 3600 + minutes * 60 + 30
+    )
     return build_card(player, TOKEN, viewer_id=player.user_id)
 
 
@@ -4661,14 +6394,14 @@ async def test_an_injury_stands_in_the_card_like_an_elixir(server):
 
 
 async def test_a_broken_stat_is_red_and_may_go_below_zero(server):
-    """«Ловкость -5 (-20)» — красным: минус в характеристике не опечатка."""
+    """«Проворство -5 (-20)» — красным: минус в характеристике не опечатка."""
     player = make_player()
-    player.agility = 15  # травма уводит ловкость в минус
+    player.agility = 15  # травма уводит проворство в минус
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, hurt_card(player), build_shop(player))
         await page.wait_for_selector("#hero:not(.hidden)")
 
-        row = page.locator("#stats li").filter(has_text="Ловкость").first
+        row = page.locator("#stats li").filter(has_text="Проворство").first
         said = await row.inner_text()
         assert "-5" in said and "(-20)" in said
 
@@ -4990,7 +6723,7 @@ async def test_the_casino_and_the_club_share_a_screen_but_not_a_view(server):
     """Один экран на два дома — и у каждого своя картинка."""
     async with async_playwright() as pw:
         browser, page = await open_inside(pw, server, "casino")
-        await page.evaluate("openCasino()")
+        await page.evaluate("openRaidHouse('casino')")
 
         assert (await interior_src(page, "club")).endswith(
             "locations/interiors/underground_casino_interior.jpeg"
@@ -5105,7 +6838,6 @@ async def test_the_info_card_says_where_the_fighter_is_walking(server):
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
-        await page.get_by_role("button", name="Игроки", exact=True).click()
         await page.locator(".fighter").nth(1).locator(".fighter-info").click()
         await page.wait_for_selector(".sheet-doll")
 
@@ -5154,7 +6886,7 @@ async def test_the_casino_counts_the_raid_down_on_the_map(
         assert state in (await plate.get_attribute("class"))
         assert await plate.locator(".plate-word").text_content() == words
         # часы идут часами: 00:34:24, а не 34:24
-        assert await page.locator("#raid-clock").text_content() == "00:34:24"
+        assert await page.locator("#raid-clock-casino").text_content() == "00:34:24"
 
         # плашка стоит под подписью дома, а не поверх неё
         sign = await page.locator(".zone-house.here .zone-sign").bounding_box()
@@ -5163,7 +6895,7 @@ async def test_the_casino_counts_the_raid_down_on_the_map(
 
         # обе строки стоят по центру бокса — и вдоль, и поперёк
         word = await plate.locator(".plate-word").bounding_box()
-        clock = await page.locator("#raid-clock").bounding_box()
+        clock = await page.locator("#raid-clock-casino").bounding_box()
         middle = box["x"] + box["width"] / 2
         for line in (word, clock):
             assert abs(line["x"] + line["width"] / 2 - middle) < 1
@@ -5182,7 +6914,7 @@ async def test_the_casino_counts_the_raid_down_on_the_map(
 
         # секунды тикают сами, без нового запроса
         await page.wait_for_timeout(1100)
-        assert await page.locator("#raid-clock").text_content() == "00:34:23"
+        assert await page.locator("#raid-clock-casino").text_content() == "00:34:23"
         await browser.close()
 
 
@@ -5200,7 +6932,7 @@ async def test_a_finished_raid_shows_green_without_a_clock(server):
         plate = page.locator(".zone-plate")
         assert "done" in (await plate.get_attribute("class"))
         assert await plate.locator(".plate-word").text_content() == "Рейд завершён"
-        assert await page.locator("#raid-clock").count() == 0
+        assert await page.locator("#raid-clock-casino").count() == 0
         # одна строка — ровно посередине плашки
         box = await plate.locator(".plate-box").bounding_box()
         word = await plate.locator(".plate-word").bounding_box()
@@ -5593,6 +7325,13 @@ async def test_the_counter_shows_the_art_of_every_modifier(server):
         pics = page.locator("#workshop-shop .mod .mod-pic")
         assert await pics.count() == 5, "пять ступеней заточки оружия"
         first = pics.first
+        # Значок встаёт на место картинки не сразу: сперва браузер должен
+        # сходить за файлом и получить отказ. Ждём отказа, а не читаем
+        # клетку на полпути — иначе в ней пусто, и не потому, что сломано
+        await page.wait_for_function(
+            "() => document.querySelector('#workshop-shop .mod .mod-pic')"
+            ".innerText.trim().length > 0"
+        )
         assert "🗡" in await first.inner_text(), "картинка не доехала — виден значок"
         box = await first.bounding_box()
         assert box["width"] >= 96, f"картинка мелковата: {box['width']}"
@@ -5711,32 +7450,50 @@ async def test_the_bag_shows_what_the_master_added(server):
 
 
 async def test_the_casino_opens_only_by_its_own_door(server):
-    """Казино открывает дверь на карте, а не вкладка внизу.
+    """Казино открывает дверь на карте, а не кнопка внизу.
 
-    Вкладка «Клуб» — всегда клуб: боец, стоящий в казино, приходит по ней
-    в клуб, и подвал за ней не прячется.
+    Кнопка «Клуб» — всегда справочная: боец, стоящий в казино, приходит
+    по ней к рейтингу, и подвал за ней не прячется.
     """
     async with async_playwright() as pw:
         browser, page = await open_map(pw, server, city_map("casino"),
                                        card=build_card(make_player("casino"),
                                                        TOKEN, viewer_id=42))
-        # кнопка внизу зовётся «Клуб» и ведёт в клуб — даже отсюда
+        # кнопка внизу зовётся «Клуб» и ведёт в справочную — даже отсюда
         assert await page.locator("#tab-club .bar-label").inner_text() == "Клуб"
         await page.locator("#tab-club").click()
         await page.wait_for_selector("#club:not(.hidden)")
 
-        assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
+        assert (
+            await page.locator("#club-title").inner_text()
+            == "ℹ️ Информация о клубе"
+        )
         assert await page.locator("#club-raid").is_hidden(), "подвал открылся сам"
 
-        # а дверь казино — открывает, и в нём одно дело: рейд
+        # а дверь казино открывает игорный зал: в казино идут играть
         await page.locator("#tab-map").click()
         await page.locator(".zone-house").filter(has_text="Казино").click()
-        await page.wait_for_selector("#club-raid:not(.hidden)")
-
-        assert await page.locator("#club-title").inner_text() == "🎲 Казино"
-        assert await page.locator("#club-sections .chip").count() == 0
+        await page.wait_for_selector("#casino:not(.hidden)")
         assert await page.locator("#tab-club .bar-label").inner_text() == "Клуб"
-        assert await page.locator("#club-fights").is_hidden()
+
+        # Рейд живёт за кнопкой в шапке — тем же приёмом, которым в
+        # доме открывают работу. Нажата — рейд
+        await page.locator(".raid-entry").click()
+        await page.wait_for_selector("#club-raid:not(.hidden)")
+        assert await page.locator("#club-title").inner_text() == "🎲 Казино"
+        assert "on" in (
+            await page.locator(".raid-entry").get_attribute("class")
+        )
+        # Вкладок «Рейд / Зал» рядом с ней нет: два способа сделать одно
+        # и то же человек читает как два разных дела
+        assert await page.locator("#club-sections .chip").count() == 0
+
+        # Отжата — зал. Кнопка одна, и она же переключатель
+        await page.locator(".raid-entry").click()
+        await page.wait_for_selector("#casino:not(.hidden)")
+        assert "on" not in (
+            await page.locator("#casino .raid-entry").get_attribute("class")
+        )
         await browser.close()
 
 
@@ -5748,11 +7505,11 @@ async def test_the_club_keeps_all_its_sections_away_from_the_ring(server):
             build_shop(make_player("pharmacy"), Service.POTIONS),
         )
         await page.wait_for_selector("#hero:not(.hidden)")
-        await page.locator("#tab-club").click()
+        await page.evaluate("openClub()")
         await page.wait_for_selector("#club:not(.hidden)")
 
         chips = await page.locator("#club-sections .chip").all_inner_texts()
-        assert chips == ["Бои", "Отряд", "Игроки", "Статистика"]
+        assert chips == ["Бои", "Отряд"]
         # и стоят они по центру экрана, а не прижаты к левому краю
         box = await page.locator("#club-sections").bounding_box()
         first = await page.locator("#club-sections .chip").first.bounding_box()
@@ -5771,16 +7528,23 @@ async def test_the_club_keeps_all_its_sections_away_from_the_ring(server):
 
 
 async def test_leaving_the_casino_leaves_the_raid_behind(server):
-    """Ушёл в клуб — раздел рейда не едет следом.
+    """Вышел из казино — раздел рейда не едет следом.
 
     Он оставался открытым и после перехода: рейд из него всё равно не
     начать, а выглядело так, будто подвал доступен откуда угодно.
+
+    Падаем в справочную, а не в здание клуба: боец вышел на улицу, и
+    экран, ни к какому месту не привязанный, — единственный, который
+    там не соврёт запиской «бои тут недоступны».
     """
     async with async_playwright() as pw:
         browser, page = await open_map(pw, server, city_map("casino"),
                                        card=build_card(make_player("casino"),
                                                        TOKEN, viewer_id=42))
         await page.locator(".zone-house").filter(has_text="Казино").click()
+        # Дверь казино ведёт в игорный зал, а рейд — кнопка в его шапке
+        await page.wait_for_selector("#casino:not(.hidden)")
+        await page.locator(".raid-entry").click()
         await page.wait_for_selector("#club-raid:not(.hidden)")
 
         # боец дошёл до клуба — карточка перерисовалась
@@ -5790,11 +7554,12 @@ async def test_leaving_the_casino_leaves_the_raid_behind(server):
         )
         await page.locator("#tab-club").click()
 
-        # ждём именно раздел, а не его наполнение: список боёв приезжает
-        # отдельным запросом и до него секция пуста
-        await page.wait_for_selector("#club-fights:not(.hidden)")
+        await page.wait_for_selector("#club-players:not(.hidden)")
         assert await page.locator("#club-raid").is_hidden(), "рейд уехал следом"
-        assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
+        assert (
+            await page.locator("#club-title").inner_text()
+            == "ℹ️ Информация о клубе"
+        )
         await browser.close()
 
 
@@ -6008,7 +7773,10 @@ async def test_the_fork_is_impossible_to_miss(server):
         assert await fork.count() == 1
         said = await fork.inner_text()
         assert "3 уровень" in said and "навсегда" in said
-        assert await fork.locator(".skill").count() == 3
+        # На развилке приёмы стоят строками, а не плитками: выбирают их
+        # по описанию, и прятать слова за нажатием тут нечего
+        assert await fork.locator(".skill-row").count() == 3
+        assert "Уворот наверняка." in said
         # классовый приём помечен
         assert await fork.locator(".fork-own").inner_text() == "свой"
         await browser.close()
@@ -6333,7 +8101,7 @@ async def test_a_cell_tells_what_lies_in_it(server):
         # второй день — будни: там лежит рейд-пасс
         await page.locator("#daily-ladder .gift").nth(1).click()
         said = await page.locator("#daily-pick").inner_text()
-        assert "2-й день" in said and "Рейд-пасс" in said
+        assert "2-й день" in said and "Билет в казино" in said
 
         # последний день месяца — заточка
         await page.locator("#daily-ladder .gift").nth(29).click()
@@ -6361,10 +8129,9 @@ async def test_the_bag_shows_the_pass_wear_and_not_undefined(server):
         await page.locator("#tab-bag").click()
         await page.wait_for_selector("#bag:not(.hidden)")
 
-        shelf = page.locator("#potion-list .thing")
-        said = await shelf.first.inner_text()
+        said = await page.locator("#pass-list .thing").first.inner_text()
         assert "Износ: 0/1" in said
-        assert "undefined" not in (await page.locator("#potion-list").inner_text())
+        assert "undefined" not in (await page.locator("#pass-list").inner_text())
         assert "один рейд" in said, "не сказано, на сколько талона хватает"
         # и сколько талонов на руках: износ «0/1» иначе говорил бы, что он один
         assert "В рюкзаке: 2 шт." in said
@@ -6372,7 +8139,180 @@ async def test_the_bag_shows_the_pass_wear_and_not_undefined(server):
         assert "рассыплется" not in said
 
         # у склянки полосы износа нет вовсе
-        assert await shelf.nth(1).locator(".thing-wear").count() == 0
+        jar = page.locator("#potion-list .thing").first
+        assert await jar.locator(".thing-wear").count() == 0
+        await browser.close()
+
+
+async def test_the_raid_tickets_stand_on_their_own_shelf(server):
+    """Билеты лежат своей полкой, а не в стопке эликсиров.
+
+    Приходят они оттуда же, с полки оружейника, и в рюкзаке лежали
+    вместе со склянками. Но билет не пьют — его предъявляют на входе, —
+    и среди эликсиров он читался как склянка, которую забыли выпить.
+    """
+    from bot.game.potions import RAID_PASS
+
+    player = make_player()
+    player.potions = {RAID_PASS: 1, "heal_small": 2}
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
+        await page.wait_for_selector("#pass-box:not(.hidden)")
+
+        head = await page.locator("#pass-box .bag-head").inner_text()
+        assert "Билеты на рейд" in head and "· 1" in head
+
+        # На полке билетов — только билет, на полке склянок — только склянка
+        assert await page.locator("#pass-list .thing").count() == 1
+        assert "Билет" in await page.locator("#pass-list").inner_text()
+        assert await page.locator("#potion-list .thing").count() == 1
+        assert "Билет" not in await page.locator("#potion-list").inner_text()
+
+        # И подпись под названием — «Билеты», а не «Прочее»: в прочем
+        # лежит то, чему не нашлось полки, а у билета полка своя
+        assert await page.locator("#pass-list .thing-kind").inner_text() == "Билеты"
+
+        # Полка билетов стоит ниже эликсиров, в том же рюкзаке
+        drinks = await page.locator("#potion-box").bounding_box()
+        rack = await page.locator("#pass-box").bounding_box()
+        assert rack["y"] > drinks["y"]
+        await browser.close()
+
+
+async def test_without_tickets_the_shelf_does_not_show_at_all(server):
+    """Пустой полки в рюкзаке нет: она обещала бы билет, которого нет."""
+    player = make_player()
+    player.potions = {"heal_small": 1}
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
+        await page.wait_for_selector("#potion-box:not(.hidden)")
+
+        assert await page.locator("#pass-box").is_hidden()
+        await browser.close()
+
+
+async def test_the_pass_lies_in_the_bag_as_a_ticket(server):
+    """Пропуск рисуется билетом, а не квадратом.
+
+    Пропуска перерисовали билетами 1200 на 600: название рейда и
+    отрывная часть, прозрачный фон. В квадратной клетке от такого
+    билета оставалась бы вырезанная середина — ни названия, ни
+    корешка, — и три пропуска выглядели бы одинаковой мутью.
+    """
+    from bot.game.potions import RAID_PASS
+
+    player = make_player()
+    player.potions = {RAID_PASS: 1, "heal_small": 1}
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
+        await page.wait_for_selector("#bag:not(.hidden)")
+        await page.wait_for_selector("#pass-list .thing-pic.ticket")
+
+        box = page.locator("#pass-list .thing").first
+        assert "Билет в казино" in await box.inner_text()
+        shape = await box.locator(".thing-pic").evaluate(
+            "(one) => { const css = getComputedStyle(one); return {"
+            " ratio: one.offsetWidth / one.offsetHeight,"
+            " fit: getComputedStyle(one.querySelector('img')).objectFit,"
+            " paint: css.backgroundColor }; }"
+        )
+        assert abs(shape["ratio"] - 2) < 0.05, shape
+        # Целиком, а не вырезанной серединой
+        assert shape["fit"] == "contain", shape
+        # И без плитки под прозрачным фоном билета
+        assert shape["paint"] in ("rgba(0, 0, 0, 0)", "transparent"), shape
+
+        # А склянка как лежала квадратом, так и лежит
+        jar = page.locator("#potion-list .thing").first.locator(".thing-pic")
+        assert await jar.evaluate("(one) => one.offsetWidth / one.offsetHeight") == 1
+        await browser.close()
+
+
+async def test_the_ticket_card_does_not_lie_on_its_own_text(server):
+    """Билет не наползает на описание: у него своя раскладка карточки.
+
+    Клетка под картинку — 104 точки и жёсткая. Билет вдвое шире своей
+    высоты, и, растянутый до своей ширины, он залезал во вторую колонку
+    прямо поверх слов. Поэтому у билета своя раскладка: половина
+    карточки под картинку, половина под текст — во всю ширину он
+    занимал пол-экрана ради одной строки описания.
+    """
+    from bot.game.potions import RAID_PASS
+
+    player = make_player()
+    player.potions = {RAID_PASS: 1, "heal_small": 1}
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
+        await page.wait_for_selector("#bag:not(.hidden)")
+        await page.wait_for_selector("#pass-list .thing.ticket")
+        await page.set_viewport_size({"width": 390, "height": 900})
+        await page.wait_for_timeout(60)
+
+        over = await page.evaluate("""() => {
+          const card = document.querySelector('#pass-list .thing.ticket');
+          const box = card.getBoundingClientRect();
+          const pic = card.querySelector('.thing-pic').getBoundingClientRect();
+          const body = card.querySelector('.thing-body').getBoundingClientRect();
+          return { gap: body.left - pic.right, share: pic.width / box.width,
+                   ratio: pic.width / pic.height };
+        }""")
+        assert over["gap"] >= 0, "картинка лежит на тексте"
+        # Половина карточки, а не вся её ширина: вторая половина — слова
+        assert 0.4 <= over["share"] <= 0.55, over
+        assert abs(over["ratio"] - 2) < 0.05, over
+
+        # И описание короткое: про рейд, и больше ничего
+        said = await page.locator("#pass-list .thing.ticket").first.inner_text()
+        assert "Билет позволит вам участвовать в рейде" in said
+        assert "печатью" not in said and "талон" not in said
+        await browser.close()
+
+
+async def test_the_daily_grid_shows_the_whole_ticket(server):
+    """В календаре билет виден целиком, а не вырезанной серединой."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), images=True
+        )
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+        await page.wait_for_selector(".gift-pic")
+
+        fits = await page.evaluate(
+            "() => [...document.querySelectorAll('.gift-pic.wide')]"
+            ".map((one) => getComputedStyle(one).objectFit)"
+        )
+        assert fits, "ни одного билета в календаре"
+        assert set(fits) == {"contain"}, fits
+        # А у обычных подарков клетка по-прежнему закрыта картинкой
+        rest = await page.evaluate(
+            "() => [...document.querySelectorAll('.gift-pic:not(.wide)')]"
+            ".map((one) => getComputedStyle(one).objectFit)"
+        )
+        assert set(rest) <= {"cover"}, rest
         await browser.close()
 
 
@@ -6518,8 +8458,8 @@ async def test_a_missing_picture_falls_back_to_the_icon(server):
         await browser.close()
 
 
-async def test_the_three_profile_buttons_are_dressed_alike(server):
-    """«Характеристики», «Документы» и «Награды» — одна кнопка на всех.
+async def test_the_profile_buttons_are_dressed_alike(server):
+    """«Характеристики», «Квесты», «Документы» и «Награды» — одна кнопка.
 
     Сверяем не класс, а посчитанные браузером цвета и размеры: класс можно
     поставить один, а перекрыть его тремя разными правилами. Кнопка
@@ -6535,7 +8475,7 @@ async def test_the_three_profile_buttons_are_dressed_alike(server):
         await page.wait_for_selector("#hero-tabs .hero-act")
 
         acts = page.locator("#hero-tabs .hero-act")
-        assert await acts.count() == 3, "три кнопки в одном ряду"
+        assert await acts.count() == 4, "четыре кнопки в два этажа"
 
         def looks(one):
             return one.evaluate(
@@ -6556,8 +8496,8 @@ async def test_the_three_profile_buttons_are_dressed_alike(server):
             )
 
         # Невыбранные две — «Документы» и «Награды»
-        papers = await looks(acts.nth(1))
-        daily = await looks(acts.nth(2))
+        papers = await looks(acts.nth(2))
+        daily = await looks(acts.nth(3))
         assert papers == daily, f"кнопки разной одежды: {papers} против {daily}"
 
         # И ширина одна: ряд делится ровно, а не по длине надписи
@@ -6565,6 +8505,18 @@ async def test_the_three_profile_buttons_are_dressed_alike(server):
             "boxes => boxes.map(box => Math.round(box.getBoundingClientRect().width))"
         )
         assert max(widths) - min(widths) <= 1, f"кнопки разной ширины: {widths}"
+
+        # Четвёртая кнопка в один ряд не встаёт: на четверть телефона
+        # «Характеристики» обрезались бы многоточием, и ряд складывается
+        # в два этажа по две — ни одно слово не обрублено
+        assert "folded" in await page.locator("#hero-tabs").get_attribute("class")
+        cut = await acts.evaluate_all(
+            "boxes => boxes.map(box => {"
+            "  const text = box.querySelector('.hero-act-text');"
+            "  return text.scrollWidth > text.clientWidth + 1;"
+            "})"
+        )
+        assert cut == [False, False, False, False], "надпись обрезана"
         await browser.close()
 
 
@@ -6581,7 +8533,7 @@ async def test_the_chosen_section_is_the_only_lit_button(server):
         lit = await page.locator("#hero-tabs .hero-act.on").all_inner_texts()
         assert len(lit) == 1 and "Характеристики" in lit[0]
 
-        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.locator("#hero-tabs .hero-act", has_text="Документы").click()
         lit = await page.locator("#hero-tabs .hero-act.on").all_inner_texts()
         assert len(lit) == 1 and "Документы" in lit[0]
 
@@ -6606,7 +8558,7 @@ async def test_a_waiting_reward_puts_a_dot_on_its_button(server):
         await browser.close()
 
 
-async def test_without_a_calendar_the_row_holds_only_two_buttons(server):
+async def test_without_a_calendar_the_row_holds_only_three_buttons(server):
     """Кнопка без содержимого — обещание, которого не будет."""
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
@@ -6616,8 +8568,12 @@ async def test_without_a_calendar_the_row_holds_only_two_buttons(server):
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#hero-tabs .hero-act")
 
-        assert await page.locator("#hero-tabs .hero-act").count() == 2
+        assert await page.locator("#hero-tabs .hero-act").count() == 3
         assert await page.locator("#hero-daily").count() == 0
+        # Три встают в один ряд: складывать нечего
+        assert "folded" not in await page.locator("#hero-tabs").get_attribute(
+            "class"
+        )
         await browser.close()
 
 
@@ -7319,7 +9275,8 @@ def make_policy(
     """Бланк полиса, как его отдаёт сервер.
 
     `by_pro` — полис, который держит подписка: у него другой срок, другие
-    обещания и нет переключателя автопродления.
+    обещания и нет переключателя автопродления. Держит его только
+    PREMIUM, поэтому и срок ставим ей.
     """
     from bot.game.health import now_ts
     from bot.game.insurance import NOTE, POLICY_SECONDS, Policy
@@ -7338,7 +9295,7 @@ def make_policy(
     )
     if by_pro:
         # Подписка держит полис ровно до своего конца: срок один и тот же
-        player.pro_until = player.policy.until
+        player.premium_until = player.policy.until
     paper = policy_document(player, moment)
     assert paper["note"] == NOTE and paper["by_pro"] is by_pro
     return paper
@@ -7359,15 +9316,15 @@ async def open_hero(pw, server, card=None):
     return browser, page
 
 
-async def test_the_character_screen_has_two_sections_and_starts_on_stats(server):
+async def test_the_character_screen_has_three_sections_and_starts_on_stats(server):
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server)
 
         tabs = await page.locator("#hero-tabs .hero-act").all_inner_texts()
-        assert len(tabs) == 2
-        assert "Характеристики" in tabs[0] and "Документы" in tabs[1]
-        # Параметры открыты, документы свёрнуты
+        assert tabs == ["Характеристики", "Квесты", "Документы"]
+        # Параметры открыты, квесты и документы свёрнуты
         assert await page.locator("#hero-stats").is_visible()
+        assert await page.locator("#hero-quests").is_hidden()
         assert await page.locator("#hero-papers").is_hidden()
         await browser.close()
 
@@ -7376,7 +9333,7 @@ async def test_the_fighter_himself_stays_above_both_sections(server):
     """Куклу и здоровье за вкладку не прячем: они нужны в обоих разделах."""
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
-        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.locator("#hero-tabs .hero-act", has_text="Документы").click()
         await page.wait_for_selector("#hero-papers:not(.hidden)")
 
         assert await page.locator("#hero-avatar").is_visible()
@@ -7385,11 +9342,11 @@ async def test_the_fighter_himself_stays_above_both_sections(server):
         await browser.close()
 
 
-async def test_the_buttons_are_three_bare_words(server):
-    """Ни значков, ни счётчиков: три слова читаются с одного взгляда.
+async def test_the_buttons_are_bare_words(server):
+    """Ни значков, ни счётчиков: слова читаются с одного взгляда.
 
     Число документов на кнопке и эмодзи перед каждым словом превращали ряд
-    в три разные надписи вместо одного выбора.
+    в четыре разные надписи вместо одного выбора.
     """
     player = make_player()
     card = card_with_papers([make_policy(), make_policy()])
@@ -7401,7 +9358,7 @@ async def test_the_buttons_are_three_bare_words(server):
 
         said = await page.locator("#hero-tabs .hero-act").all_inner_texts()
 
-        assert said == ["Характеристики", "Документы", "Награды"]
+        assert said == ["Характеристики", "Квесты", "Документы", "Награды"]
         # Двух документов на кнопке не видно: она про раздел, а не про счёт
         assert not any(ch.isdigit() for ch in "".join(said))
         await browser.close()
@@ -7411,7 +9368,7 @@ async def test_the_policy_names_the_holder_the_period_and_what_it_gives(server):
     """Ровно то, что просили видеть в описании полиса."""
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
-        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.locator("#hero-tabs .hero-act", has_text="Документы").click()
         await page.wait_for_selector(".paper")
 
         assert "Полис страхования жизни и здоровья" in await page.locator(
@@ -7432,7 +9389,7 @@ async def test_an_expired_policy_says_so_in_words_not_only_in_grey(server):
         browser, page = await open_hero(
             pw, server, card_with_papers([make_policy(active=False)])
         )
-        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.locator("#hero-tabs .hero-act", has_text="Документы").click()
         await page.wait_for_selector(".paper")
 
         assert await page.locator(".paper.stale").count() == 1
@@ -7444,7 +9401,7 @@ async def test_an_expired_policy_says_so_in_words_not_only_in_grey(server):
 async def test_the_renewal_switch_says_which_way_it_is_set(server):
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
-        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.locator("#hero-tabs .hero-act", has_text="Документы").click()
         await page.wait_for_selector(".paper-renew")
 
         said = await page.locator(".paper-renew-state").inner_text()
@@ -7458,7 +9415,7 @@ async def test_the_switch_offers_to_turn_the_renewal_back_on(server):
         browser, page = await open_hero(
             pw, server, card_with_papers([make_policy(auto_renew=False)])
         )
-        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.locator("#hero-tabs .hero-act", has_text="Документы").click()
         await page.wait_for_selector(".paper-renew")
 
         said = await page.locator(".paper-renew-state").inner_text()
@@ -7470,7 +9427,7 @@ async def test_the_switch_offers_to_turn_the_renewal_back_on(server):
 async def test_an_empty_documents_section_says_where_papers_come_from(server):
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server)
-        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.locator("#hero-tabs .hero-act", has_text="Документы").click()
         await page.wait_for_selector("#hero-papers:not(.hidden)")
 
         assert await page.locator(".paper").count() == 0
@@ -7541,19 +9498,19 @@ async def test_a_subscriber_is_told_the_subscription_holds_his_policy(server):
         policy=make_policy(by_pro=True),
         gives=list(PRO_BENEFITS),
         action="Продлить на месяц",
-        why="Полис держит подписка — до её последнего часа. Купленный месяц "
+        why="Полис держит PREMIUM — до её последнего часа. Купленный месяц "
             "ляжет сверху и останется, когда подписка кончится.",
     )
     async with async_playwright() as pw:
         browser, page = await open_insurance(pw, server, state)
 
-        assert "держит подписка" in await page.locator("#insurance-note").inner_text()
-        assert "держит подписка" in await page.locator(".policy-buy-why").inner_text()
+        assert "держит PREMIUM" in await page.locator("#insurance-note").inner_text()
+        assert "держит PREMIUM" in await page.locator(".policy-buy-why").inner_text()
         # Цена та же, что у всех: платят за время после подписки
         assert "300 💰" in await page.locator(".policy-buy-price").inner_text()
         # У бланка подписки переключателя нет — есть строка о том, чем он жив
         assert await page.locator(".paper-renew").count() == 0
-        assert "Полис держит подписка PRO" in await page.locator(
+        assert "Полис держит подписка PREMIUM" in await page.locator(
             ".paper-held"
         ).inner_text()
         await browser.close()
@@ -7822,7 +9779,9 @@ async def test_a_running_training_counts_down_and_offers_to_leave(server):
 
         assert "Силовая тренировка" in await page.locator(".gym-now-title").inner_text()
         clock = await page.locator("#gym-clock").inner_text()
-        assert clock.startswith("Осталось 14:") or clock.startswith("Осталось 15:")
+        assert clock.startswith("Осталось 00:14:") or clock.startswith(
+            "Осталось 00:15:"
+        )
         assert "Уйти с тренировки" in await page.locator(".gym-now .btn").inner_text()
         assert "не уходи из зала" in (
             await page.locator("#gym-note").inner_text()
@@ -8071,13 +10030,16 @@ async def open_bank(pw, server, bank=None):
     return browser, page
 
 
-async def test_the_bank_stands_on_three_tabs(server):
+async def test_the_bank_stands_on_six_tabs(server):
     async with async_playwright() as pw:
         browser, page = await open_bank(pw, server)
         await page.wait_for_selector("#bank-tabs")
 
         tabs = await page.locator("#bank-tabs .chip").all_inner_texts()
-        assert tabs == ["Новый продукт", "Счета", "Банкомат"]
+        assert tabs == [
+            "Новый продукт", "Счета", "Вклады", "Кредиты", "Банкомат",
+            "Выписка",
+        ]
         await browser.close()
 
 
@@ -8166,14 +10128,20 @@ async def test_the_atm_offers_putting_in_taking_out_and_sending(server):
 
 
 async def test_the_new_product_tab_spells_out_the_discounts(server):
-    """Прайс скидок собран из той же таблицы, по которой считают цену."""
+    """Прайс скидок собран той же функцией, по которой считают цену.
+
+    Процент один на все места — меняет его только ступень подписки, — и
+    в прайсе у бойца без подписки везде стоят его карточные пять.
+    """
+    from bot.game.bank import CARD_DISCOUNT
+
     async with async_playwright() as pw:
         browser, page = await open_bank(pw, server)
         await page.locator("#bank-tabs .chip", has_text="Новый продукт").click()
         await page.wait_for_selector(".day-prices")
 
         rows = await page.locator(".day-prices .day-price-value").all_inner_texts()
-        assert "−15%" in rows and "−5%" in rows and "−10%" in rows
+        assert set(rows) == {f"−{CARD_DISCOUNT}%"}
         # В прайсе стоят дома, а не дела: «Аптека», а не «покупать эликсиры»
         places = await page.locator(".day-prices .day-price-number").all_inner_texts()
         assert "Аптека" in places and "Больница" in places
@@ -8188,6 +10156,154 @@ async def test_a_bank_that_gave_everything_stops_offering(server):
 
         assert await page.locator(".offer").count() == 0
         assert "уже есть" in await page.locator("#bank-body .screen-note").first.inner_text()
+        await browser.close()
+
+
+# ---------- вклады и кредиты ----------
+#
+# Считает всё сервер: и доход вклада, и аннуитет. Витрина обязана
+# показать то, что ей дали, и не предлагать того, в чём банк отказал.
+
+
+async def test_the_deposits_tab_names_the_rate_and_the_three_terms(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.locator("#bank-tabs .chip", has_text="Вклады").click()
+        await page.wait_for_selector("#bank-body .shelf")
+
+        heads = await page.locator("#bank-body .shelf-head").all_inner_texts()
+        assert "13% годовых" in heads[0]
+        terms = await page.locator("#bank-body .thing-buttons .btn").all_inner_texts()
+        assert [one.split(" мес.")[0] for one in terms] == ["1", "2", "3"]
+        # Своих вкладов нет — и полка говорит об этом, а не прячется
+        assert "Вкладов нет" in await page.locator(".shelf-empty").inner_text()
+        await browser.close()
+
+
+async def test_a_ripe_deposit_offers_the_interest_and_a_young_one_does_not(
+    server,
+):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(
+            pw, server, bank=bank_state(deposits=[made_deposit(ripe=True)])
+        )
+        await page.locator("#bank-tabs .chip", has_text="Вклады").click()
+        await page.wait_for_selector(".paper")
+
+        assert await page.locator(".paper.ready").count() == 1
+        rows = await page.locator(".paper .rows .value").all_inner_texts()
+        assert "2\u00a0000 💰 на 3 мес." in rows
+        assert "Забрать с процентами" in await page.locator(
+            ".paper .btn"
+        ).inner_text()
+        await browser.close()
+
+
+async def test_a_deposit_before_its_term_is_taken_back_without_interest(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(
+            pw, server, bank=bank_state(deposits=[made_deposit()])
+        )
+        await page.locator("#bank-tabs .chip", has_text="Вклады").click()
+        await page.wait_for_selector(".paper")
+
+        assert await page.locator(".paper.ready").count() == 0
+        assert "Забрать досрочно" in await page.locator(".paper .btn").inner_text()
+        await browser.close()
+
+
+async def test_the_loans_tab_tells_the_unemployed_why_not(server):
+    """Отказ стоит на экране словами, а не спрятанной кнопкой."""
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.locator("#bank-tabs .chip", has_text="Кредиты").click()
+        await page.wait_for_selector("#bank-body .thing-warn")
+
+        assert "трудоустройстве" in await page.locator(".thing-warn").inner_text()
+        assert "Кредит недоступен" in await page.locator(
+            "#bank-body .thing-buttons .btn"
+        ).inner_text()
+        # Калькулятор всё равно показан: цену знают до отказа
+        rows = await page.locator("#loan-calc li").all_inner_texts()
+        assert len(rows) == 9, "по строке на каждый срок от четырёх до двенадцати"
+        assert await page.locator("#loan-calc li.dim").count() == 9
+        await browser.close()
+
+
+async def test_the_calculator_dims_the_terms_the_income_cannot_carry(server):
+    """Главное условие кредита видно числами: платёж против дохода."""
+    async with async_playwright() as pw:
+        browser, page = await open_bank(
+            pw, server, bank=bank_state(job="bank_head")
+        )
+        await page.locator("#bank-tabs .chip", has_text="Кредиты").click()
+        await page.wait_for_selector("#loan-calc")
+
+        rows = page.locator("#loan-calc li")
+        assert await rows.count() == 9
+        dim = await page.locator("#loan-calc li.dim").count()
+        assert 0 < dim < 9, "короткие сроки не по доходу, долгие — по"
+        # Серая строка объясняется, а не молчит
+        assert "не по доходу" in await rows.first.inner_text()
+        assert "платёж" in await rows.last.inner_text()
+        assert "Взять кредит" in await page.locator(
+            "#bank-body .thing-buttons .btn"
+        ).inner_text()
+        await browser.close()
+
+
+async def test_taking_a_loan_asks_for_the_term_first(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(
+            pw, server, bank=bank_state(job="bank_head")
+        )
+        await page.locator("#bank-tabs .chip", has_text="Кредиты").click()
+        await page.wait_for_selector("#loan-calc")
+        await page.locator("#bank-body .thing-buttons .btn").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        assert "Взять кредит" == await page.locator("#sheet-title").inner_text()
+        assert "Сперва срок" in await page.locator("#sheet-note").inner_text()
+        terms = await page.locator("#sheet-list .btn").all_inner_texts()
+        assert terms and all("мес." in one for one in terms)
+        await browser.close()
+
+
+async def test_a_fighter_with_a_loan_sees_the_schedule_not_the_offer(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(
+            pw, server,
+            bank=bank_state(job="bank_head", loan=made_loan()),
+        )
+        await page.locator("#bank-tabs .chip", has_text="Кредиты").click()
+        await page.wait_for_selector("#bank-body .shelf")
+
+        assert "Мой кредит" in await page.locator(".shelf-head").inner_text()
+        # Калькулятора нет: кредит один на бойца
+        assert await page.locator("#loan-calc").count() == 0
+        labels = await page.locator("#bank-body .rows .label").all_inner_texts()
+        assert "Платёж" in labels and "Следующее списание" in labels
+        assert "само" in await page.locator(".thing-note").inner_text()
+        await browser.close()
+
+
+async def test_an_overdue_loan_shows_the_penalty_and_a_way_to_pay_it(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(
+            pw, server,
+            bank=bank_state(job="bank_head", loan=made_loan(late=True)),
+        )
+        await page.locator("#bank-tabs .chip", has_text="Кредиты").click()
+        await page.wait_for_selector("#bank-body .shelf")
+
+        assert "просрочка" in await page.locator(".shelf-count").inner_text()
+        labels = await page.locator("#bank-body .rows .label").all_inner_texts()
+        assert "Просрочено" in labels and "Пени" in labels
+        assert "Всего к оплате" in labels
+        assert "капают" in await page.locator(".thing-warn").inner_text()
+        assert "Погасить просрочку" in await page.locator(
+            "#bank-body .thing-buttons .btn"
+        ).inner_text()
         await browser.close()
 
 
@@ -8288,28 +10404,40 @@ async def open_work(pw, server, work=None, place="bar", job="bartender"):
     return browser, page
 
 
-async def test_the_agency_shows_all_five_vacancies(server):
+async def test_the_agency_shows_the_whole_board(server):
+    """Доска агентства: места с улицы и места под диплом, все разом.
+
+    Полицейских на ней нет: в полицию приходят в полицию, и отдельная
+    дверь у неё не для красоты.
+    """
+    from bot.game.work import agency_board
+
     async with async_playwright() as pw:
         browser, page = await open_hr(pw, server)
         await page.wait_for_selector(".vacancy")
 
         titles = await page.locator(".vacancy-title").all_inner_texts()
-        assert len(titles) == 5
+        assert len(titles) == len(agency_board())
         assert any("Бармен" in one for one in titles)
+        assert any("Крупье" in one for one in titles)
+        assert not any("Патрульный" in one for one in titles)
         pays = await page.locator(".vacancy-pay").all_inner_texts()
-        assert "250 💰/нед" in pays and "200 💰/нед" in pays
+        assert "250 💰/нед" in pays and num_space("1 500") + " 💰/нед" in pays
         await browser.close()
 
 
 async def test_a_taken_vacancy_names_its_holder_and_offers_nothing(server):
-    """Место одно на город: занятое не прячем, а подписываем."""
+    """Место занятое не прячем, а подписываем — и называем кем."""
     async with async_playwright() as pw:
         browser, page = await open_hr(pw, server, hr=hr_state(taken=("croupier",)))
         await page.wait_for_selector(".vacancy")
 
         taken = page.locator(".vacancy.taken")
         assert await taken.count() == 1
-        assert "Занято: Марла." in await taken.locator(".vacancy-state").inner_text()
+        # У крупье два кресла, и заняты оба: называем обоих
+        assert "Все места заняты: Марла-0, Марла-1." in await taken.locator(
+            ".vacancy-state"
+        ).inner_text()
         assert await taken.locator(".btn").count() == 0
         await browser.close()
 
@@ -8383,6 +10511,33 @@ async def test_my_job_shows_the_week_and_the_payday(server):
         await browser.close()
 
 
+async def test_overtime_shows_up_as_a_line_of_its_own(server):
+    """Переработка видна отдельной строкой: часы, ставка и прибавка.
+
+    Это не предупреждение, а прибавка, и строка у неё своя — зелёная,
+    под строкой жалованья. Пока норма не перейдена, её нет вовсе.
+    """
+    async with async_playwright() as pw:
+        # Двенадцать часов при норме в десять: два часа сверх
+        browser, page = await open_hr(
+            pw, server, hr=hr_state(job="bartender", minutes=12 * 60)
+        )
+        await page.wait_for_selector(".job")
+
+        extra = await page.locator(".job-extra").inner_text()
+        assert "2 ч сверх нормы" in extra
+        assert "50 💰" in extra and "100 💰 сверху" in extra
+        await browser.close()
+
+        # Ровно норма — строки нет
+        browser, page = await open_hr(
+            pw, server, hr=hr_state(job="bartender", minutes=10 * 60)
+        )
+        await page.wait_for_selector(".job")
+        assert await page.locator(".job-extra").count() == 0
+        await browser.close()
+
+
 async def test_a_week_under_half_the_norm_warns_before_monday(server):
     """Уволят в понедельник — узнать об этом лучше до понедельника."""
     state = hr_state(job="bartender")
@@ -8412,7 +10567,7 @@ async def test_the_workplace_offers_the_shift(server):
 
 async def test_a_day_already_worked_offers_nothing(server):
     async with async_playwright() as pw:
-        browser, page = await open_work(pw, server, work=work_state(today=120))
+        browser, page = await open_work(pw, server, work=await work_state(today=120))
         await page.wait_for_selector(".shift")
 
         assert await page.locator(".shift .btn").is_disabled()
@@ -8422,11 +10577,13 @@ async def test_a_day_already_worked_offers_nothing(server):
 
 async def test_a_running_shift_counts_down_and_says_the_door_is_shut(server):
     async with async_playwright() as pw:
-        browser, page = await open_work(pw, server, work=work_state(shift=True))
+        browser, page = await open_work(pw, server, work=await work_state(shift=True))
         await page.wait_for_selector(".shift-clock")
 
         clock = await page.locator("#work-clock").inner_text()
-        assert clock.startswith("Осталось 29:") or clock.startswith("Осталось 30:")
+        assert clock.startswith("Осталось 00:29:") or clock.startswith(
+            "Осталось 00:30:"
+        )
         assert "не выйти" in await page.locator(".shift .screen-note").inner_text()
         # Пока смена идёт, начинать нечего
         assert await page.locator(".shift .btn").count() == 0
@@ -8436,7 +10593,7 @@ async def test_a_running_shift_counts_down_and_says_the_door_is_shut(server):
 async def test_a_stranger_at_the_workplace_is_sent_to_the_agency(server):
     async with async_playwright() as pw:
         browser, page = await open_work(
-            pw, server, work=work_state(job=""), job=""
+            pw, server, work=await work_state(job=""), job=""
         )
         await page.wait_for_selector("#work:not(.hidden)")
 
@@ -8561,4 +10718,8752 @@ async def test_the_refusal_names_the_purse_the_till_uses(server):
         assert said[0] == "на счету 1\u00a0200 💰"
         assert said[1] == "наличными 50 💰"
         assert said[2] == "денег не хватает"
+        await browser.close()
+
+
+async def test_an_idle_raid_screen_asks_less_often(server):
+    """Пустой экран рейда опрашивается раз в десять секунд, а не в две.
+
+    Опрос — это девять запросов в базу и двадцать шесть килобайт по
+    мобильной сети. Пока идёт волна или собирается отряд, две секунды
+    оправданы: там всё решается на секундах. На пустом экране это
+    тридцать опросов в минуту ни для чего, и именно такая очередь
+    однажды и уложила игру.
+    """
+    async with async_playwright() as pw:
+        empty = raid_with_gang()
+        empty["raid"] = None
+        browser, page = await open_raid(pw, server, empty)
+
+        rate = await page.evaluate("[raidRate, RAID_POLL_IDLE, RAID_POLL_LIVE]")
+        assert rate == [10000, 10000, 2000], "на пустом экране опрос реже"
+
+        # А как только волна пошла — снова две секунды
+        await page.evaluate(
+            "data => { renderRaid(data); }", raid_with_gang()
+        )
+        assert await page.evaluate("raidRate") == 2000
+        await browser.close()
+
+
+async def test_a_gathering_party_is_watched_closely(server):
+    """Сбор отряда — тоже повод спрашивать часто: он идёт на минуты."""
+    async with async_playwright() as pw:
+        empty = raid_with_gang()
+        empty["raid"] = None
+        browser, page = await open_raid(pw, server, empty)
+        assert await page.evaluate("raidRate") == 10000
+
+        gathering = {**empty, "lobby": {
+            "id": 1, "size": 10, "total": 2, "mine": True, "joined": True,
+            "in_app": True, "seconds_left": 90, "timeout": 180,
+            "can_start": False, "min_party": 3,
+            "raid": empty["kind"], "boss": {
+                "code": "gang_major", "title": "Стычка", "emoji": "🪖",
+                "image": "", "tagline": "",
+            },
+            "members": [
+                {"user_id": 42, "name": "Тайлер", "level": 10},
+                {"user_id": 43, "name": "Марла", "level": 10},
+            ],
+        }}
+        await page.evaluate("data => { renderRaid(data); }", gathering)
+        assert await page.evaluate("raidRate") == 2000
+        await browser.close()
+
+
+# ---------- автошкола ----------
+
+
+async def open_school(pw, server, stage="new", wrong=0, school=None):
+    player = make_player("driving_school")
+    browser, page = await open_page(
+        pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+        build_shop(player), school=school or school_state(stage, wrong),
+        images=True,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "school")
+    await page.wait_for_selector("#school:not(.hidden)")
+    return browser, page
+
+
+async def test_the_school_offers_the_course_and_its_price(server):
+    """Первый заход: цена курса, срок учёбы и расписание экзамена."""
+    async with async_playwright() as pw:
+        browser, page = await open_school(pw, server)
+        await page.wait_for_selector(".shelf")
+
+        said = await page.locator("#school-body").inner_text()
+        assert "300 💰" in said
+        assert "16 вопросов, 15 минут" in said
+        assert "по средам и субботам с 12:00 до 15:00 мск" in said
+        button = page.locator("#school-body .btn").first
+        assert "Записаться" in await button.inner_text()
+        await browser.close()
+
+
+async def test_the_board_names_the_price_of_a_retake_before_the_exam(server):
+    """Цена пересдачи стоит на доске у всех, а не всплывает после провала."""
+    async with async_playwright() as pw:
+        browser, page = await open_school(pw, server)
+        await page.wait_for_selector(".shelf")
+
+        said = await page.locator("#school-body").inner_text()
+        assert "Пересдача" in said and "100 💰" in said
+        assert "в следующий день приёма" in said
+        await browser.close()
+
+
+async def test_a_retake_in_the_same_window_is_shut_and_says_when(server):
+    """Сегодня уже сдавал — кнопка заперта, и назван час следующего приёма."""
+    from bot.game.health import now_ts
+
+    async with async_playwright() as pw:
+        browser, page = await open_school(
+            pw, server,
+            school=school_state("ready", tried_at=now_ts() - 60),
+        )
+        await page.wait_for_selector(".shelf")
+
+        said = await page.locator("#school-body").inner_text()
+        assert "Пересдача:" in said
+        button = page.locator("#school-body .btn").first
+        assert await button.inner_text() == "Сегодня уже сдавал"
+        assert await button.is_disabled()
+        await browser.close()
+
+
+async def test_a_retake_in_a_later_window_shows_its_price_on_the_button(server):
+    """Платное действие не должно удивлять ценой после нажатия."""
+    from bot.game.health import now_ts
+
+    async with async_playwright() as pw:
+        # Попытка была неделю назад: окно давно другое, и сесть можно
+        browser, page = await open_school(
+            pw, server,
+            school=school_state("ready", tried_at=now_ts() - 7 * 24 * 3600),
+        )
+        await page.wait_for_selector(".shelf")
+
+        button = page.locator("#school-body .btn").first
+        assert await button.inner_text() == "Пересдача · 100 💰"
+        assert not await button.is_disabled()
+        await browser.close()
+
+
+async def test_the_course_counts_the_days_down_and_hides_the_exam(server):
+    """Пока идут три дня, на экзамен не записывают — и сказано, сколько ждать."""
+    async with async_playwright() as pw:
+        browser, page = await open_school(pw, server, stage="study")
+        await page.wait_for_selector(".shelf")
+
+        said = await page.locator("#school-body").inner_text()
+        assert "До экзамена: 3 дня" in said
+        assert await page.locator("#school-body .btn").count() == 0
+        await browser.close()
+
+
+async def test_the_ticket_shows_one_question_with_its_picture(server):
+    """Билет идёт по одному вопросу: картинка, варианты и кнопка ответа."""
+    async with async_playwright() as pw:
+        browser, page = await open_school(pw, server, stage="exam")
+        await page.wait_for_selector(".exam")
+
+        head = await page.locator(".exam-head").inner_text()
+        assert "Вопрос 1 из 16" in head
+        assert await page.locator(".exam-pic").count() == 1
+        assert await page.locator(".exam .answer").count() == 4
+
+        # Ответить нельзя, пока вариант не выбран: выбор и подтверждение —
+        # два разных действия, и промах по варианту ещё не ответ
+        confirm = page.locator(".quiz-buttons .btn")
+        assert await confirm.is_disabled()
+        await page.locator(".exam .answer").nth(1).click()
+        assert "on" in (await page.locator(".exam .answer").nth(1).get_attribute("class"))
+        assert not await confirm.is_disabled()
+        await browser.close()
+
+
+async def test_the_first_mistake_is_shown_on_the_ticket(server):
+    """Ошибка на счету одна, и видно её сразу, а не в конце."""
+    async with async_playwright() as pw:
+        browser, page = await open_school(pw, server, stage="exam")
+        assert "Ошибок нет" in await page.locator(".exam-wrong").inner_text()
+        await browser.close()
+
+    async with async_playwright() as pw:
+        browser, page = await open_school(pw, server, stage="exam", wrong=1)
+        wrong = page.locator(".exam-wrong")
+        assert "Ошибка: 1 из 2" in await wrong.inner_text()
+        assert "on" in (await wrong.get_attribute("class"))
+        await browser.close()
+
+
+async def test_the_station_hands_the_licence_and_then_shows_it(server):
+    """В участке кнопка одна — и та только тому, кто сдал."""
+    player = make_player("vcpd")
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), police=police_state(passed=True),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "police")
+        await page.wait_for_selector("#police:not(.hidden)")
+
+        button = page.locator("#police-body .btn")
+        assert await button.count() == 1
+        assert "Получить права" in await button.inner_text()
+        await browser.close()
+
+    # Права на руках — кнопки нет, есть бланк
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), police=police_state(licence=True),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "police")
+        await page.wait_for_selector(".paper")
+
+        said = await page.locator("#police-body").inner_text()
+        assert "Водительское удостоверение" in said
+        assert "Бессрочно" in said
+        assert await page.locator("#police-body .btn").count() == 0
+        await browser.close()
+
+
+async def test_a_necklace_keeps_its_strip_everywhere_it_is_shown(server):
+    """Ожерелье — полоса 3:1 и в клетке, и в карточке, и в рюкзаке.
+
+    Клетка куклы была полосой с самого начала, строка рюкзака стала ею
+    вместе с прилавком, а вот карточка вещи — та, что открывается
+    нажатием на клетку, — оставалась квадратной: форму она берёт у самой
+    вещи, а в надетой вещи её не было. Выходило, что в кукле у бойца
+    цепь, а в карточке та же цепь квадратом.
+    """
+    player = make_player()
+    player.gear.append(
+        OwnedItem(item=CATALOGUE["set_avenger_necklace"], id=2, slot=Slot.NECKLACE)
+    )
+    player.gear.append(OwnedItem(item=CATALOGUE["set_plut_necklace"], id=3))
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    def wide(box):
+        return round(box["width"] / box["height"], 1)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        # Клетка на экране персонажа
+        cell = page.locator("#hero-slots-left .slot.wide")
+        assert await cell.count() == 1
+        assert wide(await cell.bounding_box()) == 3.0
+
+        # Карточка, которая открывается нажатием на эту клетку
+        await page.locator("#hero-slots-left .slot.wide").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert "Ожерелье мстителя" in await page.locator("#sheet-title").inner_text()
+        assert wide(await page.locator("#sheet .thing-pic").bounding_box()) == 3.0
+        await page.locator("#sheet-close").click()
+
+        # Рюкзак: и клетка куклы, и строка ненадетого ожерелья
+        await open_screen(page, "bag")
+        await page.wait_for_selector("#bag-list .thing")
+        assert wide(await page.locator("#slots-left .slot.wide").bounding_box()) == 3.0
+        row = page.locator("#bag-list .thing", has_text="Ожерелье плута")
+        assert wide(await row.locator(".thing-pic").bounding_box()) == 3.0
+
+        # И карточка от клетки рюкзачной куклы — та же полоса
+        await page.locator("#slots-left .slot.wide").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert wide(await page.locator("#sheet .thing-pic").bounding_box()) == 3.0
+        await browser.close()
+
+
+async def test_the_school_and_the_mansion_show_the_wallet(server):
+    """Кошелёк виден и в автошколе, и в особняке: там платят.
+
+    Переключатель наличных и карты стоял в лавках, но не на этих двух
+    экранах — а курс и клан стоят денег, и выбирать, откуда они уйдут,
+    приходилось в банке.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        await open_screen(page, "school")
+        await page.wait_for_selector("#school-body .shelf")
+        assert await page.locator("#school .wallet-pick").count() == 2
+        assert "Наличные" in await page.locator(
+            "#school .wallet-pick"
+        ).first.inner_text()
+
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-clans .shelf")
+        assert await page.locator("#mafia .wallet-pick").count() == 2
+        await browser.close()
+
+
+async def test_the_set_line_stands_under_the_weapon_and_turns_green(server):
+    """Строка комплекта видна на вещи: сколько надето и сколько даёт.
+
+    Пока набор не собран, строка серая — это подсказка, за чем идти в
+    лавку. С первой ступени она зелёная: это уже не совет, а прибавка в
+    бою, и в карточке оружия она стоит под его числами.
+    """
+    player = make_player()
+    player.class_code = "tank"
+    player.level = 10
+    player.gear = [
+        OwnedItem(item=CATALOGUE["set_bouncer_weapon"], id=1, slot=Slot.WEAPON),
+        OwnedItem(item=CATALOGUE["set_bouncer_head"], id=2, slot=Slot.HEAD),
+        OwnedItem(item=CATALOGUE["set_bouncer_jacket"], id=3, slot=Slot.JACKET),
+        OwnedItem(item=CATALOGUE["set_bouncer_boots"], id=4, slot=Slot.BOOTS),
+        OwnedItem(item=CATALOGUE["set_cardsharp_weapon"], id=5),
+    ]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        # Четыре вещи вышибалы — строка зелёная и обещает седьмую ступень.
+        # Клетка оружия в левом столбце третья: голова, ожерелье, рука
+        await page.locator("#hero-slots-left .slot").nth(2).click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        line = page.locator("#sheet .thing-kit")
+        text = await line.inner_text()
+        assert "Вышибала" in text and "120%" in text and "135%" in text
+        assert "strong" in (await line.get_attribute("class"))
+        # И числа в карточке — те, с которыми оружие работает на бойце:
+        # 19–23 из лавки на четырёх вещах превращаются в 23–28
+        gains = await page.locator("#sheet .thing-gain").inner_text()
+        assert "23–28" in gains and "19–23" not in gains
+        await page.locator("#sheet-close").click()
+
+        # А кинжал чужого набора лежит в рюкзаке один — строка серая
+        await open_screen(page, "bag")
+        await page.wait_for_selector("#bag-list .thing")
+        row = page.locator("#bag-list .thing", has_text="Кинжал с пикой")
+        alone = row.locator(".thing-kit")
+        assert "100%" in await alone.inner_text()
+        assert "strong" not in (await alone.get_attribute("class"))
+        await browser.close()
+
+
+# ---------- мафия: особняк, своя семья и приглашение ----------
+
+
+async def test_the_mansion_offers_a_clan_and_lists_the_families(server):
+    """Особняк: форма на свой клан и список чужих с заявкой в каждую.
+
+    Экран один на весь город, и по нему видно и цену входа, и то, куда
+    боец уже стучался: вторую заявку в ту же дверь подавать незачем.
+    """
+    from bot.game.clans import Clan, Knock, Petition
+    from bot.webapp.clans import build_mansion
+
+    nostra = Clan(id=1, name="Коза Ностра", don=7, created_at=now_ts(),
+                  sign="black_ravens", members=3)
+    full = Clan(id=2, name="Полная семья", don=8, created_at=now_ts(),
+                sign="silver_wolves", members=25)
+    player = make_player("mafia_mansion")
+    # Во вторую семью боец уже стучался: в списке у неё «отозвать»
+    knock = Knock(clan_id=2, user_id=player.user_id, kind=Petition.REQUEST)
+    mafia = build_mansion(player, [nostra, full], [knock], TOKEN)
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, mafia=mafia)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-clans .shelf")
+
+        heads = await page.locator("#mafia-clans .shelf-head").all_inner_texts()
+        assert heads == ["Завести свой клан", "Кланы города · 2"]
+        assert await page.locator("#clan-name").count() == 1
+        # Знаки лежат решёткой: занятые видно, но взять их нельзя
+        signs = page.locator("#sign-grid .sign")
+        assert await signs.count() == 17
+        assert await page.locator("#sign-grid .sign.taken").count() == 2
+        assert await signs.nth(1).is_disabled()
+        buttons = await page.locator("#mafia-clans .btn").all_inner_texts()
+        assert "1000 💰" in buttons[0]
+
+        # Выбрали знак — он подсветился, а его имя встало в поле
+        free = page.locator("#sign-grid .sign:not(.taken)").first
+        await free.click()
+        assert await page.locator("#sign-grid .sign.picked").count() == 1
+        assert await page.locator("#clan-name").input_value() == "Кровавые черепа"
+
+        # В первую семью можно постучаться, во второй уже лежит заявка.
+        # Дела в списке — значками: дверь, песочные часы, крестик
+        rows = page.locator(".clan-item")
+        assert await rows.count() == 2
+        assert "Коза Ностра" in await rows.nth(0).inner_text()
+        assert "В семье 3 из 25" in await rows.nth(0).inner_text()
+        knock = rows.nth(0).locator(".icon-btn")
+        assert await knock.inner_text() == "➡️🚪"
+        assert await knock.get_attribute("title") == "Подать заявку"
+        assert await rows.nth(1).locator(".icon-btn").get_attribute("title") == (
+            "Отозвать заявку"
+        )
+
+        # Нажатие на саму строку открывает клан: за составом идёт запрос
+        asked = []
+        page.on("request", lambda one: asked.append(one.url))
+        await rows.nth(0).locator(".clan-open").click()
+        await page.wait_for_function("() => mafiaOpen === 1", timeout=3_000)
+        assert any("clan=1" in url for url in asked)
+        await browser.close()
+
+
+async def test_the_duty_line_names_the_service_and_the_post(server):
+    """У служивого под местоположением своя подпись: значок, служба, чин.
+
+    У мафии такая строка есть с самого начала, и должность — это не
+    запись в анкете, а то, кем боец по городу ходит.
+    """
+    player = make_player()
+    plain = build_card(player, TOKEN, viewer_id=player.user_id)
+    player.job_code = "police_chief"
+    chief = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, plain)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        assert await page.locator("#hero-duty-line").is_hidden()
+        await browser.close()
+
+        browser, page = await open_page(pw, server, chief, images=True)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        line = page.locator("#hero-duty-line")
+        assert await line.is_visible()
+        said = await line.inner_text()
+        assert "Полиция Вегаса" in said and "Начальник" in said
+        assert "полиции" not in said, "служба уже названа — чин не заикается"
+        badge = line.locator(".service-badge")
+        assert (await badge.get_attribute("src")).endswith("/services/police.png")
+        await browser.close()
+
+
+async def test_the_clan_line_in_the_card_opens_the_family(server):
+    """Имя семьи стоит в карточке под местоположением и открывает состав.
+
+    Своей вкладки у клана нет: одиночке её открывать нечего, а тому, кто
+    в семье, чин соседа нужен под рукой — не через полгорода в особняк.
+    Поэтому строка в карточке, а по ней — окно с составом.
+    """
+    player = make_player()
+    alone = build_card(player, TOKEN, viewer_id=player.user_id)
+    player.clan = Standing(
+        clan=Clan(id=1, name="Коза Ностра", don=42, created_at=now_ts(),
+                  sign="black_ravens", members=3),
+        rank=Rank.DON,
+    )
+    mafioso = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, alone, clan=clan_state())
+        await page.wait_for_selector("#hero:not(.hidden)")
+        assert await page.locator("#hero-clan-line").is_hidden()
+        assert await page.locator("#hero-clan .clan-sign").count() == 0
+        await browser.close()
+
+        # Тот же боец, но уже при семье: строка встала под город, а
+        # знаки — у ника
+        browser, page = await open_page(pw, server, mafioso, clan=clan_state())
+        await page.wait_for_selector("#hero:not(.hidden)")
+        line = page.locator("#hero-clan-line")
+        assert await line.is_visible()
+        assert "Коза Ностра" in await line.inner_text()
+        assert await line.locator(".clan-sign").count() == 1
+        assert await page.locator("#hero-clan .clan-sign").count() == 1
+
+        # По строке открывается окно состава: три чина и кнопки старших.
+        # Пока состав едет, в шапке стоит «Состав семьи · Загружаю…» —
+        # имя семьи встаёт туда ответом сервера, и ждать надо его, а не
+        # саму всплывашку: она открывается мгновенно
+        await line.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        await page.wait_for_function(
+            "() => el('sheet-title').textContent.includes('Коза Ностра')"
+        )
+        heads = await page.locator("#sheet-list .shelf-head").all_inner_texts()
+        assert heads == ["Заявки · 0", "Дон", "Приближённые · 1 из 3", "Мафиози"]
+
+        # Кнопки в окне правят состав: ответ уходит той же ручкой
+        await page.evaluate(
+            """() => {
+                window.clanAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        soldier = page.locator("#sheet-list .clan-row", has_text="Ангел")
+        await soldier.locator(".btn", has_text="Приблизить").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {
+            "action": "promote", "user": 44
+        }
+        await browser.close()
+
+
+async def test_the_clan_sign_in_the_head_is_as_big_as_its_neighbours(server):
+    """Знак клана в шапке: того же роста, что соседи, и на одной с ними линии.
+
+    В шапке рядом с ним стоят эмодзи — они рисуются глифом и занимают
+    около двадцати пикселей. Картинка в восемнадцать выглядела там
+    мельче всех; в списках, где строка меньше, она на месте. И стояла
+    выше прочих: у картинки нижний край и есть её черта строки, а эмодзи
+    свисают под черту.
+    """
+    player = make_player()
+    player.clan = Standing(
+        clan=Clan(id=1, name="Коза Ностра", don=42, created_at=now_ts(),
+                  sign="black_ravens", members=3),
+        rank=Rank.DON,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        # Шапка одна и та же в карточке и в рюкзаке — меряем обе. Мерим
+        # одним заходом в страницу: карточка перерисовывается
+        # сердцебиением, и между двумя замерами знак успевает смениться
+        for tab, screen in (("hero", "#hero"), ("bag", "#bag")):
+            await open_screen(page, tab)
+            sign, fclass = await page.evaluate(
+                """(screen) => {
+                    const size = (selector) => {
+                        const one = document.querySelector(screen + ' ' + selector);
+                        const box = one.getBoundingClientRect();
+                        return [box.width, box.height];
+                    };
+                    return [size('.head-clan .clan-sign'), size('.head-class')];
+                }""",
+                screen,
+            )
+            assert sign == [20, 20], screen
+            # И не мельче соседа: значок класса рядом рисуется эмодзи
+            assert sign[1] >= fclass[1] * 0.8, screen
+
+            # А ещё все значки шапки стоят на одной линии: середины сходятся
+            middles = await page.evaluate(
+                """(screen) => ['.head-class', '.head-clan .clan-sign',
+                                '.head-name', '.head-level'].map((selector) => {
+                    const box = document
+                        .querySelector(screen + ' ' + selector)
+                        .getBoundingClientRect();
+                    return Math.round(box.top + box.height / 2);
+                })""",
+                screen,
+            )
+            assert max(middles) - min(middles) <= 1, (screen, middles)
+
+        # А в списках знак остаётся прежним: там и строка мельче
+        row = await page.evaluate(
+            """() => {
+                const box = document.createElement('div');
+                box.className = 'fighter';
+                const sign = document.createElement('img');
+                sign.className = 'clan-sign';
+                box.appendChild(sign);
+                document.body.appendChild(box);
+                const size = sign.getBoundingClientRect().height;
+                box.remove();
+                return size;
+            }"""
+        )
+        assert row == 18
+        await browser.close()
+
+
+async def test_the_family_stands_in_three_rows_with_its_marks(server):
+    """Открытый клан: «Состав» — три чина, и больше ничего.
+
+    Порядок знаков в строке один на весь город: класс, знак клана, ник,
+    премиум, уровень. Заявки, приглашения, передача прав и имя семьи
+    уехали в «Настройки»: состав — это список людей, а не пульт.
+    """
+    player = make_player("mafia_mansion")
+    player.clan = Standing(
+        clan=Clan(id=1, name="Коза Ностра", don=42, created_at=now_ts(),
+                  sign="black_ravens", members=3),
+        rank=Rank.DON,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await mansion_pages(page, don_mansion(opened=False), don_mansion())
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-clans .shelf")
+
+        # В списке одна вкладка — он сам, и своя семья с галочкой.
+        # Территорий тут нет: война — дело открытой семьи, а не списка
+        assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
+            "🎩 Кланы"
+        ]
+        row = page.locator(".clan-item")
+        assert "✅ Коза Ностра" in await row.inner_text()
+        assert await row.locator(".icon-btn").get_attribute("title") == (
+            "Выйти из клана"
+        )
+
+        # Нажали на клан — открылись его вкладки
+        await row.locator(".clan-open").click()
+        await page.wait_for_selector("#mafia-family:not(.hidden)")
+        assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
+            "← Кланы", "👔 Состав", "💼 Имущество", "⚙️ Настройки",
+            "🚩 Территории",
+        ]
+        heads = await page.locator("#mafia-family .shelf-head").all_inner_texts()
+        assert heads == ["Дон", "Приближённые · 1 из 3", "Мафиози"]
+
+        # Строка приближённой: класс, знак клана, ник с премиумом, уровень
+        capo = page.locator("#mafia-family .clan-row", has_text="Марла")
+        assert await capo.locator(".fighter-class").inner_text() == "🤸"
+        assert await capo.locator(".clan-sign").count() == 1
+        assert await capo.locator(".fighter-name").inner_text() == "Марла 💎"
+        assert await capo.locator(".fighter-level").inner_text() == "[7]"
+        assert await capo.locator(".btn").all_inner_texts() == [
+            "Разжаловать", "Выгнать"
+        ]
+        # На себе у Дона кнопок нет: передача прав ушла в настройки
+        don = page.locator("#mafia-family .clan-row", has_text="Растафарайчик")
+        assert await don.locator(".btn").count() == 0
+        await browser.close()
+
+
+async def test_the_settings_tab_holds_the_deeds_of_the_family(server):
+    """«Настройки»: заявки, приглашения, передача прав и имя семьи."""
+    from bot.game.clans import Knock, Petition
+
+    player = make_player("mafia_mansion")
+    player.clan = Standing(
+        clan=Clan(id=1, name="Коза Ностра", don=42, created_at=now_ts(),
+                  sign="black_ravens", members=3),
+        rank=Rank.DON,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    knock = Knock(
+        clan_id=1, user_id=77, kind=Petition.REQUEST, nickname="Гость",
+        level=4, class_code="rogue", created_at=now_ts(),
+    )
+    sent = Knock(
+        clan_id=1, user_id=78, kind=Petition.INVITE, nickname="Боб",
+        level=6, class_code="tank", created_at=now_ts(),
+    )
+    opened = don_mansion(requests=(knock,), invites=(sent,))
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await mansion_pages(page, don_mansion(opened=False), opened)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-clans .shelf")
+        await page.locator(".clan-item .clan-open").click()
+        await page.wait_for_selector("#mafia-family:not(.hidden)")
+
+        await page.locator("#mafia-tabs .chip", has_text="Настройки").click()
+        await page.wait_for_selector("#mafia-settings:not(.hidden)")
+        heads = await page.locator("#mafia-settings .shelf-head").all_inner_texts()
+        assert heads == [
+            "Заявки · 1", "Позвать в семью", "Передать права", "Сменить имя"
+        ]
+        # Заявка с кнопками и список позванных — всё здесь
+        knocked = page.locator("#mafia-settings .clan-row", has_text="Гость")
+        assert await knocked.locator(".btn").all_inner_texts() == [
+            "Принять", "Отклонить"
+        ]
+        assert "Позваны и думают: Боб" in await page.locator(
+            "#mafia-settings"
+        ).inner_text()
+        assert await page.locator("#clan-rename").count() == 1
+
+        # Передача прав: окно со списком семьи и выбором своего чина
+        await page.evaluate(
+            """() => {
+                window.clanAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await page.locator(
+            "#mafia-settings .btn", has_text="Выбрать преемника"
+        ).click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        heirs = await page.locator("#handover-heir option").all_inner_texts()
+        assert heirs == ["Марла · Приближённый", "Ангел · Мафиози"]
+        await page.select_option("#handover-heir", "44")
+        await page.select_option("#handover-keep", "soldier")
+        await page.locator("#sheet-list .btn", has_text="Подтвердить").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {
+            "action": "handover", "user": 44, "keep": "soldier"
+        }
+        await browser.close()
+
+
+async def test_the_safe_and_the_shelves_belong_to_the_whole_family(server):
+    """Вкладка «Имущество»: сейф с остатком и тридцать полок склада.
+
+    Остаток видит вся семья, и это главное свойство экрана: карман общий.
+    Кладут в него все, забирают Дон и приближённые, и каждое действие —
+    через окно: деньги и вещи мимо вопроса не уходят.
+    """
+    player = make_player("mafia_mansion")
+    player.clan = Standing(
+        clan=Clan(id=1, name="Коза Ностра", don=42, created_at=now_ts(),
+                  sign="black_ravens", members=3, vault=400),
+        rank=Rank.DON,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    opened = don_mansion(vault=400, items=stored_things("pipe"))
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await mansion_pages(page, don_mansion(opened=False), opened)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-clans .shelf")
+        await page.locator(".clan-item .clan-open").click()
+        await page.wait_for_selector("#mafia-family:not(.hidden)")
+
+        await page.locator("#mafia-tabs .chip", has_text="Имущество").click()
+        await page.wait_for_selector("#mafia-estate:not(.hidden)")
+        assert await page.locator(".vault-sum").inner_text() == "400 💰"
+        heads = await page.locator("#mafia-estate .shelf-head").all_inner_texts()
+        assert heads == [
+            "Сейф семьи", "Склад семьи · 1 из 30",
+            "🅿️ Парковка особняка · 0 из 3", "Ограбления",
+        ]
+        # Полок тридцать: занятые с картинкой, свободные с плюсом
+        assert await page.locator("#shelf-grid .shelf-slot").count() == 30
+        assert await page.locator("#shelf-grid .shelf-slot.free").count() == 29
+
+        await page.evaluate(
+            """() => {
+                window.mafiaAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        # Сейф: «Внести» спрашивает сумму окном
+        await page.locator("#mafia-estate .btn", has_text="Внести").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        await page.fill("#vault-sum", "250")
+        await page.locator("#sheet-list .btn", has_text="Подтвердить").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {
+            "action": "deposit", "amount": 250
+        }
+
+        # Вещь с полки забирают тем же окном, и в нём сказано, чья она
+        await page.evaluate("() => { window.sent = null; }")
+        await page.locator("#shelf-grid .shelf-slot:not(.free)").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert "Марла" in await page.locator("#sheet-note").inner_text()
+        await page.locator("#sheet-list .btn", has_text="Забрать себе").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {"action": "take", "item": 1}
+
+        # А на свободную полку кладут из своего рюкзака
+        await page.evaluate("() => { window.sent = null; }")
+        await page.locator("#shelf-grid .shelf-slot.free").first.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert "Свободных полок: 29" in await page.locator(
+            "#sheet-note"
+        ).inner_text()
+        await page.locator("#sheet-list .btn", has_text="Положить").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {"action": "stash", "item": 1}
+        await browser.close()
+
+
+async def test_the_war_opens_from_the_family_and_comes_back_to_it(server, db):
+    """Территории — вкладка своей семьи, и «назад» возвращает в особняк.
+
+    Раньше вход в войну стоял рядом со списком кланов и уводил на
+    карту: выйти из территорий можно было только через город, и семья
+    со всеми её вкладками пропадала.
+    """
+    from bot.webapp.turf import build_war
+    from tests.test_turf import NOW, family
+
+    don, _, _ = await family(db)
+    board = await build_war(db, don, None, NOW)
+    player = make_player("mafia_mansion")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, turf=board)
+        await mansion_pages(page, don_mansion(opened=False), don_mansion())
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-clans .shelf")
+        await page.locator(".clan-item .clan-open").click()
+        await page.wait_for_selector("#mafia-family:not(.hidden)")
+
+        # Вкладка стоит среди вкладок семьи, а не рядом со списком
+        await page.locator("#mafia-tabs .chip", has_text="Территории").click()
+        await page.wait_for_selector("#turf:not(.hidden)")
+        await page.evaluate("stopTurfPoll()")
+        assert await page.locator("#turf-back").inner_text() == "← В особняк"
+
+        # И возвращает она туда, откуда пришли, — с вкладками на месте
+        await page.locator("#turf-back").click()
+        await page.wait_for_selector("#mafia:not(.hidden)")
+        chips = await page.locator("#mafia-tabs .chip").all_inner_texts()
+        assert "👔 Состав" in chips and "🚩 Территории" in chips
+        await browser.close()
+
+
+async def test_a_stranger_clan_opens_with_its_roster_alone(server):
+    """Чужой клан открывается одним составом: имущество и настройки — свои."""
+    player = make_player("mafia_mansion")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    # Тот же клан, но боец в нём не состоит: смотрит со стороны
+    from bot.webapp.clans import build_clan_page, build_mansion
+
+    _, roster = a_family()
+    guest = make_player("mafia_mansion")
+    listing = build_mansion(guest, [roster.clan], [], TOKEN)
+    opened = build_mansion(
+        guest, [roster.clan], [], TOKEN,
+        opened=build_clan_page(guest, roster, bot_token=TOKEN),
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await mansion_pages(page, listing, opened)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-clans .shelf")
+
+        # В списке у одиночки одна вкладка — он сам
+        assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
+            "🎩 Кланы"
+        ]
+        assert await page.locator("#mafia-family").is_hidden()
+        assert await page.locator("#mafia-estate").is_hidden()
+
+        await page.locator(".clan-item .clan-open").click()
+        await page.wait_for_selector("#mafia-family:not(.hidden)")
+        # У чужой семьи только состав: ни сейфа, ни настроек, ни войны
+        assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
+            "← Кланы", "👔 Состав"
+        ]
+        rows = await page.locator("#mafia-family .clan-row").all_inner_texts()
+        assert len(rows) == 3 and "Растафарайчик" in rows[0]
+        assert await page.locator("#mafia-family .btn").count() == 0
+
+        # И назад к списку — той же лентой
+        await page.locator("#mafia-tabs .chip", has_text="← Кланы").click()
+        await page.wait_for_selector("#mafia-clans:not(.hidden)")
+        await browser.close()
+
+
+# ---------- выборы мэра ----------
+
+
+async def election_states(db):
+    """Администрация в выдвижение и в день голосования, плюс бюллетень."""
+    from bot.election_service import nominate, state, vote
+    from bot.webapp.elections import ballot_payload, build_elections
+    from tests.test_elections import SUNDAY, WEDNESDAY, citizen
+
+    marla = await citizen(db, 1, "Марла")
+    tyler = await citizen(db, 2, "Тайлер Дёрден")
+    await nominate(db, marla, "Снесу казино.", now=WEDNESDAY)
+    await nominate(db, tyler, "Правил не будет.", now=WEDNESDAY)
+    voter = await citizen(db, 3, "Боец", where="bar")
+
+    nom = build_elections(voter, await state(db, voter, WEDNESDAY), WEDNESDAY)
+    sheet = await state(db, voter, SUNDAY)
+    ballot = ballot_payload(sheet)
+    await vote(db, voter, 1, now=SUNDAY)
+    done = ballot_payload(await state(db, voter, SUNDAY))
+    return voter, nom, ballot, done
+
+
+async def open_admin(pw, server, who, body):
+    card = build_card(who, TOKEN, viewer_id=who.user_id)
+    browser, page = await open_page(pw, server, card, elections=body)
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "elections")
+    await page.wait_for_selector("#elections-body .shelf")
+    return browser, page
+
+
+async def test_the_administration_takes_a_candidacy(server, db):
+    """Экран администрации: фаза, кандидаты с программами и бланк."""
+    voter, nom, _, _ = await election_states(db)
+
+    async with async_playwright() as pw:
+        browser, page = await open_admin(pw, server, voter, nom)
+
+        heads = await page.locator("#elections-body .shelf-head").all_inner_texts()
+        assert heads == [
+            "Выдвижение кандидатов", "Выдвинуть кандидатуру", "Кандидаты",
+        ]
+        # Отсчёт до субботы меряется днями, а не минутами
+        cycle = await page.locator("#elections-body .shelf").first.inner_text()
+        # Кресло не пустует никогда: пока живого мэра нет, город ведёт
+        # управа — она же стоит в бюллетене последней строкой
+        assert "Городская управа" in cycle
+        assert ":" not in cycle.split("До конца этапа")[1]
+
+        rows = await page.locator("#elections .candidate").all_inner_texts()
+        assert len(rows) == 3
+        assert "Снесу казино." in rows[0] and "Правил не будет." in rows[1]
+        assert "Городская управа" in rows[2]
+        # Бланк программы на месте, и в нём есть потолок
+        area = page.locator("#election-program")
+        assert await area.get_attribute("maxlength") == "400"
+        await browser.close()
+
+
+async def test_the_ballot_comes_with_the_card_and_takes_one_vote(server, db):
+    """Бюллетень встаёт поверх экрана сам, и голос в нём один."""
+    voter, _, ballot, _ = await election_states(db)
+    card = build_card(voter, TOKEN, viewer_id=voter.user_id)
+    card["ballot"] = ballot
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector("#ballot-veil:not(.hidden)")
+
+        assert await page.locator("#ballot-head").inner_text() == "🗳 Выборы мэра"
+        rows = await page.locator("#ballot-list .ballot-row").all_inner_texts()
+        assert rows == ["Марла", "Тайлер Дёрден", "Городская управа"]
+
+        # Пока никто не выбран, голосовать не дают
+        go = page.locator("#ballot-buttons .btn").first
+        assert await go.is_disabled()
+        await page.locator("#ballot-list .ballot-row").first.click()
+        assert await go.is_enabled()
+
+        # Закрыл лист — в углу осталась плашка с отсчётом
+        await page.locator("#ballot-buttons .btn").last.click()
+        assert await page.locator("#ballot-veil").is_hidden()
+        chip = page.locator("#vote-chip")
+        assert await chip.is_visible()
+        assert "Идут выборы" in await chip.inner_text()
+        # И она открывает лист обратно
+        await chip.click()
+        assert await page.locator("#ballot-veil").is_visible()
+        await browser.close()
+
+
+async def test_the_voted_see_their_mark_and_not_a_second_form(server, db):
+    """Проголосовал — показываем отметку, а не второй бланк."""
+    voter, _, _, done = await election_states(db)
+    card = build_card(voter, TOKEN, viewer_id=voter.user_id)
+    card["ballot"] = done
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector("#ballot-veil:not(.hidden)")
+
+        assert "Твой голос отдан" in await page.locator("#ballot-note").inner_text()
+        rows = await page.locator("#ballot-list .ballot-row").all_inner_texts()
+        assert rows == ["✅ Марла"], "одна строка с отметкой, а не бланк"
+        buttons = await page.locator("#ballot-buttons .btn").all_inner_texts()
+        assert buttons == ["Закрыть"]
+
+        await page.locator("#ballot-buttons .btn").click()
+        chip = page.locator("#vote-chip")
+        assert "Голос отдан" in await chip.inner_text()
+        assert "done" in (await chip.get_attribute("class"))
+        await browser.close()
+
+
+async def test_a_quiet_month_shows_no_ballot_at_all(server, db):
+    """Вне голосования ни листа, ни плашки: показывать нечего."""
+    from tests.test_elections import citizen
+
+    voter = await citizen(db, 3, "Боец", where="bar")
+    card = build_card(voter, TOKEN, viewer_id=voter.user_id)
+    card["ballot"] = {
+        "shown": False, "phase": "quiet", "title": "До выборов", "day": "",
+        "seconds_left": 0, "mine": 0, "candidates": [],
+        "mayor": {"user_id": 0, "name": ""},
+    }
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        assert await page.locator("#ballot-veil").is_hidden()
+        assert await page.locator("#vote-chip").is_hidden()
+        await browser.close()
+
+# ---------- участок: дежурная часть, розыск и свои дела ----------
+
+
+async def station_states(db):
+    """Участок глазами сотрудника и глазами пострадавшего."""
+    from bot.webapp.driving import build_police
+    from bot.webapp.police import build_police_board
+    from tests.test_police import a_case, cop, weaken
+    from tests.test_robbery import NOW, family, make_player, stand
+
+    officer = await cop(db, 80, "Сержант Марла")
+    don, squad, clan = await family(db)
+    await stand(db, squad, "vcpd")
+    don = await weaken(db, don.user_id)
+    victim = make_player(50, "Прохожий", where="vcpd", credits=2_000)
+    await db.save_player(victim)
+    await a_case(db, victim.user_id, don.user_id, loot=240, filed=True)
+    await a_case(db, victim.user_id, squad[1], loot=0, place="casino")
+    await db.add_to_service_vault("police", 1_400)
+
+    sheet = build_police(officer)
+    sheet.update(await build_police_board(db, officer, NOW))
+    mine = build_police(victim)
+    mine.update(await build_police_board(db, victim, NOW))
+    return officer, victim, sheet, mine
+
+
+async def open_station(pw, server, who, body):
+    card = build_card(who, TOKEN, viewer_id=who.user_id)
+    browser, page = await open_page(pw, server, card, police=body)
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "police")
+    await page.wait_for_selector("#police-body .shelf")
+    return browser, page
+
+
+async def test_the_chiefs_office_holds_the_budget_the_rack_and_the_garage(
+    server, db
+):
+    """Кабинет начальника: бюджет, стойка с формой и гараж.
+
+    Открывает его должность, а не значок: в дежурную часть ходят все
+    сотрудники, за форму и казну отвечает один.
+    """
+    from bot.duty_service import take
+    from bot.webapp.driving import build_police
+    from bot.webapp.police import build_police_board
+    from tests.test_duty import chief, patrolman
+
+    boss = await chief(db)
+    await take(db, boss, "chief_helmet")
+    await db.add_to_service_vault("police", 2_400)
+    # И одна вещь на складе кабинета: полки у него те же, что у семьи
+    from bot.duty_service import stash
+
+    spare = await db.add_gear(boss.user_id, "wraps")
+    boss.gear = await db.list_gear(boss.user_id)
+    await stash(db, boss, spare.id, now_ts())
+    boss = await db.get_player(boss.user_id)
+    sheet = build_police(boss)
+    sheet.update(await build_police_board(db, boss, now_ts()))
+
+    async with async_playwright() as pw:
+        browser, page = await open_station(pw, server, boss, sheet)
+
+        chips = await page.locator("#police-tabs .chip").all_inner_texts()
+        assert chips == ["🚓 Дежурная часть", "🗄 Кабинет", "🚩 Территории"]
+
+        await page.locator("#police-tabs .chip", has_text="Кабинет").click()
+        heads = await page.locator("#police-body .shelf-head").all_inner_texts()
+        assert heads[0] == "Бюджет"
+        assert heads[1] == "Дележ премии"
+        assert heads[2] == "Форма начальника · 1 из 13"
+        assert heads[3] == "Склад кабинета · 1 из 15"
+        # Гаража в кабинете нет: машины выдают сотрудникам, и стоит он
+        # на экране дежурной части, а не за дверью начальника
+        assert len(heads) == 4
+
+        # Склад — те же полки, что в особняке: вещь на полке и пустые
+        # клетки под остальные
+        store = page.locator("#police-body .shelf").nth(3)
+        assert await store.locator(".shelf-slot").count() == 15
+        assert await store.locator(".shelf-slot.free").count() == 14
+
+        said = await page.locator("#police-body").inner_text()
+        assert "2 400" in said.replace("\u00a0", " "), "казна на виду"
+
+        # Стойка: одиннадцать вещей, одна на руках
+        rows = page.locator("#police-body .neighbour")
+        assert await rows.count() == 13
+        taken = page.locator("#police-body .neighbour", has_text="Каска")
+        assert "на руках" in await taken.inner_text()
+        assert await taken.locator(".btn").inner_text() == "Сдать"
+        free = page.locator("#police-body .neighbour", has_text="Белые перчатки")
+        assert await free.locator(".btn").inner_text() == "Получить"
+        await browser.close()
+
+    # А у патрульного кабинета нет вовсе: ни вкладки, ни стойки
+    patrol = await patrolman(db)
+    plain = build_police(patrol)
+    plain.update(await build_police_board(db, patrol, now_ts()))
+    async with async_playwright() as pw:
+        browser, page = await open_station(pw, server, patrol, plain)
+        chips = await page.locator("#police-tabs .chip").all_inner_texts()
+        assert chips == ["🚩 Территории"]
+        await browser.close()
+
+
+async def test_the_station_shows_the_weekly_pool_to_every_officer(server, db):
+    """Полка бонусов: три дела, лестница и дележ пулла.
+
+    Счёт недели видит каждый сотрудник — зарабатывают его вместе, — а
+    кнопки дележа стоят только у начальника: это его слово.
+    """
+    from bot.bonus_service import note_arrest
+    from bot.webapp.driving import build_police
+    from bot.webapp.police import build_police_board
+    from tests.test_duty import chief, patrolman
+
+    boss = await chief(db)
+    for _ in range(7):
+        await note_arrest(db, "police", now_ts())
+
+    sheet = build_police(boss)
+    sheet.update(await build_police_board(db, boss, now_ts()))
+    async with async_playwright() as pw:
+        browser, page = await open_station(pw, server, boss, sheet)
+
+        box = page.locator("#police-body .shelf", has_text="Бонусы недели")
+        said = await box.inner_text()
+        assert "Задержания" in said and "Освобождения" in said
+        assert "Охрана" in said
+        assert "Сделано 7 задержаний" in said
+        # Вторая ступень взята, третья названа следующей
+        rows = box.locator(".bonus-row")
+        arrests = rows.first
+        assert "500" in await arrests.locator(".bonus-award").inner_text()
+        assert await arrests.locator(".bonus-step").count() == 4
+        assert await arrests.locator(".bonus-step.now").count() == 1
+        assert "до 10 ещё 3" in await arrests.inner_text()
+        # Как делят — строкой, а кнопки дележа стоят в кабинете
+        assert "Делим: поровну" in said
+        assert await box.locator(".chip").count() == 0
+
+        # Кабинет: та же настройка, но уже кнопками
+        await page.locator("#police-tabs .chip", has_text="Кабинет").click()
+        shelf = page.locator("#police-body .shelf", has_text="Дележ премии")
+        chips = await shelf.locator(".chip").all_inner_texts()
+        assert chips == ["Поровну", "По должностям"]
+        assert "уйдут сотрудникам сами" in await shelf.inner_text()
+        await browser.close()
+
+    # Патрульный читает тот же счёт, но кнопок дележа у него нет
+    plain = await patrolman(db)
+    body = build_police(plain)
+    body.update(await build_police_board(db, plain, now_ts()))
+    async with async_playwright() as pw:
+        browser, page = await open_station(pw, server, plain, body)
+        box = page.locator("#police-body .shelf", has_text="Бонусы недели")
+        assert "Сделано 7 задержаний" in await box.inner_text()
+        assert await box.locator(".bonus-split .chip").count() == 0
+        await browser.close()
+
+
+async def test_the_station_opens_the_war_for_the_badge(server, db):
+    """Город тоже воюет за точки, и вход в войну у него в участке."""
+    from bot.webapp.turf import build_war
+    from tests.test_turf import NOW
+
+    officer, _, sheet, _ = await station_states(db)
+    board = await build_war(db, officer, None, NOW)
+
+    async with async_playwright() as pw:
+        card = build_card(officer, TOKEN, viewer_id=officer.user_id)
+        browser, page = await open_page(
+            pw, server, card, police=sheet, turf=board
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "police")
+        await page.wait_for_selector("#police-body .shelf")
+
+        await page.locator("#police-tabs .chip", has_text="Территории").click()
+        await page.wait_for_selector("#turf:not(.hidden)")
+        await page.evaluate("stopTurfPoll()")
+        assert await page.locator("#turf-back").inner_text() == "← В участок"
+        await page.locator("#turf-back").click()
+        await page.wait_for_selector("#police:not(.hidden)")
+        await browser.close()
+
+
+async def test_the_duty_board_belongs_to_the_badge(server, db):
+    """Сводка по городу — сотруднику: розыск, нападения и копилка."""
+    officer, _, sheet, _ = await station_states(db)
+
+    async with async_playwright() as pw:
+        browser, page = await open_station(pw, server, officer, sheet)
+
+        heads = await page.locator("#police-body .shelf-head").all_inner_texts()
+        # Гараж участка стоит первым: машину берут, идя мимо, а сводку
+        # читают сидя
+        assert heads[0].startswith("🚓 Гараж участка")
+        assert heads[1:6] == [
+            "Дежурная часть", "🏆 Бонусы недели", "В розыске", "Нападения",
+            "Служба в полиции",
+        ]
+
+        # В копилке то, что положили, а норма считается от нападений.
+        # Полку ищем по заголовку: первой на экране стоит уже не она, а
+        # гараж, и «первая полка» однажды снова окажется другой
+        duty = await page.locator(
+            "#police-body .shelf", has_text="Дежурная часть"
+        ).first.inner_text()
+        # Тысячи разделены неразрывным пробелом — так их пишет `num`
+        assert "1\u00a0400 💰" in duty and "На службе" in duty
+
+        # Розыск: по кому ордер и на сколько
+        hunted = await page.locator("#police-body .case.wanted").all_inner_texts()
+        assert len(hunted) == 1 and "Дон-1" in hunted[0]
+
+        # Нападений два, и видно, какое из них с заявлением
+        cases = await page.locator(
+            "#police-body .shelf", has_text="Нападения"
+        ).first.locator(".case").all_inner_texts()
+        assert len(cases) == 2
+        assert any("в розыске" in one for one in cases)
+        assert any("без заявления" in one for one in cases)
+        await browser.close()
+
+
+async def test_the_victim_sees_only_his_own_cases(server, db):
+    """Пострадавшему — свои дела и кнопка заявления. Сводки у него нет."""
+    _, victim, _, mine = await station_states(db)
+
+    async with async_playwright() as pw:
+        browser, page = await open_station(pw, server, victim, mine)
+
+        heads = await page.locator("#police-body .shelf-head").all_inner_texts()
+        # Сводки по городу у штатского нет, а витрина службы есть: в
+        # полицию приходят с улицы, и дверь должна быть видна
+        assert heads == ["Твои дела", "Служба в полиции"]
+        assert await page.locator("#police-body .case").count() == 2
+        # Заявление пишут по тому делу, по которому его ещё нет
+        buttons = await page.locator(
+            "#police-body .shelf", has_text="Твои дела"
+        ).first.locator(".btn").all_inner_texts()
+        assert buttons == ["Написать заявление"]
+        await browser.close()
+
+
+async def test_the_station_tells_the_jailed_how_long_he_sits(server, db):
+    """Сидящему первым делом говорят срок, а не про права."""
+    from bot.webapp.driving import build_police
+    from bot.webapp.police import build_police_board
+    from bot.police_service import jail
+    from bot.game.health import now_ts
+    from tests.test_robbery import make_player
+
+    one = make_player(50, "Мафиози", where="vcpd")
+    await db.save_player(one)
+    await jail(db, one.user_id, now_ts())
+    one = await db.get_player(one.user_id)
+    body = build_police(one)
+    body.update(await build_police_board(db, one, now_ts()))
+
+    async with async_playwright() as pw:
+        browser, page = await open_station(pw, server, one, body)
+        first = await page.locator("#police-body .shelf").first.inner_text()
+        assert "Ты сидишь" in first and "Из тюрьмы не выходят" in first
+        assert "1-я" in first
+        await browser.close()
+
+
+async def test_the_badge_arrests_and_steps_in_from_the_house(server, db):
+    """У значка свои кнопки: задержать разыскиваемого и вмешаться в драку."""
+    from bot.robbery_service import RobberyService
+    from bot.webapp.crowd import build_crowd
+    from tests.test_police import a_case, cop
+    from tests.test_robbery import (
+        NOW, family, licensed, make_player, stand,
+    )
+
+    officer = await cop(db, 80, "Сержант", where="bar")
+    don, squad, _ = await family(db)
+    await stand(db, squad, "bar")
+    victim = make_player(50, "Прохожий", where="bar")
+    await db.save_player(victim)
+    await licensed(db, [don.user_id], 1)
+    await a_case(db, victim.user_id, don.user_id, loot=200, filed=True)
+
+    service = RobberyService(db)
+    try:
+        board = await build_crowd(db, officer, service, NOW)
+        raid = await service.rob(
+            await db.get_player(don.user_id), victim.user_id, now=NOW
+        )
+        live = await build_crowd(db, officer, service, NOW)
+    finally:
+        await service.close()
+
+    async with async_playwright() as pw:
+        card = build_card(officer, TOKEN, viewer_id=officer.user_id)
+        browser, page = await open_page(pw, server, card, crowd=board)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "crowd")
+        await page.wait_for_selector("#crowd-body .shelf")
+        await page.evaluate("stopCrowdPoll()")
+
+        # Разыскиваемый помечен, и у него кнопка задержания
+        rows = await page.locator("#crowd .neighbour").all_inner_texts()
+        assert any("🔎 Дон-1" in one for one in rows)
+        buttons = await page.locator("#crowd .neighbour .btn").all_inner_texts()
+        assert buttons == ["🚔 Задержать"]
+
+        # А в идущей драке — кнопка вмешательства, и без лицензии
+        await page.evaluate("(data) => renderCrowd(data)", live)
+        fight = page.locator("#crowd .neighbour.fight")
+        assert await fight.count() == 1
+        assert await fight.locator(".btn").inner_text() == "🚔 Вмешаться"
+        await browser.close()
+
+# ---------- кто здесь: соседи по дому и ограбления ----------
+
+
+async def house_states(db):
+    """Два состояния дома: список соседей и идущая в нём драка."""
+    from bot.robbery_service import RobberyService
+    from bot.webapp.crowd import build_crowd
+    from tests.test_robbery import NOW, family, licensed, make_player
+
+    don, squad, _ = await family(db)
+    victim = make_player(50, "Прохожий", credits=2_400)
+    await db.save_player(victim)
+    sleeper = make_player(51, "Марла", level=7, clazz="rogue")
+    sleeper.seen_at = NOW - 90_000
+    await db.save_player(sleeper)
+    await licensed(db, [don.user_id, squad[1]], 3)
+    don = await db.get_player(don.user_id)
+
+    service = RobberyService(db)
+    try:
+        board = await build_crowd(db, don, service, NOW)
+        raid = await service.rob(don, victim.user_id, now=NOW)
+        await service.join(raid.id, await db.get_player(squad[1]), now=NOW)
+        for one in list(raid.paired):
+            if raid.finished:
+                break
+            await service.choose(raid.id, one, "attack", "head")
+            if raid.finished:
+                break
+            await service.choose(raid.id, one, "block", "belly")
+        live = await build_crowd(db, don, service, NOW)
+    finally:
+        await service.close()
+    return don, board, live
+
+
+async def open_crowd(pw, server, don, body):
+    """Открыть список дома с готовым ответом и погасить опрос.
+
+    Ждём либо полку соседей, либо доску драки: в доме, где дерутся,
+    списка нет вовсе.
+    """
+    card = build_card(don, TOKEN, viewer_id=don.user_id)
+    browser, page = await open_page(pw, server, card, crowd=body)
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "crowd")
+    await page.wait_for_selector("#crowd-body .shelf, #crowd-body .raid-board")
+    await page.evaluate("stopCrowdPoll()")
+    return browser, page
+
+
+async def test_the_house_shows_who_is_here_and_who_can_be_robbed(server, db):
+    """Список дома: кто в сети, чья семья и у кого кнопка нападения."""
+    don, board, _ = await house_states(db)
+
+    async with async_playwright() as pw:
+        browser, page = await open_crowd(pw, server, don, board)
+
+        rows = await page.locator("#crowd .neighbour").all_inner_texts()
+        assert len(rows) == 4, "двое своих, прохожий и спящая"
+        joined = "\n".join(rows)
+        assert "Коза Ностра" in joined and "Прохожий" in joined
+
+        # Кнопка нападения одна: своих не трогают, спящую не достать
+        buttons = await page.locator("#crowd .neighbour .btn").all_inner_texts()
+        assert buttons == ["💰 Ограбить"]
+        # А почему нельзя — написано, а не спрятано
+        whys = await page.locator("#crowd .neighbour-why").all_inner_texts()
+        assert "Свои." in whys and any("сети" in one for one in whys)
+
+        # Ушедшая стоит последней и приглушена
+        last = page.locator("#crowd .neighbour").last
+        assert "Марла" in await last.inner_text()
+        assert "away" in (await last.get_attribute("class"))
+        await browser.close()
+
+
+async def test_the_robbery_panel_shows_both_sides_and_the_log(server, db):
+    """Панель драки: доска как в групповом бою, журнал судьи и кнопки."""
+    don, _, live = await house_states(db)
+    fight = live["fight"]
+    assert fight is not None and fight["log"], "судье было что сказать"
+
+    async with async_playwright() as pw:
+        browser, page = await open_crowd(pw, server, don, live)
+
+        head = await page.locator("#crowd .fight-round").inner_text()
+        assert "Прохожий" in head and "раунд" in head
+        assert "Ход драки" in await page.locator(
+            "#crowd .fight-log .shelf-head"
+        ).inner_text()
+
+        # Доска та же, что в групповом бою: свои слева, чужие справа.
+        # Счёт карт сверяем с ответом: пара в раунде достаётся не всем,
+        # и у кого её нет — внизу справа пусто
+        board = page.locator("#crowd .raid-board")
+        assert await board.count() == 1
+        mine = await board.locator(".raid-you").inner_text()
+        assert "— ты" in mine
+        foe = fight["foe"]
+        assert await board.locator(".raid-mates .stack-card").count() == (
+            len(fight["red"]) - 1
+        ), "один напал, второй вмешался"
+        assert await board.locator(".raid-foes .stack-card").count() == (
+            len(fight["blue"]) - 1 if foe else len(fight["blue"])
+        )
+        theirs = await board.locator(".raid-foes").inner_text()
+        assert "Прохожий" in theirs
+        if foe:
+            assert foe["name"] in await board.locator(
+                ".boss-card.mine"
+            ).inner_text()
+
+        # Галочка хода — только у своих: чужой бросок не наш
+        you = next(one for one in fight["red"] if one["is_self"])
+        mark = "💀" if not you["alive"] else ("✅" if you["acted"] else "⏳")
+        assert mark in mine
+        assert "⏳" not in theirs and "✅" not in theirs
+
+        lines = await page.locator("#crowd .fight-log .log-line").all_inner_texts()
+        said = [one for turn in fight["log"] for one in turn["lines"]]
+        assert len(lines) == len(said)
+        assert lines[0] == said[-1], "свежее сверху"
+
+        # Ход сделан — слов «ход принят» нет: галочка на доске уже
+        # сказала то же самое, а под доской остаются заготовки
+        waiting = json.loads(json.dumps(live))
+        waiting["fight"].update({"acted": True, "alive": True, "paired": True})
+        for one in waiting["fight"]["red"]:
+            if one["is_self"]:
+                one.update({"acted": True, "alive": True})
+        await page.evaluate("(data) => renderCrowd(data)", waiting)
+        assert "Ход принят" not in await page.locator("#crowd-body").inner_text()
+        assert "✅" in await page.locator("#crowd .raid-you").inner_text()
+        assert await page.locator("#crowd #crowd-go").count() == 0
+        await browser.close()
+
+
+async def test_the_map_counts_the_neighbours_in_the_corner(server, db):
+    """Значок в углу карты: сколько народу в доме и идёт ли в нём драка."""
+    from bot.webapp.citymap import build_map
+
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    city = build_map(
+        player, crowd={"total": 4, "online": 3, "fights": 0}
+    )
+    hot = build_map(player, crowd={"total": 4, "online": 3, "fights": 1})
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, city=city)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-map").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+        await page.wait_for_selector(".zone-house")
+
+        chip = page.locator("#map-crowd")
+        assert await chip.is_visible()
+        assert await chip.inner_text() == "👥 3 из 4"
+        assert "hot" not in (await chip.get_attribute("class"))
+
+        # Пошла драка — значок краснеет и считает уже её
+        await page.evaluate(
+            "(data) => { renderMap(data); }", hot
+        )
+        assert await chip.inner_text() == "⚔️ 1 · 👥 3"
+        assert "hot" in (await chip.get_attribute("class"))
+        await browser.close()
+
+
+async def test_an_empty_house_hides_the_corner_chip(server, db):
+    """Никого рядом — значка нет: пустой счётчик только мешает."""
+    from bot.webapp.citymap import build_map
+
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    city = build_map(player, crowd={"total": 0, "online": 0, "fights": 0})
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, city=city)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-map").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+        await page.wait_for_selector(".zone-house")
+
+        assert await page.locator("#map-crowd").is_hidden()
+        await browser.close()
+
+
+async def test_the_family_page_shows_the_garage_and_the_licences(server, db):
+    """Имущество семьи: три места в гараже, лицензии и цель недели."""
+    from bot.game.robbery import GOAL_REWARD, WEEKLY_GOAL
+    from bot.webapp.clans import build_clan_page, build_estate, build_mansion
+
+    from bot.game.robbery import ATTACKS_PER_LICENCE, LICENCE_PRICE
+
+    don, roster = a_family(vault=400)
+    estate = build_estate(
+        don, [], cars=[],
+        licences={"left": 24, "bought": 1, "pack": ATTACKS_PER_LICENCE,
+                  "price": LICENCE_PRICE},
+        attacks=7, paid=0,
+    )
+    listing = build_mansion(don, [roster.clan], [], TOKEN)
+    opened = build_mansion(
+        don, [roster.clan], [], TOKEN,
+        opened=build_clan_page(don, roster, [], [], estate, TOKEN),
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, build_card(
+            don, TOKEN, viewer_id=don.user_id
+        ))
+        await mansion_pages(page, listing, opened)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-clans .shelf")
+        await page.locator(".clan-item .clan-open").click()
+        await page.wait_for_selector("#mafia-family:not(.hidden)")
+        await page.locator("#mafia-tabs .chip", has_text="Имущество").click()
+        await page.wait_for_selector("#mafia-estate:not(.hidden)")
+
+        # Парковка: три места, и все пустые — ставить нечего
+        heads = await page.locator("#mafia-estate .shelf-head").all_inner_texts()
+        assert "🅿️ Парковка особняка · 0 из 3" in heads
+        assert "Ограбления" in heads
+        parking = page.locator(
+            "#mafia-estate .shelf", has_text="Парковка особняка"
+        )
+        assert await parking.locator(".car").count() == 0
+        assert "Машину покупают или снимают" in await parking.inner_text()
+        assert "Гараж общий" in await parking.inner_text()
+
+        shop = await page.locator("#mafia-estate .shelf").last.inner_text()
+        # Нападений на руках, размер пачки и доля — всё числом
+        assert "24" in shop and "10%" in shop
+        assert f"{ATTACKS_PER_LICENCE} нападений, без срока" in shop
+        assert "не сгорают" in shop
+        assert f"7 из {WEEKLY_GOAL}" in shop
+        assert str(GOAL_REWARD // 1000) in shop
+        await browser.close()
+
+async def test_the_battle_form_asks_four_questions(server, db):
+    """Форма сбора: чем дерутся, сколько зовут, кого и сколько ждут.
+
+    Раньше тут стояли четыре готовые кнопки, и всё остальное решалось
+    за игрока. Теперь спрашивают — и выбранное уходит на сервер одним
+    нажатием.
+    """
+    from bot.webapp.battle import build_battle
+
+    player = make_player("fight_club")
+    player.level = 7
+    await db.save_player(player)
+    body = build_battle(player, None)
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    sent = []
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, battle=body)
+        await page.route("**/api/battle", lambda route: (
+            sent.append(route.request.post_data)
+            if route.request.method == "POST" else None
+        ) or route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        ))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.evaluate("pickClubSection('battle')")
+        await page.wait_for_selector("#battle-body .form-row")
+        await page.evaluate("stopWatchingBattle()")
+
+        labels = await page.locator("#battle-body .form-label").all_inner_texts()
+        assert labels == [
+            "Бой", "Чем", "С каждой стороны", "Уровень соперников", "На сбор",
+        ]
+        # Бойцов от двух до десяти — по чипу на число
+        sizes = page.locator("#battle-body .form-row").nth(2)
+        assert await sizes.locator(".chip").all_inner_texts() == [
+            str(one) for one in range(2, 11)
+        ]
+        waits = page.locator("#battle-body .form-row").last
+        assert await waits.locator(".chip").all_inner_texts() == [
+            "3 мин", "5 мин", "10 мин",
+        ]
+
+        # Отвечаем на все четыре и собираем
+        await page.locator("#battle-body .chip", has_text="кулачный").click()
+        await sizes.locator(".chip", has_text="7").click()
+        await page.locator("#battle-body .chip", has_text="Только мой").click()
+        await page.locator("#battle-body .chip", has_text="10 мин").click()
+        await page.locator("#battle-body .btn", has_text="Собрать").click()
+        await page.wait_for_timeout(300)
+
+        assert json.loads(sent[-1]) == {
+            "action": "open", "kind": "team", "mode": "fist", "size": 7,
+            "levels": "same", "wait": 10,
+        }
+
+        # Королевская битва спрашивает то же самое, только бойцов там всего
+        await page.locator("#battle-body .chip", has_text="Королевская").click()
+        await page.wait_for_timeout(200)
+        labels = await page.locator("#battle-body .form-label").all_inner_texts()
+        assert labels[2] == "Бойцов"
+        await browser.close()
+
+
+# ---------- турнирная арена ----------
+
+
+async def test_the_arena_paints_the_bracket_as_a_tree(server, db):
+    """Сетка плей-офф: круг — колонка, исход — клетка с галкой.
+
+    Дерево в ширину телефона не помещается, и доска ездит вбок: это
+    дешевле, чем список пар, из которого не видно, откуда боец пришёл.
+    Финальная колонка золотая и с кубком — за него и дерутся.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from bot.arena_service import sign_up, sweep
+    from bot.game.arena import CONFIRM_SECONDS, round_at
+    from bot.webapp.arena import build_arena
+    from tests.test_robbery import make_player as a_fighter
+
+    msk = timezone(timedelta(hours=3))
+    noon = int(
+        datetime(2026, 10, 18, 13, 0, tzinfo=msk).timestamp()
+    )
+
+    class Duels:
+        async def start_duel(self, *args, on_finish=None, **rest):
+            return None
+
+    for number in range(1, 5):
+        one = a_fighter(number, f"Боец-{number}")
+        one.level = number + 3
+        one.credits = 1_000
+        one.location = "fight_tournament_stadium"
+        await db.save_player(one)
+        await sign_up(db, await db.get_player(number), now=noon)
+
+    live = round_at(noon, 1) + CONFIRM_SECONDS + 1
+    await sweep(db, Duels(), live)
+    me = await db.get_player(1)
+    body = await build_arena(db, me, Duels(), live)
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.route("**/api/arena*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        ))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "arena")
+        await page.wait_for_selector("#arena-body .bracket")
+        await page.evaluate("stopArenaPoll()")
+
+        said = await page.locator("#arena-body").inner_text()
+        assert "Призовой фонд" in said and "1 200" in said.replace("\u00a0", " ")
+        assert "Победителю" in said and "Второму месту" in said
+
+        # Круг — колонка: четверо дерутся в двух, и последняя золотая
+        columns = page.locator("#arena-body .bracket-col")
+        assert await columns.count() == 2
+        heads = await columns.locator(".bracket-col-title").all_inner_texts()
+        # Заголовки колонок набраны капителью, оттого и крик
+        assert heads == ["ПОЛУФИНАЛЫ", "ФИНАЛ"]
+        assert "final" in (await columns.nth(1).get_attribute("class"))
+        assert await columns.nth(1).locator(".bracket-cup").count() == 1
+
+        # В каждой паре ровно один зелёный и один красный
+        pair = page.locator("#arena-body .bracket").first
+        assert await pair.locator(".bracket-side.won").count() == 1
+        assert await pair.locator(".bracket-side.out").count() == 1
+        won = pair.locator(".bracket-side.won .bracket-mark")
+        out = pair.locator(".bracket-side.out .bracket-mark")
+        assert await won.inner_text() == "✔"
+        assert await out.inner_text() == "✘"
+        assert await won.get_attribute("title") == "прошёл"
+        assert await out.get_attribute("title") == "вылетел"
+
+        # Несыгранная пара цвета не носит: в клетке уровень
+        final = page.locator("#arena-body .bracket-col.final .bracket")
+        assert await final.locator(".bracket-side.won").count() == 0
+        assert await final.locator(".bracket-side.out").count() == 0
+
+        # Своя пара обведена, и в ней видно, где ты
+        assert await page.locator("#arena-body .bracket-side.you").count() >= 1
+        await browser.close()
+
+
+
+# ---------- машины ----------
+
+
+async def test_the_salon_shows_three_prices_on_every_car(server, db):
+    """Витрина салона: картинка 16:9, скорость у имени и три цены."""
+    from bot.game.driving import School
+    from bot.webapp.cars import build_cars
+    from tests.test_cars import make_player as a_driver
+
+    me = a_driver(credits=4_000)
+    await db.save_player(me)
+    await db.set_school(me.user_id, School(passed_at=1, licence_at=1))
+    me = await db.get_player(me.user_id)
+    body = await build_cars(db, me)
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, cars=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "cars")
+        await page.wait_for_selector("#cars-body .car")
+
+        cards = page.locator("#cars-body .car")
+        assert await cards.count() == 10
+        first = cards.first
+        assert "Городской хэтчбек" in await first.inner_text()
+        assert "дорога ×2" in await first.locator(".car-times").inner_text()
+        said = (await first.inner_text()).replace("\u00a0", " ")
+        # Три цены на одной карточке: сутки, месяц и покупка
+        assert "30 💰" in said and "600 💰" in said and "3 000 💰" in said
+        # Кнопок тоже три, и на каждой стоит цена
+        buttons = await first.locator(".btn").all_inner_texts()
+        assert len(buttons) == 3
+        assert buttons[0].startswith("Сутки") and buttons[2].startswith("Купить")
+        # Гиперкар не по карману: кнопка покупки погасла
+        last = cards.nth(9)
+        assert await last.locator(".btn").last.is_disabled()
+        # А в записке сверху сказано, сколько машин держат
+        assert "Держат 1" in await page.locator("#cars-note").inner_text()
+        await browser.close()
+
+
+async def test_the_salon_goes_dark_when_the_garage_is_full(server, db):
+    """Машина на руках — витрина гаснет вся, и причина названа словами."""
+    from bot.car_service import buy
+    from bot.game.driving import School
+    from bot.webapp.cars import build_cars
+    from tests.test_cars import HATCH, NOW, make_player as a_driver
+
+    me = a_driver(credits=100_000)
+    await db.save_player(me)
+    await db.set_school(me.user_id, School(passed_at=1, licence_at=1))
+    me = await db.get_player(me.user_id)
+    await buy(db, me, HATCH, NOW)
+    body = await build_cars(db, await db.get_player(me.user_id), NOW)
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, cars=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "cars")
+        await page.wait_for_selector("#cars-body .car")
+
+        said = await page.locator("#cars-note").inner_text()
+        assert "Машин на руках 1 из 1" in said
+        assert "Поставь её на парковку" in said
+        assert "С PRO держат 2 разом, с PREMIUM — 3" in said
+        # Своя машина отмечена, а у остальных погасли все три кнопки
+        cards = page.locator("#cars-body .car")
+        assert "Твоя насовсем" in await cards.first.inner_text()
+        other = cards.nth(1)
+        for number in range(3):
+            assert await other.locator(".btn").nth(number).is_disabled()
+        # Причина у них не про деньги — денег как раз хватает, — и
+        # сказана она запиской сверху: по погасшей кнопке не нажать
+        assert "денег" not in said
+        await browser.close()
+
+
+async def test_the_depot_garage_counts_the_seats(server, db):
+    """Гараж парка: три места, и видно, сколько свободно."""
+    from bot.car_service import take
+    from bot.game.cars import TAXI_CAR, TAXI_PLACE
+    from bot.game.driving import School
+    from bot.game.work import SHIFT_SECONDS
+    from bot.webapp.cars import build_cars
+    from tests.test_cars import NOW, make_player as a_driver
+
+    driver = a_driver(1, "Водитель", credits=500, where=TAXI_PLACE)
+    driver.job_code = "taxi_driver"
+    driver.shift_until = NOW + SHIFT_SECONDS
+    await db.save_player(driver)
+    await db.set_school(1, School(passed_at=1, licence_at=1))
+    driver = await db.get_player(1)
+    await take(db, driver, TAXI_CAR, NOW)
+    body = await build_cars(db, await db.get_player(1), NOW)
+    card = build_card(driver, TOKEN, viewer_id=1)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, cars=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "cars")
+        await page.wait_for_selector("#cars-body .car")
+
+        said = await page.locator("#cars-body .car").first.inner_text()
+        assert "Такси" in said and "дорога ×5" in said
+        assert "2 из 3" in said, "одна машина на руках, две свободны"
+        assert "ты" in said, "кто в разъезде — видно по именам"
+        assert await page.locator("#cars-body .btn").first.inner_text() == (
+            "Сдать в гараж"
+        )
+        await browser.close()
+
+
+async def test_the_car_stands_behind_the_fighter_in_his_card(server, db):
+    """Машина рисуется за бойцом, по верхнему краю рамки.
+
+    Слоёв у рамки три: её фон, машина, сам боец. Образ вырезан по фигуре
+    и прозрачен, поэтому машина видна из-за него, а не из-под него.
+    """
+    from bot.car_service import buy, mine, wheel
+    from bot.game.driving import School
+    from tests.test_cars import HATCH, NOW, make_player as a_driver
+
+    me = a_driver()
+    await db.save_player(me)
+    await db.set_school(me.user_id, School(passed_at=1, licence_at=1))
+    me = await db.get_player(me.user_id)
+    await buy(db, me, HATCH, NOW)
+    await wheel(db, me, HATCH, NOW)
+    keys = await mine(db, me, NOW)
+    card = build_card(me, TOKEN, viewer_id=me.user_id, now=NOW)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, keys=keys, images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector("#hero-avatar .avatar-car")
+
+        # За бойцом — вырезанная машина, без студийного фона: он лёг бы
+        # заплаткой поверх фона рамки
+        src = await page.locator("#hero-avatar .avatar-car").get_attribute("src")
+        assert src.endswith("_transparent.png"), src
+
+        # Машина стоит внутри рамки образа и прижата к её верху
+        frame = await page.locator("#hero-avatar").bounding_box()
+        shot = await page.locator("#hero-avatar .avatar-car").bounding_box()
+        assert abs(frame["y"] - shot["y"]) < 2
+        # Во всю ширину рамки, не считая самой рамки в пиксель с краю
+        assert abs(frame["width"] - shot["width"]) <= 2
+        # И она шире, чем выше: картинку прислали в 16:9
+        assert shot["width"] > shot["height"] * 1.6
+        # Боец поверх машины, а не под ней: слои стоят в этом порядке
+        layers = await page.evaluate(
+            """() => {
+                const box = document.getElementById('hero-avatar');
+                const car = box.querySelector('.avatar-car');
+                // Образ или значок на его месте: не доехавшая картинка
+                // всё равно обязана лежать поверх машины
+                const who = box.querySelector('img:not(.avatar-car), .emoji');
+                const z = (node) => Number(getComputedStyle(node).zIndex) || 0;
+                return [z(car), z(who)];
+            }"""
+        )
+        assert layers[0] < layers[1], "машина обязана быть за бойцом"
+
+        # Боец стоит на нижнем крае, а не висит посередине: образ обрезан
+        # по бёдра, и центрованный срез читается как отрезанные ноги
+        look = await page.evaluate(
+            """() => {
+                const box = document.getElementById('hero-avatar');
+                // Образ в прогоне не доезжает — картинки тянутся из
+                // бакета, сети нет, — и на его месте стоит значок.
+                // Поэтому правило проверяем на подставной картинке: она
+                // того же вида, что и образ, и ловит тот же селектор
+                const probe = document.createElement('img');
+                box.appendChild(probe);
+                const css = getComputedStyle(probe);
+                // matrix(a, b, c, d, e, f): a — растяжение по ширине.
+                // `none` значит, что образ не масштабируют вовсе
+                const m = css.transform.match(/matrix\(([^,]+)/);
+                const got = {
+                    position: css.objectPosition,
+                    fit: css.objectFit,
+                    scale: m ? Number(m[1]) : 1,
+                    back: getComputedStyle(box).backgroundColor,
+                };
+                probe.remove();
+                return got;
+            }"""
+        )
+        assert look["position"].split(" ")[-1] in ("bottom", "100%")
+        assert look["fit"] == "contain", "рамка не режет вырезанную фигуру"
+        # Зума нет: он съедал пустое поле вокруг фигуры, но на широкой
+        # рамке начинал резать и самого бойца. За рамку образ не выходит
+        # ни на каком экране, и это важнее лишних процентов роста
+        assert look["scale"] == 1, "образ не должен заезжать за края рамки"
+        # Фон рамки — тот самый серый, что запечён в картинках вещей и
+        # машин: иначе рамка бойца висит заплаткой среди своих же слотов
+        assert look["back"] == "rgb(92, 96, 101)"
+
+        # Ключи лежат в инвентаре, с кнопкой «Снять»: за рулём боец уже сидит
+        await open_screen(page, "bag")
+        await page.wait_for_selector("#bag-keys:not(.hidden)")
+        said = await page.locator("#bag-keys").inner_text()
+        assert "Городской хэтчбек" in said and "насовсем" in said
+        assert "дорога" in said and "undefined" not in said
+        # Кнопок у машины две: «Снять» — потому что боец за рулём, и
+        # «Оставить машину» — потому что улица рядом с любым домом
+        assert await page.locator("#keys-list .btn").all_inner_texts() == [
+            "Снять", "Оставить машину",
+        ]
+        await browser.close()
+
+
+
+async def test_the_flat_parking_shows_the_car_and_the_button(server, db):
+    """Место при квартире: машина на нём и кнопка «Забрать»."""
+    player = make_player("residential_apartment")
+    player.flat = Lease(
+        id=1, user_id=player.user_id, house="residential_apartment",
+        number=3, rooms=2, paid_until=now_ts() + 1000,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    flats = flats_state(number=3, cars=[parked()])
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, flats=flats, images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "flats")
+        await page.locator("#flats-tabs .chip", has_text="Моя квартира").click()
+        await page.wait_for_selector("#flats-home:not(.hidden)")
+
+        parking = page.locator("#flats-home .shelf", has_text="Место под машину")
+        assert "· 1 из 1" in await parking.locator(".shelf-head").inner_text()
+        said = await parking.inner_text()
+        assert "Городской хэтчбек" in said and "дорога ×2" in said
+        assert "Поставил" in said and "ты" in said
+        # Картинка машины — та же полоса 16:9, что в салоне
+        shot = await parking.locator(".car-pic img").bounding_box()
+        assert shot["width"] > shot["height"] * 1.6
+        # Место занято: ставить больше нечего, а забрать можно
+        assert await parking.locator(".btn").all_inner_texts() == ["Забрать"]
+        await browser.close()
+
+
+async def test_the_empty_flat_parking_offers_the_keys(server, db):
+    """Место свободно — на нём кнопка с машиной, которая при себе."""
+    player = make_player("residential_apartment")
+    player.flat = Lease(
+        id=1, user_id=player.user_id, house="residential_apartment",
+        number=3, rooms=2, paid_until=now_ts() + 1000,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    flats = flats_state(number=3, keys=car_keys("street_compact", "neon_coupe"))
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, flats=flats)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "flats")
+        await page.locator("#flats-tabs .chip", has_text="Моя квартира").click()
+        await page.wait_for_selector("#flats-home:not(.hidden)")
+
+        parking = page.locator("#flats-home .shelf", has_text="Место под машину")
+        buttons = await parking.locator(".btn").all_inner_texts()
+        assert buttons == [
+            "Поставить · Городской хэтчбек", "Поставить · Неоновое купе"
+        ]
+
+        # Кнопка держит саму службу, а не её имя: подменяем и
+        # перерисовываем экран, иначе нажатие уйдёт в прежнюю
+        await page.evaluate(
+            """() => {
+                window.flatAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+                pickFlatsTab("home");
+            }"""
+        )
+        await parking.locator(".btn").first.click()
+        sent = await page.evaluate("window.sent")
+        assert sent == {"action": "park", "car": "street_compact"}
+        await browser.close()
+
+
+
+async def test_the_mansion_parking_lets_anyone_drive_away(server, db):
+    """Гараж особняка общий: у чужой машины кнопка «Уехать на ней».
+
+    Своя машина забирается, чужая — уводится, и обе кнопки стоят рядом:
+    по подписи видно, кто поставил, но замка у неё нет.
+    """
+    from bot.webapp.clans import build_clan_page, build_estate, build_mansion
+
+    don, roster = a_family(vault=0)
+    estate = build_estate(
+        don, [],
+        cars=[parked(mine=False, owner="Марла"), parked("neon_coupe")],
+        keys=car_keys("apex_hypercar"),
+    )
+    listing = build_mansion(don, [roster.clan], [], TOKEN)
+    opened = build_mansion(
+        don, [roster.clan], [], TOKEN,
+        opened=build_clan_page(don, roster, [], [], estate, TOKEN),
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, build_card(
+            don, TOKEN, viewer_id=don.user_id
+        ))
+        await mansion_pages(page, listing, opened)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-clans .shelf")
+        await page.locator(".clan-item .clan-open").click()
+        await page.wait_for_selector("#mafia-family:not(.hidden)")
+        await page.locator("#mafia-tabs .chip", has_text="Имущество").click()
+        await page.wait_for_selector("#mafia-estate:not(.hidden)")
+
+        parking = page.locator(
+            "#mafia-estate .shelf", has_text="Парковка особняка"
+        )
+        assert "· 2 из 3" in await parking.locator(".shelf-head").inner_text()
+        said = await parking.inner_text()
+        # Подпись у каждой машины: кто поставил
+        assert "Марла" in said and "ты" in said
+        cars = parking.locator(".car")
+        assert await cars.nth(0).locator(".btn").inner_text() == "Уехать на ней"
+        assert await cars.nth(1).locator(".btn").inner_text() == "Забрать"
+        # И третье место ещё свободно: на нём кнопка со своей машиной
+        assert "Поставить · Элитный гиперкар" in said
+
+        await page.evaluate(
+            """() => {
+                window.mafiaAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+                pickClanTab("estate");
+            }"""
+        )
+        await parking.locator(".car").first.locator(".btn").click()
+        sent = await page.evaluate("window.sent")
+        # Первой стоит чужая машина: её и увели, по номеру её строки
+        assert sent["action"] == "unpark" and sent["id"] == 2
+        await browser.close()
+
+
+
+# ---------- общежитие ----------
+
+
+async def test_the_dorm_offers_a_room_to_a_student(server, db):
+    """Студенту общежитие обещает комнату и показывает условия."""
+    from bot.webapp.dorm import build_dorm
+    from tests.test_dorm import student
+
+    me = await student(db)
+    body = await build_dorm(db, me)
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dorm=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dorm")
+        await page.wait_for_selector("#dorm-body .shelf")
+
+        said = await page.locator("#dorm-body").inner_text()
+        assert "бесплатно" in said and "пока учишься" in said
+        assert "4" in said, "число мест под вещи"
+        assert await page.locator("#dorm-body .btn").inner_text() == (
+            "Получить комнату"
+        )
+        assert "Комната студенту" in await page.locator("#dorm-note").inner_text()
+        await browser.close()
+
+
+async def test_the_dorm_room_shows_the_shelves_and_the_safe(server, db):
+    """Своя комната: номер в заголовке, сейф и четыре полки."""
+    from bot.dorm_service import check_in, deposit, stash
+    from bot.webapp.dorm import build_dorm
+    from tests.test_dorm import student, thing
+
+    me = await student(db)
+    await check_in(db, me, now_ts())
+    await stash(db, me, await thing(db, me, "bandana"), now_ts())
+    await deposit(db, me, 300, now_ts())
+    me = await db.get_player(me.user_id)
+    body = await build_dorm(db, me)
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dorm=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dorm")
+        await page.wait_for_selector("#dorm-grid")
+
+        heads = await page.locator("#dorm-body .shelf-head").all_inner_texts()
+        assert heads == ["Комната №1", "Сейф комнаты", "Полки · 1 из 4"]
+        assert await page.locator(".vault-sum").inner_text() == "300 💰"
+        # Полок четыре: одна занята, три свободны
+        assert await page.locator("#dorm-grid .shelf-slot").count() == 4
+        assert await page.locator("#dorm-grid .shelf-slot.free").count() == 3
+        await browser.close()
+
+
+async def test_the_locked_room_offers_one_button(server, db):
+    """Учёба кончилась: на экране одна кнопка — забрать у администрации."""
+    from bot.dorm_service import check_in, stash, sweep
+    from bot.webapp.dorm import build_dorm
+    from tests.test_dorm import student, thing
+
+    me = await student(db)
+    await check_in(db, me, now_ts())
+    await stash(db, me, await thing(db, me, "bandana"), now_ts())
+    me.study_code = ""
+    await db.save_player(me)
+    await sweep(db, me, now_ts())
+    body = await build_dorm(db, me)
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dorm=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dorm")
+        await page.wait_for_selector("#dorm-body .shelf")
+
+        heads = await page.locator("#dorm-body .shelf-head").all_inner_texts()
+        # Полка одна — сама комната: ни сейфа, ни полок у запертой нет
+        assert len(heads) == 1 and heads[0].startswith("Комната №1")
+        assert "заперта" in await page.locator("#dorm-body .shelf-count").inner_text()
+        buttons = await page.locator("#dorm-body .btn").all_inner_texts()
+        assert buttons == ["Забрать у администрации"]
+
+        await page.evaluate(
+            """() => {
+                window.dormAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+                renderDorm(dormData);
+            }"""
+        )
+        await page.locator("#dorm-body .btn").click()
+        assert await page.evaluate("window.sent") == {"action": "collect"}
+        await browser.close()
+
+
+# ---------- тюрьма ----------
+
+
+async def test_the_prison_counts_the_term_and_lists_the_inmates(server, db):
+    """Экран тюрьмы: свой срок часами и соседи по камере.
+
+    Часы тикают на странице, а час выхода считает сервер — как у смены
+    и у сбора в рейд. Отсидка у каждого своя, и видно, чья длиннее.
+    """
+    from bot.game.health import now_ts
+    from bot.police_service import jail
+    from bot.webapp.prison import build_prison
+    from tests.test_robbery import make_player as a_fighter
+
+    now = now_ts()
+    for number, name in ((51, "Марла"), (52, "Тайлер")):
+        one = a_fighter(number, name)
+        await db.save_player(one)
+    await jail(db, 51, now)
+    await jail(db, 52, now)
+    await jail(db, 52, now)  # второй раз: срок вдвое длиннее
+
+    sitting = await db.get_player(51)
+    body = await build_prison(db, sitting, now)
+    card = build_card(sitting, TOKEN, viewer_id=sitting.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.route("**/api/prison*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        ))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "prison")
+        await page.wait_for_selector("#prison-body .shelf")
+
+        # Свой срок — первой полкой, часами и с часом выхода. Секунду
+        # на часах не загадываем: страница открывается то до первого
+        # тика, то после него, и «02:59:58» с «03:00:00» тут одно и то
+        # же — проверяем форму и порядок числа, а не его хвост
+        mine = await page.locator("#prison .shift").inner_text()
+        assert "Ты сидишь" in mine
+        assert re.search(r"Осталось (03:00:00|02:59:\d\d)", mine), mine
+        assert "Отсидка 1-я, срок 3 ч" in mine
+
+        # И он идёт: через секунду на экране уже другое число
+        first = await page.locator("#prison .shift-clock").inner_text()
+        await page.wait_for_timeout(1200)
+        assert await page.locator("#prison .shift-clock").inner_text() != first
+
+        rows = page.locator("#prison .neighbour")
+        assert await rows.count() == 2
+        names = await rows.locator(".neighbour-name").all_inner_texts()
+        assert "Марла · ты" in names and "Тайлер" in names
+        # Своя строка обведена: себя в списке ищут первым делом
+        assert await page.locator("#prison .neighbour.me").count() == 1
+        said = await page.locator("#prison-body").inner_text()
+        assert "Отсидка 2-я, срок 6 ч" in said, "вторая отсидка длиннее"
+        assert "3, 6, 12, 24 ч" in said
+        await page.evaluate("stopPrisonClock()")
+        await browser.close()
+
+
+async def test_the_court_term_on_the_screen_is_not_a_zero(server, db):
+    """Осуждённый видит свои часы и «по приговору суда», а не «0-я, 0 ч».
+
+    Номер отсидки считает приводы, а не приговоры. Полиция этого бойца
+    не брала ни разу, счётчик нулевой — и экран писал ему «Отсидка 0-я,
+    срок 0 ч.» при двух живых часах, пересчитывая срок обратно по
+    чужой лестнице.
+    """
+    from bot.court_service import lock_up
+    from bot.game.health import now_ts
+    from bot.webapp.prison import build_prison
+    from tests.test_robbery import make_player as a_fighter
+
+    now = now_ts()
+    one = a_fighter(51, "Марла")
+    await db.save_player(one)
+    await lock_up(db, one, 2, now)
+
+    sitting = await db.get_player(51)
+    body = await build_prison(db, sitting, now)
+    card = build_card(sitting, TOKEN, viewer_id=sitting.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.route("**/api/prison*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        ))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "prison")
+        await page.wait_for_selector("#prison-body .shelf")
+
+        said = await page.locator("#prison").inner_text()
+        assert "По приговору суда, срок 2 ч" in said, said
+        assert "Отсидка 0-я" not in said
+        assert "срок 0 ч" not in said
+        assert "сидишь 0-й раз" not in said
+        assert "Тебя посадил суд" in said
+        # Часы при этом идут: срок настоящий, а не нарисованный
+        assert re.search(r"Осталось (02:00:00|01:59:\d\d)", said), said
+        await page.evaluate("stopPrisonClock()")
+        await browser.close()
+
+
+# ---------- война за территории ----------
+
+
+async def war_states(db):
+    """Четыре состояния войны одним заходом: карта, сбор, волна и итог.
+
+    Панель живая, и поодиночке их не собрать: сбор родится только из
+    карты, волна — только из сбора, а итог — только из волны. Поэтому
+    один прогон службы, а снимки с него по дороге.
+    """
+    from bot.turf_war import TurfWar
+    from bot.webapp.turf import build_war
+    from tests.test_turf import NOW, family, stand
+
+    don, squad, _ = await family(db)
+    # Точку берут ногами: отряд собирается у самого дома
+    await stand(db, squad, "casino")
+    don = await db.get_player(don.user_id)
+    war = TurfWar(db)
+    try:
+        board = await build_war(db, don, war, NOW)
+        muster = await war.open_muster(don, "casino", now=NOW)
+        for number in squad[1:3]:
+            await war.join(muster.id, await db.get_player(number))
+        lobby = await build_war(db, don, war, NOW)
+        await war.march(muster.id, don.user_id, now=NOW)
+        siege = await build_war(db, don, war, NOW)
+        # Добиваем штурм до конца: кто кого — неважно, важно, что панель
+        # умеет показать итог
+        for _ in range(400):
+            live = war.siege_of_user(don.user_id)
+            if live is None or live.finished:
+                break
+            for one in list(live.alive_ids):
+                # Последний размен волны разводит бой прямо здесь, и
+                # следующему нажатию уже некуда деваться
+                if live.finished:
+                    break
+                await war.choose(live.id, one, "attack", "head")
+                if live.finished:
+                    break
+                await war.choose(live.id, one, "block", "belly")
+        done = await build_war(db, don, war, NOW)
+    finally:
+        await war.close()
+    return don, board, lobby, siege, done
+
+
+async def open_war(pw, server, don, body, images=False):
+    """Открыть карту войны с готовым ответом и остановить опрос.
+
+    Панель сама ходит на сервер раз в пару секунд; в тесте это лишний
+    шум, и таймер мы гасим сразу после отрисовки.
+
+    `images` — нужны ли картинки. Обычно нет: до бакета из тестов не
+    дотянуться. Но лица нанятых — предмет проверки, и им подсовывается
+    пиксель: упавшая картинка подменяется текстом, и найти её было бы
+    уже нечем.
+    """
+    card = build_card(don, TOKEN, viewer_id=don.user_id)
+    browser, page = await open_page(
+        pw, server, card, turf=body, images=images
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "turf")
+    await page.wait_for_selector(
+        "#turf-body .shelf, #turf-body .spot, #turf-body .raid-board"
+    )
+    await page.evaluate("stopTurfPoll()")
+    return browser, page
+
+
+async def test_the_war_map_shows_the_spots_and_the_call_to_arms(server, db):
+    """Карта войны: точки города, их доход, владелец и кнопка сбора."""
+    don, board, _, _, _ = await war_states(db)
+
+    async with async_playwright() as pw:
+        browser, page = await open_war(pw, server, don, board)
+
+        # Счёт точек берём у города, а не числом: он растёт вместе с
+        # картой, и зашитое число устаревает молча
+        from bot.game.turf import TOTAL_SPOTS
+
+        assert await page.locator("#turf .spot").count() == TOTAL_SPOTS
+        first = page.locator("#turf .spot").first
+        assert "Казино" in await first.locator(".spot-title").inner_text()
+        assert "300" in await first.locator(".spot-income").inner_text()
+        # Ничьих точек не бывает: за пустой стоит городская охрана
+        assert "городская охрана" in await first.locator(".spot-owner").inner_text()
+        assert await first.locator("button").inner_text() == "🚩 Захват"
+
+        # Свои дела — строкой над картой. Первой полкой стоит точка, у
+        # двери которой боец стоит, своя сводка идёт за ней
+        tally = await page.locator("#turf-body .shelf").nth(1).inner_text()
+        assert "Коза Ностра" in tally and "0 из 4" in tally
+        await browser.close()
+
+
+async def test_the_hire_counter_fits_its_cards_on_a_narrow_phone(server, db):
+    """Прилавок найма: кнопка по ширине карточки, лицо целиком.
+
+    Общий `min-width` у кнопок рассчитан на строку во весь экран, а на
+    прилавке их три в ряд — и цена вылезала за свою рамку. Лицо же
+    нарисовано в полный рост, и квадратная рамка срезала ему голову и
+    ноги. Мерим на узком экране: на широком обе беды прячутся.
+    """
+    from bot.hire_service import hire
+    from bot.webapp.turf import build_war
+    from tests.test_turf import NOW
+    from tests.test_police import cop
+
+    officer = await cop(db, 71, "Ragnar", where="pawnshop")
+    officer.credits = 50_000
+    await db.save_player(officer)
+    await db.take_turf("pawnshop", "service", "police", NOW - 3 * 24 * 3600)
+    await hire(db, await db.get_player(71), "patrol_5", now=NOW)
+    officer = await db.get_player(71)
+    board = await build_war(db, officer, None, NOW)
+
+    async with async_playwright() as pw:
+        card = build_card(officer, TOKEN, viewer_id=officer.user_id)
+        browser, page = await open_page(pw, server, card, turf=board)
+        # Лицо в полный рост: вдвое выше своей ширины
+        await page.route(IMAGES, lambda route: route.fulfill(
+            status=200, content_type="image/png", body=TALL_PIXELS
+        ))
+        await page.set_viewport_size({"width": 360, "height": 900})
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "turf")
+        await page.wait_for_selector("#turf-hire .hire-card")
+        await page.evaluate("stopTurfPoll()")
+
+        measured = await page.evaluate("""() => {
+            const cards = [...document.querySelectorAll("#turf-hire .hire-card")];
+            return {
+                spill: cards.map((card) => Math.round(
+                    card.querySelector(".btn").getBoundingClientRect().right
+                    - card.getBoundingClientRect().right
+                )),
+                faces: cards.map((card) => {
+                    const face = card.querySelector(".hire-face");
+                    const box = face.getBoundingClientRect();
+                    return [Math.round(box.width), Math.round(box.height),
+                            face.naturalWidth, face.naturalHeight];
+                }),
+                scroll: document.documentElement.scrollWidth
+                    - document.documentElement.clientWidth,
+            };
+        }""")
+        assert len(measured["spill"]) == 3
+        assert all(one <= 0 for one in measured["spill"]), "кнопка в своей рамке"
+        for width, height, own_width, own_height in measured["faces"]:
+            # Пропорция та же, что у файла: значит, ничего не срезано
+            assert abs(height / width - own_height / own_width) < 0.05
+        assert measured["scroll"] == 0, "и экран вбок не уезжает"
+        await browser.close()
+
+
+async def test_the_spot_panel_says_why_the_deed_is_off(server, db):
+    """Погасшее задержание объясняет себя тем, что есть.
+
+    За бар уже дерутся — второго отряда он не ждёт, и кнопка об этом
+    говорит словом. Неверная причина хуже, чем никакой: с ней уходят с
+    готовым, но ложным ответом.
+    """
+    from bot.hire_service import hire, post
+    from bot.turf_war import TurfWar
+    from bot.webapp.turf import build_war
+    from tests.test_turf import NOW, family, stand
+    from tests.test_police import cop
+
+    don, squad, clan = await family(db)
+    boss = await db.get_player(don.user_id)
+    boss.credits = 20_000
+    await db.save_player(boss)
+    await db.take_turf("bar", "clan", str(clan.id), NOW - 3 * 24 * 3600)
+    await stand(db, [don.user_id], "bar")
+    await hire(db, await db.get_player(don.user_id), "merc_7", now=NOW)
+    mine = (await db.hirelings_of(don.user_id))[0]
+    await post(db, await db.get_player(don.user_id), int(mine["id"]), "bar",
+               now=NOW)
+
+    officer = await cop(db, 94, "Ragnar", where="bar")
+    rival, rivals, _ = await family(
+        db, first=20, name="Псы", sign="silver_wolves"
+    )
+    await stand(db, rivals, "bar")
+
+    war = TurfWar(db)
+    try:
+        await war.open_muster(await db.get_player(rival.user_id), "bar",
+                              now=NOW)
+        board = await build_war(db, officer, war, NOW)
+    finally:
+        await war.close()
+
+    async with async_playwright() as pw:
+        browser, page = await open_war(pw, server, officer, board)
+
+        panel = page.locator("#turf-body .shelf").first
+        assert "Бар" in await panel.inner_text(), "первой полкой — точка"
+        deed = panel.locator("button")
+        assert await deed.inner_text() == "🚔 Задержание"
+        assert await deed.is_disabled(), "второго отряда точка не ждёт"
+        await browser.close()
+
+
+async def test_the_muster_lists_the_squad_and_only_the_leader_marches(server, db):
+    """Сбор отряда: кто записан, сколько ждать и чьи кнопки."""
+    don, _, lobby, _, _ = await war_states(db)
+
+    async with async_playwright() as pw:
+        browser, page = await open_war(pw, server, don, lobby)
+
+        head = await page.locator("#turf-body .shelf").first.inner_text()
+        assert "Отряд на Казино" in head and "3 из 5" in head
+        rows = await page.locator("#turf .muster-row").all_inner_texts()
+        assert len(rows) == 3 and rows[0].startswith("★")
+
+        # Веди отряд старший: остальным остаётся выйти
+        buttons = await page.locator("#turf .muster .btn").all_inner_texts()
+        assert buttons == ["Пошли", "Распустить"]
+
+        # Точку, на которую уже идут, вторым отрядом не берут
+        casino = page.locator("#turf .spot").first
+        assert "уже дерутся" in await casino.locator(".spot-state").inner_text()
+        assert await casino.locator("button").count() == 0
+        await browser.close()
+
+
+async def test_the_siege_shows_both_sides_and_waits_for_the_blow(server, db):
+    """Волна штурма: доска как в групповом бою, прицел и кнопки хода."""
+    don, _, _, siege, _ = await war_states(db)
+
+    async with async_playwright() as pw:
+        browser, page = await open_war(pw, server, don, siege, images=True)
+
+        head = await page.locator("#turf .fight-round").inner_text()
+        assert "Казино — волна 1" in head
+        assert "городская охрана" in await page.locator(
+            "#turf .fight-line"
+        ).first.inner_text()
+
+        # Доска та же, что в групповом бою: слева отряд, справа гарнизон
+        board = page.locator("#turf .raid-board")
+        assert await board.count() == 1
+        assert await board.locator(".raid-you").count() == 1
+        assert "— ты" in await board.locator(".raid-you").inner_text()
+        # Внизу справа тот, кого бьём в этой волне
+        assert await board.locator(".boss-card.mine").count() == 1
+        # У охраны лица, у игроков — нет
+        assert await board.locator(".npc-face").count() == 3
+        assert "Бьём: " in await page.locator("#turf .raid-aim").inner_text()
+
+        # Пока ход не набран, вперёд не пускают
+        go = page.locator("#turf-go")
+        assert await go.is_disabled()
+        await page.locator("#turf .zone-list").first.locator("label").first.click()
+        await page.locator("#turf .zone-list").last.locator("label").first.click()
+        assert await go.is_enabled()
+        await browser.close()
+
+async def test_the_siege_log_reads_newest_first(server, db):
+    """Журнал штурма: слова судьи целиком и свежее сверху, как в рейде."""
+    don, _, _, siege, done = await war_states(db)
+    assert siege["siege"]["log"] == [], "до первого размена судье нечего сказать"
+    said = [line for turn in done["result"]["log"] for line in turn["lines"]]
+    assert said, "штурм прошёл молча"
+
+    async with async_playwright() as pw:
+        # Пустой журнал не рисуем вовсе: заголовок без строк — мусор
+        browser, page = await open_war(pw, server, don, siege)
+        assert await page.locator("#turf .fight-log").count() == 0
+        await browser.close()
+
+        browser, page = await open_war(pw, server, don, done)
+        lines = await page.locator("#turf .fight-log .log-line").all_inner_texts()
+        assert len(lines) == len(said)
+        # Первой строкой — последнее, что сказал судья
+        assert lines[0] == said[-1]
+        assert lines[-1] == said[0]
+        await browser.close()
+
+
+async def test_the_finished_siege_shows_its_outcome_and_its_log(server, db):
+    """Итог штурма: чем кончилось, кто остался и весь разбор боя."""
+    don, _, _, _, done = await war_states(db)
+    result = done["result"]
+    assert result is not None and result["finished"] is True
+
+    async with async_playwright() as pw:
+        browser, page = await open_war(pw, server, don, done)
+
+        head = await page.locator("#turf .fight-round").inner_text()
+        assert "Точка взята" in head or "Точка отбита" in head
+        assert "волн" in await page.locator("#turf .fight-line").first.inner_text()
+
+        # Итог словами стоит над кнопкой, а не в шапке
+        said = await page.locator("#turf .fight-finish .log-line").all_inner_texts()
+        assert said, "итог назван словами"
+
+        # Журнал боя — то, ради чего итог и открывают
+        lines = await page.locator("#turf .fight-log .log-line").all_inner_texts()
+        assert lines, "журнал пуст"
+        assert await page.locator("#turf .fight-log .shelf-head").inner_text() == (
+            "Ход штурма"
+        )
+        # Доска видна и после боя: по ней и понятно, кто кого
+        assert await page.locator("#turf .raid-board").count() == 1
+        assert await page.locator(
+            "#turf .fight-finish .btn"
+        ).inner_text() == "Понятно"
+        await browser.close()
+
+
+async def test_the_turf_screen_hires_and_posts_the_guard(server, db):
+    """Наём на карте войны: счёт, резерв, прилавок и охрана точки."""
+    from bot.game.health import now_ts
+    from bot.hire_service import hire, post
+    from bot.webapp.turf import build_war
+    from tests.test_robbery import family, stand
+
+    moment = now_ts()
+    don, squad, clan = await family(db)
+    await stand(db, squad, "bar")
+    await db.take_turf("bar", "clan", str(clan.id), moment - 5 * 3600)
+    boss = await db.get_player(don.user_id)
+    boss.credits = 20_000
+    await db.save_player(boss)
+    boss = await db.get_player(don.user_id)
+    await hire(db, boss, "merc_9", now=moment)
+    await hire(db, await db.get_player(don.user_id), "merc_7", now=moment)
+    mine = await db.hirelings_of(don.user_id)
+    await post(db, await db.get_player(don.user_id), int(mine[0]["id"]),
+               "bar", now=moment)
+    boss = await db.get_player(don.user_id)
+    board = await build_war(db, boss, None, moment)
+
+    async with async_playwright() as pw:
+        browser, page = await open_war(pw, server, boss, board, images=True)
+
+        heads = await page.locator("#turf-body .shelf-head").all_inner_texts()
+        assert "Наёмники" in heads
+
+        # Точка под ногами стоит первой полкой: кто на ней стоит и от
+        # кого — это и есть ответ на «ставить ли ещё одного»
+        here = page.locator("#turf-body .shelf").first
+        said = await here.inner_text()
+        assert "Бар" in said and "1 из 10" in said and "Громила [9]" in said
+        assert "от Дон-1" in said, "видно, чей это человек"
+
+        panel = page.locator("#turf-hire")
+        assert "На руках 2 из 5" in await panel.inner_text()
+        rows = await panel.locator(".neighbour").all_inner_texts()
+        assert len(rows) == 2
+        assert "на точке" in rows[0] and "в резерве" in rows[1]
+        # Своего второго на ту же точку не ставят, и так и сказано
+        assert "уже стоит человек" in await panel.inner_text()
+
+        # Прилавок: три карточки с лицами и ценами
+        cards = panel.locator(".hire-card")
+        assert await cards.count() == 3
+        assert await cards.locator(".hire-face").count() == 3
+        prices = await cards.locator(".btn").all_inner_texts()
+        assert "300" in prices[0] and "1\u00a0200" in prices[2]
+        # И лица едут из папки нанятых, а не откуда попало
+        first = await cards.locator(".hire-face").first.get_attribute("src")
+        assert "/avatars/npc/" in first
+
+        # В резерве лицо тоже стоит, рядом с именем
+        assert await panel.locator(".neighbour .npc-face").count() == 2
+
+        # Строка точки считает выставленных, а не городскую охрану
+        here = page.locator("#turf .spot").first
+        assert "охрана: 1 из 10" in await here.locator(".spot-owner").inner_text()
+        # И у своей точки под ногами — кнопка к прилавку: иначе про
+        # охрану не догадываются вовсе
+        assert await here.locator(".btn").inner_text() == "🛡 Охрана"
+        casino = page.locator("#turf .spot").nth(1)
+        assert "городская охрана" in await casino.locator(
+            ".spot-owner"
+        ).inner_text()
+        await browser.close()
+
+
+async def test_the_won_spot_offers_the_guard_right_away(server, db):
+    """Взял точку — прилавок охраны под итогом, а не где-то потом.
+
+    Итог тут поддельный нарочно: чем кончился настоящий штурм, решает
+    бросок, а предмет проверки — что победитель видит, куда ставить
+    человека, не выходя с экрана.
+    """
+    from bot.game.health import now_ts
+    from bot.hire_service import hire
+    from bot.webapp.turf import build_war
+    from tests.test_robbery import family, stand
+
+    moment = now_ts()
+    don, squad, clan = await family(db)
+    await stand(db, squad, "bar")
+    await db.take_turf("bar", "clan", str(clan.id), moment)
+    boss = await db.get_player(don.user_id)
+    boss.credits = 20_000
+    await db.save_player(boss)
+    await hire(db, await db.get_player(don.user_id), "merc_7", now=moment)
+    boss = await db.get_player(don.user_id)
+    body = await build_war(db, boss, None, moment)
+    body["result"] = {
+        "finished": True,
+        "won": True,
+        "spot_title": "Бар",
+        "wave": 3,
+        "summary": ["Бар взят за 3 волн.",
+                    "Точка пустая и дохода не даёт: выставь на ней человека."],
+    }
+
+    async with async_playwright() as pw:
+        browser, page = await open_war(pw, server, boss, body)
+
+        # Итог на месте, и сразу под ним — прилавок с резервом
+        assert "Точка взята" in await page.locator(
+            "#turf .fight-round"
+        ).inner_text()
+        said = await page.locator("#turf .fight-finish .log-line").all_inner_texts()
+        assert any("выставь" in one for one in said)
+
+        shelf = page.locator("#turf-hire")
+        assert await shelf.count() == 1
+        assert "Бар за вами" in await shelf.locator(".hire-call").inner_text()
+        assert "из резерва" in await shelf.locator(".hire-call").inner_text()
+        buttons = await shelf.locator(".neighbour .btn").all_inner_texts()
+        assert buttons == ["Выставить здесь"]
+        await browser.close()
+
+
+async def test_the_board_sends_the_fighter_to_the_house(server, db):
+    """Из особняка — только смотреть: кнопки сбора нет ни у одной точки."""
+    from tests.test_turf import NOW, family
+    from bot.webapp.turf import build_war
+
+    don, _, _ = await family(db)
+    board = await build_war(db, don, None, NOW)
+
+    async with async_playwright() as pw:
+        browser, page = await open_war(pw, server, don, board)
+
+        assert await page.locator("#turf .spot button").count() == 0
+        states = await page.locator("#turf .spot-state").all_inner_texts()
+        assert all("дойди до дома" in one for one in states)
+        assert "Захват берут на месте" in await page.locator(
+            "#turf-note"
+        ).inner_text()
+        await browser.close()
+
+
+async def test_the_city_map_marks_the_spots_and_offers_the_muster(server, db):
+    """Карта города: отметка у названия точки и плашка под ногами."""
+    from bot.webapp.citymap import build_map
+    from bot.webapp.turf import build_war, map_marks
+    from tests.test_turf import NOW, family, stand
+
+    don, squad, _ = await family(db)
+    await stand(db, squad, "bar")
+    don = await db.get_player(don.user_id)
+    city = build_map(don, raids={}, turf=map_marks(await build_war(db, don, None, NOW)))
+    card = build_card(don, TOKEN, viewer_id=don.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, city=city)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-map").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+        await page.wait_for_selector(".zone-house")
+
+        # Плашка под ногами: отсюда и собирают отряд. Это чип в углу —
+        # жетон владельца и кнопка, без названия и дохода: дом подписан
+        # на самой карте, а плашка висит поверх города
+        band = page.locator("#map-turf")
+        assert await band.is_visible()
+        said = await band.inner_text()
+        assert "⚪️" in said
+        assert "Бар" not in said and "90" not in said
+        assert await page.locator("#turf-call").inner_text() == "🚩 Захват"
+
+        # Стоит она в самом правом нижнем углу карты и занимает меньше
+        # половины ширины: закрывать город ей нечем
+        chip = await band.bounding_box()
+        screen = await page.locator("#map").bounding_box()
+        assert chip["x"] + chip["width"] >= screen["x"] + screen["width"] - 10
+        assert chip["width"] < screen["width"] / 2
+        # И прижата ко дну: над панелью вкладок, но не выше неё вдвое
+        tabs = await page.locator("#bar").bounding_box()
+        assert chip["y"] + chip["height"] <= tabs["y"]
+        assert chip["y"] + chip["height"] >= tabs["y"] - 60
+
+        # И нажатия сквозь неё проходят: иначе она закрывала бы дверь
+        # соседнего дома, и войти в него было бы нельзя
+        assert await band.evaluate(
+            "(box) => getComputedStyle(box).pointerEvents"
+        ) == "none"
+        assert await page.locator("#turf-call").evaluate(
+            "(go) => getComputedStyle(go).pointerEvents"
+        ) == "auto"
+
+        # Отметка стоит перед названием дома, а не строкой под ним
+        bar = page.locator(".zone-house", has_text="Бар").first
+        assert await bar.locator(".zone-sign").text_content() == "📍 ⚪️ Бар"
+        # Подписей с владельцем и доходом под домами нет вовсе
+        signs = await page.locator(".zone-sign").all_text_contents()
+        assert not any("/сут" in one for one in signs)
+        await browser.close()
+
+
+async def test_the_map_wears_the_badge_of_the_family_that_holds_it(server, db):
+    """У названия дома висит знак той семьи, что его держит.
+
+    Шляпой на всех кланов не обойтись: по ней не видно, чья это точка,
+    а знак для того и рисовали. У города свой значок, у ничьего дома
+    знака нет вовсе — там кружок словом.
+    """
+    from bot.webapp.citymap import build_map
+    from bot.webapp.turf import build_war, map_marks
+    from tests.test_turf import NOW, family, stand
+
+    from tests.test_turf import patrolled
+
+    don, squad, clan = await family(db)
+    await db.take_turf("casino", "clan", str(clan.id), NOW)
+    # Городскую точку держит патрульный: без него она городская и так
+    await patrolled(db, "pawnshop", user_id=77, when=NOW)
+    await stand(db, squad, "casino")
+    don = await db.get_player(don.user_id)
+    city = build_map(don, raids={}, turf=map_marks(await build_war(db, don, None, NOW)))
+    card = build_card(don, TOKEN, viewer_id=don.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, city=city, images=True)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-map").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+        await page.wait_for_selector(".zone-badge")
+
+        casino = page.locator(".zone-house", has_text="Казино").first
+        badge = await casino.locator(".zone-badge").get_attribute("href")
+        assert badge.endswith("/clans/black_ravens.png"), "знак своей семьи"
+        # Шляпы в подписи больше нет: её заменил знак
+        assert "🎩" not in await casino.locator(".zone-sign").text_content()
+        # Своя точка подсвечена зелёным
+        assert "ours" in await casino.locator(".zone-sign").get_attribute("class")
+
+        shop = page.locator(".zone-house", has_text="Комиссионный").first
+        assert (await shop.locator(".zone-badge").get_attribute("href")).endswith(
+            "/services/police.png"
+        )
+        # Жетон стоит слева от подписи, а не поверх неё
+        sign = await shop.locator(".zone-sign").bounding_box()
+        mark = await shop.locator(".zone-badge").bounding_box()
+        assert mark["x"] + mark["width"] <= sign["x"] + 1
+        await browser.close()
+
+
+async def test_the_map_marks_the_neighbours_without_a_band(server, db):
+    """Стоишь не на точке — плашки нет, а отметка соседней точки на месте."""
+    from bot.webapp.citymap import build_map
+    from bot.webapp.turf import build_war, map_marks
+    from tests.test_turf import NOW, family, stand
+
+    don, squad, _ = await family(db)
+    # Клуб и оружейный стоят в одном районе: клуб не точка, оружейный точка
+    await stand(db, squad, "fight_club")
+    don = await db.get_player(don.user_id)
+    city = build_map(don, raids={}, turf=map_marks(await build_war(db, don, None, NOW)))
+    card = build_card(don, TOKEN, viewer_id=don.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, city=city)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-map").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+        await page.wait_for_selector(".zone-house")
+
+        assert await page.locator("#map-turf").is_hidden()
+        # Отметка соседней точки на месте — и это всё, что карта о ней
+        # говорит: владельца и доход смотрят в особняке
+        # (подпись нарисована в SVG, а у него нет inner_text)
+        shop = page.locator(".zone-house", has_text="Оружейный магазин").first
+        assert await shop.locator(".zone-sign").text_content() == (
+            "⚪️ Оружейный магазин"
+        )
+        # А клуб не точка, и отметки у него нет вовсе
+        club = page.locator(".zone-house", has_text="Бойцовский клуб").first
+        assert (await club.locator(".zone-sign").text_content()).startswith(
+            "📍 Бойцовский клуб"
+        )
+        await browser.close()
+
+async def test_the_stairwell_shows_what_is_free_and_what_is_taken(server):
+    """Подъезд: этажи, цены, занятые двери с ником жильца.
+
+    Экран один на все четыре дома, и по нему сразу видно и что сдаётся,
+    и к какой двери стучаться бессмысленно.
+    """
+    player = make_player("residential_apartment")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "flats")
+        await page.wait_for_selector("#flats-stairs .shelf")
+
+        assert "Жилой дом №1" in await page.locator("#flats-title").inner_text()
+        # Вкладка своей квартиры не стоит вовсе: бездомному в ней нечего
+        assert await page.locator("#flats-tabs .chip").all_inner_texts() == [
+            "🚪 Подъезд"
+        ]
+        heads = await page.locator("#flats-stairs .shelf-head").all_inner_texts()
+        assert heads[0] == "4 этажа · квартир 16 · месяц 30 дней"
+        assert heads[1:] == ["1-й этаж", "2-й этаж", "3-й этаж", "4-й этаж"]
+
+        # Что сдают: три строки с ценой и свободными местами
+        offers = await page.locator(".offer-row").all_inner_texts()
+        assert "300 💰/мес" in offers[0] and "6 вещей" in offers[0]
+        assert "свободно 7 из 8" in offers[0], "одну однокомнатную уже сняли"
+        assert "500 💰/мес" in offers[2] and "18 вещей" in offers[2]
+
+        # Первый этаж: две однокомнатные, двушка и трёшка
+        floor = page.locator("#flats-stairs .shelf", has_text="1-й этаж")
+        rows = await floor.locator(".flat-row .flat-kind").all_inner_texts()
+        assert rows == [
+            "однокомнатная · 6 вещей", "однокомнатная · 6 вещей",
+            "двухкомнатная · 12 вещей", "трёхкомнатная · 18 вещей",
+        ]
+        # Вторая квартира занята, и видно кем
+        taken = floor.locator(".flat-row", has_text="кв. 2")
+        assert await taken.locator(".flat-tenant").inner_text() == "Марла"
+        assert await taken.locator(".btn").count() == 0
+
+        # А свободную снимают с вопросом и за свои
+        await page.evaluate(
+            """() => {
+                window.asked = [];
+                window.askConfirm = (title) => {
+                    window.asked.push(title);
+                    return Promise.resolve(true);
+                };
+                window.flatAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        free = floor.locator(".flat-row", has_text="кв. 4")
+        assert await free.locator(".btn").inner_text() == "Снять · 500 💰"
+        await free.locator(".btn").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.asked") == ["Снять кв. 4?"]
+        assert await page.evaluate("window.sent") == {"action": "rent", "flat": 4}
+        await browser.close()
+
+
+async def test_the_tenant_gets_a_safe_and_a_pantry(server):
+    """Своя квартира: срок, сейф и кладовая на шесть мест за комнату."""
+    player = make_player("residential_apartment")
+    player.flat = Lease(
+        id=1, user_id=player.user_id, house="residential_apartment",
+        number=3, rooms=2, paid_until=now_ts() + 1000,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    flats = flats_state(number=3, vault=700, kept=("pipe",))
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, flats=flats)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "flats")
+        await page.wait_for_selector("#flats-stairs .shelf")
+
+        assert await page.locator("#flats-tabs .chip").all_inner_texts() == [
+            "🚪 Подъезд", "🏠 Моя квартира"
+        ]
+        # Своя дверь в подъезде помечена галочкой и ведёт на свою вкладку
+        mine = page.locator(".flat-row", has_text="кв. 3")
+        assert "✅ кв. 3" in await mine.inner_text()
+        await mine.locator(".btn", has_text="Моя").click()
+        await page.wait_for_selector("#flats-home:not(.hidden)")
+
+        heads = await page.locator("#flats-home .shelf-head").all_inner_texts()
+        assert heads == [
+            "кв. 3 · двухкомнатная", "Сейф квартиры", "Кладовая · 1 из 12",
+            "🅿️ Место под машину · 0 из 1",
+        ]
+        assert await page.locator(".vault-sum").inner_text() == "700 💰"
+        assert "Оплачена до" in await page.locator(".lease-term").inner_text()
+        # Полок двенадцать: одна занята, остальные свободны
+        assert await page.locator("#pantry-grid .shelf-slot").count() == 12
+        assert await page.locator("#pantry-grid .shelf-slot.free").count() == 11
+
+        await page.evaluate(
+            """() => {
+                window.askConfirm = () => Promise.resolve(true);
+                window.flatAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        # Сейф спрашивает сумму окном
+        await page.locator("#flats-home .btn", has_text="Внести").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        await page.fill("#vault-sum", "250")
+        await page.locator("#sheet-list .btn", has_text="Подтвердить").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {
+            "action": "deposit", "amount": 250
+        }
+
+        # Вещь с полки забирают тем же окном
+        await page.evaluate("() => { window.sent = null; }")
+        await page.locator("#pantry-grid .shelf-slot:not(.free)").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        await page.locator("#sheet-list .btn", has_text="Забрать себе").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {"action": "take", "item": 1}
+
+        # А на свободную полку кладут из рюкзака
+        await page.evaluate("() => { window.sent = null; }")
+        await page.locator("#pantry-grid .shelf-slot.free").first.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert "Свободных мест: 11" in await page.locator("#sheet-note").inner_text()
+        await page.locator("#sheet-list .btn", has_text="Положить").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {"action": "stash", "item": 1}
+
+        # И выселение спрашивает подтверждение
+        await page.evaluate("() => { window.sent = null; }")
+        await page.locator("#flats-home .btn", has_text="Выселиться").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {"action": "leave"}
+        await browser.close()
+
+
+async def test_the_overdue_flat_is_locked_but_still_his(server):
+    """Срок вышел — строка тревожная, а сейф и кладовая не открываются."""
+    player = make_player("residential_apartment")
+    player.flat = Lease(
+        id=1, user_id=player.user_id, house="residential_apartment",
+        number=3, rooms=2, paid_until=now_ts() - 100,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    flats = flats_state(number=3, vault=700, kept=("pipe",), paid=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, flats=flats)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "flats")
+        await page.wait_for_selector("#flats-stairs .shelf")
+        await page.locator("#flats-tabs .chip", has_text="Моя квартира").click()
+        await page.wait_for_selector("#flats-home:not(.hidden)")
+
+        term = page.locator(".lease-term")
+        assert "Аренда кончилась" in await term.inner_text()
+        assert "late" in (await term.get_attribute("class"))
+        assert "освободят через" in await term.inner_text()
+
+        # Кнопки сейфа стоят, но не нажимаются
+        safe = page.locator("#flats-home .shelf", has_text="Сейф квартиры")
+        assert await safe.locator(".btn", has_text="Внести").is_disabled()
+        assert await safe.locator(".btn", has_text="Снять").is_disabled()
+        # Продлить — можно: за этим сюда и приходят
+        assert not await page.locator(
+            "#flats-home .btn", has_text="Продлить"
+        ).is_disabled()
+        await browser.close()
+
+
+def num_space(text: str) -> str:
+    """Число так, как его пишет страница: разряды неразрывным пробелом."""
+    return text.replace(" ", "\u00a0")
+
+
+async def test_the_post_office_sends_a_parcel_in_three_fields(server):
+    """Отправка: ник, наложенный платёж, срок — и вещь из рюкзака.
+
+    Сначала вещь выбирают, и только потом кнопка становится «Отправить»:
+    посылка уходит насовсем, и нажать её мимоходом нельзя.
+    """
+    player = make_player("post_office")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "post")
+        await page.wait_for_selector("#post-send .shelf")
+
+        assert await page.locator("#post-tabs .chip").all_inner_texts() == [
+            "📦 Отправить", "📬 Посылки"
+        ]
+        heads = await page.locator("#post-send .shelf-head").all_inner_texts()
+        assert heads == ["Отправить посылку · 5 💰"]
+        # Три поля с подписями: кому, почём и насколько
+        assert await page.locator("#post-send .field-head").all_inner_texts() == [
+            "Кому отправить", "Наложенный платёж, 💰 (0 — подарок)",
+            "Срок хранения",
+        ]
+        assert await page.locator("#post-terms .chip").all_inner_texts() == [
+            "5 дней", "30 дней", "До востребования"
+        ]
+        assert await page.locator("#post-terms .chip.on").inner_text() == "30 дней"
+
+        await page.evaluate(
+            """() => {
+                window.askConfirm = (title, message) => {
+                    window.asked = [title, message];
+                    return Promise.resolve(true);
+                };
+                window.postAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await page.fill("#post-who", "Марла")
+        await page.fill("#post-cod", "150")
+        await page.locator("#post-terms .chip", has_text="5 дней").click()
+
+        # Первое нажатие выбирает вещь, второе отправляет
+        thing = page.locator("#post-send .thing", has_text="Бандана")
+        await thing.locator(".btn").click()
+        assert await thing.locator(".btn").inner_text() == "Отправить"
+        assert await page.evaluate("window.sent") is None
+        await thing.locator(".btn").click()
+        await page.wait_for_function("() => window.sent")
+
+        asked = await page.evaluate("window.asked")
+        assert asked[0] == "Отправить «Бандана»?"
+        assert "Марла" in asked[1] and "150 💰" in asked[1] and "5 дней" in asked[1]
+        assert "не возвращаются" in asked[1]
+        assert await page.evaluate("window.sent") == {
+            "action": "send", "item": 1, "nickname": "Марла",
+            "price": 150, "term": "short",
+        }
+        await browser.close()
+
+
+async def test_the_parcels_shelf_shows_who_sent_what(server):
+    """Полка посылок: от кого, почём, сколько лежать — и две кнопки."""
+    player = make_player("post_office")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    post = post_state(
+        inbox=(a_parcel(1, "pipe", price=150), a_parcel(2, "sneakers", days=0)),
+        outbox=(a_parcel(3, "club_tee", mine=True, days=30),),
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, post=post)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "post")
+        await page.wait_for_selector("#post-send .shelf")
+
+        # Счётчик на вкладке: посылок две
+        assert "Посылки · 2" in await page.locator(
+            "#post-tabs .chip"
+        ).nth(1).inner_text()
+        await page.locator("#post-tabs .chip", has_text="Посылки").click()
+        await page.wait_for_selector("#post-parcels:not(.hidden)")
+
+        heads = await page.locator("#post-parcels .shelf-head").all_inner_texts()
+        assert heads == ["Тебе · 2", "Отправлено · 1"]
+
+        cod = page.locator("#post-parcels .parcel", has_text="Деревянная бита")
+        assert "От: Марла" in await cod.inner_text()
+        assert "Наложенный платёж: 150 💰" in await cod.inner_text()
+        assert "лежит ещё 5 дней" in await cod.inner_text()
+        assert await cod.locator(".btn").all_inner_texts() == [
+            "Забрать · 150 💰", "Отказаться"
+        ]
+
+        gift = page.locator("#post-parcels .parcel", has_text="Кеды")
+        assert "Подарок · до востребования" in await gift.inner_text()
+
+        # Отправленное — только память: кнопок на нём нет
+        sent = page.locator("#post-parcels .parcel", has_text="Клубная футболка")
+        assert "Кому: Марла" in await sent.inner_text()
+        assert await sent.locator(".btn").count() == 0
+
+        await page.evaluate(
+            """() => {
+                window.askConfirm = () => Promise.resolve(true);
+                window.postAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await cod.locator(".btn", has_text="Забрать").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {"action": "take", "parcel": 1}
+
+        await page.evaluate("() => { window.sent = null; }")
+        await cod.locator(".btn", has_text="Отказаться").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {"action": "refuse", "parcel": 1}
+        await browser.close()
+
+
+async def test_the_statement_lists_the_card_and_its_period(server):
+    """Выписка: строки со знаком, два итога и выбор срока.
+
+    Срок выбирают пузырями, и каждый из них — новый запрос: считает
+    сервер, а страница только спрашивает.
+    """
+    player = make_player("bank")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    bank = bank_state()
+    bank["statement"] = statement_state(
+        rows=(
+            (-120, "pay", "Магазин одежды", 1_880, "Покупка Кожаная куртка"),
+            (900, "wage", "Жалованье: Бармен", 2_000),
+            (-250, "sent", "Перевод: Марла", 1_100),
+        )
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, bank=bank)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bank")
+        await page.wait_for_selector("#bank-tabs .chip")
+
+        await page.locator("#bank-tabs .chip", has_text="Выписка").click()
+        await page.wait_for_selector(".log-list")
+
+        assert await page.locator("#log-periods .chip").all_inner_texts() == [
+            "7 дней", "30 дней", "3 месяца", "Год", "Всё время", "Свой срок"
+        ]
+        assert await page.locator("#log-periods .chip.on").inner_text() == "30 дней"
+        assert "Выписка за 30 дней" in await page.locator(
+            "#bank-body .shelf-head"
+        ).inner_text()
+
+        titles = await page.locator(".log-sum-title").all_inner_texts()
+        assert titles == ["Поступления", "Списания"]
+        sums = await page.locator(".log-sum-money").all_inner_texts()
+        assert sums == ["+900 💰", "−370 💰"]
+
+        # Итог прихода — не кнопка кошелька: голым словом `plus` в этом
+        # апе зовётся круглая синяя «пополнить», и сумма носила её одежду
+        plus = page.locator(".log-sum.log-plus")
+        assert await plus.count() == 1
+        assert await page.locator(".log-sum.plus").count() == 0
+        look = await plus.locator(".log-sum-money").evaluate(
+            """node => {
+                const style = getComputedStyle(node);
+                return {round: style.borderTopLeftRadius, wide: style.width};
+            }"""
+        )
+        assert look["round"] == "0px", "сумма прикинулась круглой кнопкой"
+        # А сама плитка — выше заголовка: сумма стоит внутри рамки
+        tall = await plus.evaluate(
+            "node => node.getBoundingClientRect().height"
+        )
+        assert tall > 40, f"рамка схлопнулась до заголовка: {tall}"
+
+        # И страница просит не искать в суммах телефонных номеров:
+        # «+1 031 💰» телефон читает как номер с кодом страны
+        assert "telephone=no" in await page.locator(
+            'meta[name="format-detection"]'
+        ).get_attribute("content")
+        assert await page.locator('a[href^="tel:"]').count() == 0
+
+        rows = page.locator(".log-row")
+        assert await rows.count() == 3
+        # Три строки сверху вниз: где, когда, за что
+        assert await rows.nth(0).locator(".log-note").inner_text() == (
+            "Магазин одежды"
+        )
+        assert "Оплата" in await rows.nth(0).locator(".log-when").inner_text()
+        assert await rows.nth(0).locator(".log-about").inner_text() == (
+            "Покупка Кожаная куртка"
+        )
+        # А у операции без комментария третьей строки нет вовсе
+        assert await rows.nth(1).locator(".log-about").count() == 0
+        assert await rows.nth(0).locator(".log-sum-value").inner_text() == "−120 💰"
+        assert await rows.nth(0).locator(".log-rest").inner_text() == (
+            "остаток " + num_space("1 880") + " 💰"
+        )
+        assert await rows.nth(1).locator(".log-sum-value").inner_text() == "+900 💰"
+        assert "наличные" in (await page.locator(
+            "#bank-body .screen-note"
+        ).last.inner_text()).lower()
+
+        # Пузырь срока — это новый запрос к банку, с числом дней в адресе
+        asked = []
+        page.on("request", lambda one: asked.append(one.url))
+        await page.locator("#log-periods .chip", has_text="Всё время").click()
+        await page.wait_for_function(
+            "() => bankDays === 0", timeout=3_000
+        )
+        assert any("days=0" in url for url in asked)
+
+        # «Свой срок» спрашивает две даты и шлёт границы
+        await page.locator("#log-periods .chip", has_text="Свой срок").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        await page.fill("#log-since", "2026-09-01")
+        await page.fill("#log-until", "2026-09-30")
+        await page.locator("#sheet-list .btn", has_text="Показать").click()
+        await page.wait_for_function("() => bankSince > 0", timeout=3_000)
+        assert any("since=" in url and "until=" in url for url in asked)
+        await browser.close()
+
+
+async def test_the_invite_window_stands_over_the_game(server):
+    """Приглашение показывают окном при входе — ответить надо один раз."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["invites"] = [
+        {
+            "clan_id": 7,
+            "user_id": player.user_id,
+            "kind": "invite",
+            "clan": "Коза Ностра",
+            "emblem": "",
+            "by": "Марла",
+            "when": "11.10.26 12:00",
+        }
+    ]
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#invite-veil:not(.hidden)")
+        assert "зовут в семью" in await page.locator("#invite-head").inner_text()
+        note = await page.locator("#invite-note").inner_text()
+        assert "Марла" in note and "Коза Ностра" in note
+        assert await page.locator("#invite-buttons .btn").all_inner_texts() == [
+            "Вступить", "Отказаться"
+        ]
+
+        # Отказ закрывает окно и больше за сеанс его не поднимает
+        await page.locator("#invite-buttons .btn").nth(1).click()
+        await page.locator("#invite-veil").wait_for(state="hidden")
+        await page.evaluate("card => showInvites(card.invites)", card)
+        assert await page.locator("#invite-veil").is_hidden()
+        await browser.close()
+
+
+async def test_the_club_list_wears_the_marks_of_the_family(server):
+    """Знак мафии стоит у ника и в списке клуба — там его и видят чужие."""
+    from bot.webapp.card import build_club
+
+    player = make_player()
+    mafioso = make_player()
+    mafioso.user_id = 43
+    mafioso.nickname = "Марла"
+    mafioso.clan = Standing(
+        clan=Clan(id=1, name="Коза Ностра", don=43, created_at=now_ts(),
+                  sign="black_ravens", members=3),
+        rank=Rank.DON,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    club = build_club([player, mafioso], player.user_id, TOKEN)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, club=club)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        # Кнопка внизу открывает справочную, и открывается она сразу на
+        # рейтинге: списку бойцов больше не надо искать свой раздел
+        await page.wait_for_selector(".fighter")
+
+        mine = page.locator(".fighter", has_text="Растафарайчик")
+        assert await mine.locator(".clan-sign").count() == 0
+        theirs = page.locator(".fighter", has_text="Марла")
+        assert await theirs.locator(".clan-sign").count() == 1
+        assert "Коза Ностра" in await theirs.locator(".clan-sign").get_attribute(
+            "title"
+        )
+        await browser.close()
+
+
+async def test_the_barman_stands_on_the_counter_with_his_mark(server):
+    """Бармен нарисован поверх интерьера, и значок над ним зовёт подойти.
+
+    Картинка — она же кнопка: к бармену подходят, нажав на бармена, а не
+    на строку под ним. Значок говорит, стоит ли вообще подходить.
+    """
+    player = make_player("bar")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, bar=bar_state(done=(), images=True), images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "tavern")
+        await page.wait_for_selector("#tavern-body .talk, #tavern-body .shelf")
+
+        # Бармен лежит внутри рамки вида изнутри, а не рядом с ней
+        assert await page.locator("#tavern-interior #tavern-npc").count() == 1
+        npc = page.locator("#tavern-npc")
+        assert await npc.evaluate("node => node.tagName") == "BUTTON"
+        assert "У бармена есть работа" in (await npc.get_attribute("title"))
+        # Есть что предложить — восклицательный знак
+        assert await page.locator("#tavern-npc-mark").inner_text() == "❗"
+        # И кошелёк в шапке: за задания бармен платит
+        assert "214" in num_space(
+            await page.locator("#shop-purse-tavern").inner_text()
+        )
+
+        # Стоит он правее середины картинки, но не в самом углу: место
+        # считается по его центру, чтобы не зависеть от ширины png
+        where = await page.evaluate(
+            """() => {
+                const view = document.getElementById('tavern-interior')
+                    .getBoundingClientRect();
+                const him = document.getElementById('tavern-npc')
+                    .getBoundingClientRect();
+                return (him.x + him.width / 2 - view.x) / view.width;
+            }"""
+        )
+        assert 0.55 < where < 0.75, f"бармен стоит не там: {where}"
+        await browser.close()
+
+
+async def test_the_barman_offers_the_first_quest_and_the_fighter_answers(server):
+    """Разговор: реплика бармена, награда и два ответа голосом бойца."""
+    player = make_player("bar")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, bar=bar_state(done=())
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "tavern")
+        await page.wait_for_selector("#tavern-body .talk")
+
+        talk = page.locator("#tavern-body .talk")
+        assert await talk.locator(".talk-who").inner_text() == (
+            "Бармен «Последней капли»"
+        )
+        # Знакомство идёт перед первым заданием, и ровно один раз
+        text = await talk.locator(".talk-text").inner_text()
+        assert "Новое лицо" in text and "клуба" in text
+        # Награда перечисляется по частям: за бой платят опытом, а
+        # доплату за победу обещают отдельно
+        prize = await talk.locator(".talk-prize").inner_text()
+        assert "+50 опыта" in prize and "+10 💰 за победу" in prize
+        # Ответы одни на все двадцать заданий: это служебные кнопки
+        assert await talk.locator(".talk-replies .btn").all_inner_texts() == [
+            "Беру задание", "Позже"
+        ]
+
+        # «Берусь» уходит на сервер кодом задания
+        await page.evaluate(
+            """() => {
+                window.barAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await talk.locator(".talk-replies .btn").first.click()
+        await page.wait_for_function("() => window.sent")
+        assert (await page.evaluate("window.sent"))["action"] == "take"
+        assert (await page.evaluate("window.sent"))["quest"] == "ring"
+        await browser.close()
+
+
+async def test_the_taken_quest_waits_on_the_counter(server):
+    """Задание на руках: бармен ждёт, разговор свёрнут, дело на виду."""
+    player = make_player("bar")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, bar=bar_state(done=("ring",), taken="pro")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "tavern")
+        await page.wait_for_selector("#tavern-body .shelf")
+
+        assert await page.locator("#tavern-npc-mark").inner_text() == "🕓"
+        assert "Задания бармена: 1 из 20." in await page.locator(
+            "#tavern-note"
+        ).inner_text()
+        # Разговора нет: к бармену с делом подходят сами
+        assert await page.locator("#tavern-body .talk").count() == 0
+        heads = await page.locator("#tavern-body .shelf-head").all_inner_texts()
+        assert heads == ["Бармен «Последней капли»", "Сейчас на руках"]
+        task = page.locator("#tavern-body .quest")
+        assert await task.locator(".quest-mark").inner_text() == "🕓"
+        assert await task.locator(".quest-title").inner_text() == (
+            "За что платят звёздами"
+        )
+
+        # «Подойти к стойке» раскрывает разговор, и бармен напоминает о деле
+        await page.locator(".btn", has_text="Подойти к стойке").click()
+        await page.wait_for_selector("#tavern-body .talk")
+        hint = await page.locator(".talk-text").inner_text()
+        # Сперва «пока не всё», потом чем именно: напоминание без этой
+        # строки читалось бы как новое задание
+        assert "Пока не всё" in hint
+        assert "элитном магазине" in hint
+        assert await page.locator(".talk-replies .btn").all_inner_texts() == [
+            "Отойти"
+        ]
+        await browser.close()
+
+
+async def test_the_barman_asks_his_three_questions(server):
+    """Сходил в элитный магазин — бармен спрашивает, и ответы нумерованы."""
+    player = make_player("bar")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    bar = bar_state(done=("ring",), taken="pro", marks=("visit:premium",))
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, bar=bar)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "tavern")
+        await page.wait_for_selector("#tavern-body .talk")
+
+        talk = page.locator("#tavern-body .talk")
+        assert "Сколько опыта за бой" in await talk.locator(
+            ".talk-text"
+        ).inner_text()
+        assert await talk.locator(".talk-step").inner_text() == "Вопрос 1 из 3"
+        assert await talk.locator(".talk-replies .btn").all_inner_texts() == [
+            "100%", "150%", "200%", "Отойти"
+        ]
+
+        # Ответ уходит номером вопроса и номером варианта
+        await page.evaluate(
+            """() => {
+                window.barAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await talk.locator(".talk-replies .btn").nth(1).click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {
+            "action": "answer", "quest": None, "step": 0, "option": 1
+        }
+        await browser.close()
+
+
+async def test_the_finished_quest_is_handed_over_at_the_counter(server):
+    """Дело сделано: значок галочкой, бармен сам поднимает глаза."""
+    player = make_player("bar")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    bar = bar_state(
+        done=("ring",),
+        taken="pro",
+        marks=("visit:premium", "quiz:pro:done"),
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, bar=bar, images=True)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "tavern")
+        await page.wait_for_selector("#tavern-body .talk")
+
+        assert await page.locator("#tavern-npc-mark").inner_text() == "✅"
+        # Разговор раскрыт сам: бармену есть что сказать
+        assert "дело сделано" in await page.locator(".talk-text").inner_text()
+        assert await page.locator(".talk-replies .btn").all_inner_texts() == [
+            "Сдать задание", "Отойти"
+        ]
+        # И в карточке дела стоит отметка «готово — к бармену»
+        assert "готово — к бармену" in await page.locator(
+            "#tavern-body .quest-prize"
+        ).inner_text()
+
+        # «Отойти» сворачивает разговор и держит свёрнутым: бармен с делом
+        # на руках не заговаривает заново на той же перерисовке.
+        #
+        # Ждём именно исчезновения разговора, а не полки: полка на
+        # экране уже есть, и ожидание возвращалось тем же кадром, до
+        # перерисовки. Тест от этого падал через раз на полном наборе,
+        # причём на невиновном месте — в самой таверне всё верно
+        await page.locator(".talk-replies .btn", has_text="Отойти").click()
+        await page.wait_for_selector("#tavern-body .talk", state="detached")
+        await page.wait_for_selector("#tavern-body .shelf")
+        assert await page.locator("#tavern-body .talk").count() == 0
+        # А позовёт обратно сам бармен: картинка — она же кнопка
+        await page.locator("#tavern-npc").click()
+        await page.wait_for_selector("#tavern-body .talk")
+
+        await page.evaluate(
+            """() => {
+                window.barAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await page.locator(".talk-replies .btn").first.click()
+        await page.wait_for_function("() => window.sent")
+        assert (await page.evaluate("window.sent"))["action"] == "hand"
+        await browser.close()
+
+
+async def test_the_quests_tab_lists_twenty_quests_in_four_chapters(server):
+    """Вкладка «Квесты»: двадцать строк четырьмя главами.
+
+    Галочка сданному, часы взятому, замок закрытому уровнем. Главами, а
+    не одной лентой: двадцать строк подряд не читаются, а по главам
+    видно, что пройдено и к чему готовиться.
+    """
+    player = make_player("bar")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    # Второй уровень: две главы открыты, две закрыты
+    quests = quests_state(done=("ring",), taken="pro", level=2)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, quests=quests)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#hero-tabs .hero-act", has_text="Квесты").click()
+        await page.wait_for_selector("#hero-quests:not(.hidden)")
+        await page.wait_for_selector("#quests-list .quest")
+
+        assert await page.locator("#quests-note").inner_text() == (
+            "Задания выдаёт Бармен в Баре. Сдано 1 из 20."
+        )
+        heads = await page.locator(".chapter-head").all_inner_texts()
+        assert len(heads) == 4
+        assert "Знакомство с городом" in heads[0] and "1 из 5" in heads[0]
+        # У закрытой главы в заголовке стоит уровень, до которого расти
+        assert "с 3 уровня" in heads[2]
+        assert "уровня" not in heads[0], "открытая глава зовёт расти"
+
+        rows = page.locator("#quests-list .quest")
+        assert await rows.count() == 20
+        marks = await page.locator("#quests-list .quest-mark").all_inner_texts()
+        assert marks[0] == "✅" and marks[1] == "🕓"
+        # Задания закрытых глав — под замком, а не просто по номеру
+        assert marks[10] == "🔒" and marks[19] == "🔒"
+        assert await rows.nth(0).get_attribute("class") == "quest quest-done"
+        assert await rows.nth(1).get_attribute("class") == "quest quest-taken"
+        assert await rows.nth(2).get_attribute("class") == (
+            "quest quest-locked_order"
+        )
+        assert await rows.nth(10).get_attribute("class") == (
+            "quest quest-locked_level"
+        )
+        # Замки подписаны словами: что делать, видно из самой строки
+        assert "с 3 уровня" in await rows.nth(10).locator(
+            ".quest-prize"
+        ).inner_text()
+        assert "ждёт своей очереди" in await rows.nth(2).locator(
+            ".quest-prize"
+        ).inner_text()
+        # Награда кредитами и аванс стоят рядом с опытом, по отдельности
+        knuckles = await rows.nth(10).locator(".quest-prize").inner_text()
+        assert "+100 опыта" in knuckles and "+50 💰" in knuckles
+        assert "80 💰 вперёд" in knuckles
+        await browser.close()
+
+
+async def test_the_university_shows_five_specialities_with_their_price(server):
+    """Приёмная: пять курсов, цена, срок и диплом в конце.
+
+    Карточка курса устроена как бланк: по ней и видно, во что боец
+    вписывается, — две недели по два часа и экзамен в десять вопросов.
+    """
+    player = make_player("university")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "study")
+        await page.wait_for_selector("#study-body .course")
+
+        assert await page.locator("#study-title").inner_text() == "🎓 Университет"
+        titles = await page.locator(".course-title").all_inner_texts()
+        assert [one.split(" ", 1)[1] for one in titles] == [
+            "Банковское дело", "Информационные технологии",
+            "Менеджмент", "Юриспруденция", "Государственное управление",
+        ]
+        prices = await page.locator(".course-price").all_inner_texts()
+        assert prices == [
+            num_space("2 000") + " 💰", num_space("2 000") + " 💰",
+            num_space("1 800") + " 💰", num_space("1 800") + " 💰",
+            num_space("2 500") + " 💰",
+        ]
+
+        first = page.locator(".course").first
+        rows = await first.locator(".paper-rows li").all_inner_texts()
+        assert any("2 недели" in one and "10 занятий" in one for one in rows)
+        assert any("по будням с 8:00 до 16:00" in one for one in rows)
+        assert any("10 вопросов, нужно 8" in one for one in rows)
+        assert any("экономическом образовании" in one for one in rows)
+        # В университете учатся там же, где записывают: строки «Где» нет
+        assert not any(one.startswith("Где") for one in rows)
+
+        # Запись спрашивает подтверждение и уходит кодом курса
+        await page.evaluate(
+            """() => {
+                window.askConfirm = () => Promise.resolve(true);
+                window.studyAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await first.locator(".btn").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {
+            "action": "enrol", "course": "banking"
+        }
+        await browser.close()
+
+
+async def test_the_academy_lets_you_pay_from_the_card(server):
+    """Чем платить за курс — выбирают в приёмной, а не в банке.
+
+    Жалованье приходит на счёт, а кошелёк по умолчанию наличный: без
+    этого выбора боец с деньгами на карте читал «не хватает кредитов»
+    и шёл догадываться, где его деньги.
+    """
+    player = make_player("police_school")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, study=study_state("police_school")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "study")
+        await page.wait_for_selector("#study-body .course")
+
+        assert await page.locator(".course").count() == 1
+        wallet = page.locator("#study-body .wallet")
+        assert await wallet.count() == 1
+        picks = await wallet.locator(".wallet-pick-title").all_inner_texts()
+        assert len(picks) == 2, "наличные и карта"
+        await browser.close()
+
+
+async def test_the_cadet_card_says_the_lessons_are_elsewhere(server):
+    """У кадетов занятия на полигоне, и бланк говорит это до оплаты."""
+    player = make_player("cadet_corps")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, study=study_state("cadet_corps")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "study")
+        await page.wait_for_selector("#study-body .course")
+
+        assert await page.locator(".course").count() == 1
+        rows = await page.locator(".course .paper-rows li").all_inner_texts()
+        assert any("Где" in one and "Крытый полигон" in one for one in rows)
+        assert any("неделя" in one and "5 занятий" in one for one in rows)
+        await browser.close()
+
+
+async def test_the_own_course_counts_the_lessons_and_waits_for_the_window(server):
+    """Свой курс: полоса занятий, где учиться и почему не сейчас."""
+    player = make_player("cadet_corps")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    study = study_state("cadet_corps", course="cadet", lessons=3)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, study=study)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "study")
+        await page.wait_for_selector("#study-body .shelf")
+
+        assert "Ты учишься: Кадетский корпус" in await page.locator(
+            "#study-body .shelf-head"
+        ).first.inner_text()
+        assert await page.locator(".hours-text").inner_text() == "Занятий 3 из 5"
+        # Боец в корпусе, а занятия на полигоне: кнопка не нажимается и
+        # говорит, куда идти
+        attend = page.locator(".btn", has_text="Пойти на занятие")
+        assert await attend.is_disabled()
+        assert "Крытый полигон" in await page.locator(
+            "#study-body .screen-note"
+        ).inner_text()
+        await browser.close()
+
+
+async def test_the_learned_course_offers_the_exam(server):
+    """Отучил всё — вместо занятия кнопка экзамена."""
+    player = make_player("cadet_corps")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    study = study_state("cadet_corps", course="cadet", lessons=5)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, study=study)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "study")
+        await page.wait_for_selector("#study-body .shelf")
+
+        assert "курс отучен" in await page.locator(".hours-text").inner_text()
+        assert await page.locator(".btn", has_text="Пойти на занятие").count() == 0
+
+        await page.evaluate(
+            """() => {
+                window.studyAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await page.locator(".btn", has_text="Сдавать экзамен").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {"action": "exam"}
+        await browser.close()
+
+
+async def test_the_exam_ticket_holds_ten_questions_and_one_button(server):
+    """Билет: десять вопросов на экране и «Сдать», пока не ответил на все."""
+    from bot.content.exams import ticket
+    from bot.game.study import EXAM_SIZE, get_course
+    from bot.webapp.study import exam_payload
+
+    player = make_player("cadet_corps")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    study = study_state("cadet_corps", course="cadet", lessons=5)
+    course = get_course("cadet")
+    study["exam"] = exam_payload(
+        ticket(course.quiz, player.user_id, 0, EXAM_SIZE), course
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, study=study)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "study")
+        await page.wait_for_selector("#study-body .shelf")
+        # Билет приезжает ответом на действие — раскладываем его так же
+        await page.evaluate(
+            """(body) => {
+                studyExam = {
+                    course: body.exam.course, title: body.exam.title,
+                    subject: body.exam.subject, need: body.exam.pass_mark,
+                    questions: body.exam.questions, chosen: [],
+                };
+                renderStudy(body);
+            }""",
+            study,
+        )
+        await page.wait_for_selector("#study-body .quiz")
+
+        assert await page.locator(".question").count() == 10
+        assert "Нужно 8 верных" in await page.locator(
+            "#study-body .quiz .screen-note"
+        ).inner_text()
+        # Пока не ответил на все — кнопка не нажимается
+        send = page.locator(".quiz-buttons .btn", has_text="Сдать")
+        assert await send.is_disabled()
+
+        for index in range(10):
+            await page.locator(".question").nth(index).locator(
+                ".answer"
+            ).first.click()
+        assert not await send.is_disabled()
+
+        await page.evaluate(
+            """() => {
+                window.studyAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await send.click()
+        await page.wait_for_function("() => window.sent")
+        sent = await page.evaluate("window.sent")
+        assert sent["action"] == "pass" and len(sent["answers"]) == 10
+        await browser.close()
+
+
+async def test_the_diploma_lies_in_the_papers_without_a_pro_note(server):
+    """Диплом — бланк в документах, и подписки он никому не обещает.
+
+    Записка про PRO стояла на условии «нечего переключать», а переключать
+    нечего и абонементу, и карте, и правам, и диплому: всем четырём бланк
+    обещал подписку, которая их не держит.
+    """
+    player = make_player()
+    player.diplomas = ["cadet"]
+    player.gym_until = now_ts() + 86_400
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#hero-tabs .hero-act", has_text="Документы").click()
+        await page.wait_for_selector(".paper")
+
+        diploma = page.locator(".paper", has_text="Диплом кадетского училища")
+        assert await diploma.count() == 1
+        assert "Кадетский корпус" in await diploma.locator(
+            ".paper-issuer"
+        ).inner_text()
+        rows = await diploma.locator(".paper-rows li").all_inner_texts()
+        assert any("Бессрочно" in one for one in rows)
+        # Пустых полей на бланке нет: покрытия у диплома не бывает
+        assert not any(one.strip().endswith("Покрытие") for one in rows)
+        # И ни один бланк не обещает чужую подписку
+        assert await page.locator(".paper-held").count() == 0
+        await browser.close()
+
+
+async def test_the_diploma_vacancy_says_what_it_wants(server):
+    """Место под диплом: документ, стаж и сколько кресел свободно.
+
+    Места банка, больницы, части и суда на доску не попадают вовсе —
+    туда приходят наниматься в сам дом. На доске под диплом остались
+    разработка, продажи, администрация и таксопарк.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_hr(pw, server, hr=hr_state(diplomas=("it",)))
+        await page.wait_for_selector(".vacancy")
+
+        junior = page.locator(".vacancy", has_text="Младший разработчик")
+        facts = await junior.locator(".vacancy-fact").all_inner_texts()
+        assert any("Диплом об IT-специальности" in one for one in facts)
+        assert any("6, свободно 6" in one for one in facts)
+        # Опыта это место не требует — строки «Опыт» на нём нет вовсе
+        assert not any(one.startswith("Опыт") for one in facts)
+        # Диплом есть, теста нет: берут сразу
+        assert await junior.locator(".btn").inner_text() == "Устроиться"
+
+        # А у бармена всё наоборот: тест есть, диплома не нужно
+        barman = page.locator(".vacancy", has_text="Бармен")
+        assert await barman.locator(".btn").inner_text() == "Подать заявку"
+        bar_facts = await barman.locator(".vacancy-fact").all_inner_texts()
+        assert any("не требуется" in one for one in bar_facts)
+        # За стойкой пять мест, и это на карточке написано
+        assert any("5, свободно 5" in one for one in bar_facts)
+
+        # Кассира и управляющего на доске нет: в банк приходят в банк
+        said = await page.locator("#hr-body").inner_text()
+        assert "Кассир в Банке" not in said
+        assert "Управляющий филиалом" not in said
+        await browser.close()
+
+
+async def test_the_board_says_what_is_missing_instead_of_a_button(server):
+    """Нет диплома или стажа — вместо кнопки сказано, чего не хватает."""
+    async with async_playwright() as pw:
+        browser, page = await open_hr(
+            pw, server, hr=hr_state(diplomas=("it",), months=1)
+        )
+        await page.wait_for_selector(".vacancy")
+
+        # Диплом есть, стажа мало: старшим не берут, и сказано почему
+        head = page.locator(".vacancy", has_text="Старший разработчик")
+        assert await head.locator(".btn").count() == 0
+        said = await head.locator(".vacancy-state").inner_text()
+        assert "Нужен опыт от 2 месяцев, а у тебя 1 месяц." == said
+
+        # А диплома управленца нет вовсе — и сказано, какой нужен
+        clerk = page.locator(".vacancy", has_text="Секретарь")
+        assert await clerk.locator(".btn").count() == 0
+        assert "Нужен документ: Диплом государственного управленца." in (
+            await clerk.locator(".vacancy-state").inner_text()
+        )
+        await browser.close()
+
+
+async def test_a_house_with_several_jobs_hires_on_the_spot(server, db):
+    """В банке три места: два занимают кнопкой, в третье подают заявку.
+
+    Прежде экран дома только перечислял места и отсылал в агентство,
+    которое их и не показывает. Теперь в банк приходят в банк.
+    """
+    from bot.webapp.work import build_work
+
+    player = make_player("bank")
+    player.diplomas = ["banking"]
+    player.job_experience = 3 * 30 * 24 * 60 * 60
+    await db.save_player(player)
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    work = await build_work(db, player)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, work=work)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "work")
+        await page.wait_for_selector("#work-body .offer")
+
+        heads = await page.locator("#work-body .shelf-head").all_inner_texts()
+        assert len(heads) == 3
+        assert any("Кассир в Банке" in one for one in heads)
+        assert any("Управляющий филиалом" in one for one in heads)
+        # Кнопки: две «Устроиться» и одна «Подать заявку» — в кресло
+        # управляющего не устраиваются, туда назначает мэр
+        labels = await page.locator("#work-body .btn").all_inner_texts()
+        assert labels.count("Устроиться") == 2
+        assert labels.count("Подать заявку") == 1
+        # И вилка жалованья стоит там же, где у остальных число
+        said = await page.locator("#work-body").inner_text()
+        assert "1500–2300" in said.replace("\u00a0", " ")
+        assert "Сюда берут на месте" in await page.locator(
+            "#work-body .screen-note"
+        ).last.inner_text()
+        await browser.close()
+
+
+# ---------- АЗС: три колонки ----------
+
+
+async def test_the_station_stands_three_columns_in_a_row(server, db):
+    """Станция и выглядит так: три колонки в один ряд, все свободны."""
+    from bot.webapp.charging import build_charge
+    from tests.test_charge import drained, driver
+
+    me = await driver(db, credits=1000)
+    me = await drained(db, me, 40)
+    body = await build_charge(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, charge=body, images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "charge")
+        await page.wait_for_selector("#charge-body .charge-slot")
+
+        assert await page.locator("#charge-body .charge-slot").count() == 3
+        # Ряд именно ряд: три колонки в одну строку сетки
+        assert await page.evaluate(
+            "getComputedStyle(el('charge-body').querySelector('.charge-row'))"
+            ".gridTemplateColumns.split(' ').length"
+        ) == 3
+        tops = await page.evaluate(
+            "[...el('charge-body').querySelectorAll('.charge-slot')]"
+            ".map((one) => one.offsetTop)"
+        )
+        assert len(set(tops)) == 1, "колонки стоят в один ряд"
+        # У каждой своя картинка, и это три разные колонки
+        pictures = await page.evaluate(
+            "[...el('charge-body').querySelectorAll('.charge-pic img')]"
+            ".map((one) => one.getAttribute('src'))"
+        )
+        assert len(pictures) == 3 and len(set(pictures)) == 3
+        assert all("ev_charger" in one for one in pictures)
+        # Свободная колонка так и подписана, и машины под ней нет
+        said = await page.locator("#charge-body").inner_text()
+        assert said.count("свободна") == 3
+        assert await page.locator("#charge-body .charge-car").count() == 0
+        await browser.close()
+
+
+async def test_a_charging_column_holds_the_car_under_it_with_the_time(
+    server, db
+):
+    """Занятая колонка: машина под ней, под машиной — сколько осталось."""
+    from bot.charge_service import plug
+    from bot.webapp.charging import build_charge
+    from tests.test_charge import SUV, drained, driver
+
+    me = await driver(db, credits=1000)
+    me = await drained(db, me, 20)
+    moment = now_ts()
+    await plug(db, me, SUV, 2, 50, moment)
+    me = await db.get_player(me.user_id)
+    body = await build_charge(db, me, moment)
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, charge=body, images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "charge")
+        await page.wait_for_selector("#charge-body .charge-car")
+
+        busy = page.locator("#charge-body .charge-slot").nth(1)
+        assert "busy" in (await busy.get_attribute("class"))
+        assert "mine" in (await busy.get_attribute("class"))
+        # Машина заряжается — и это видно: своя рамка и анимация
+        assert await busy.locator(".charge-car.filling").count() == 1
+        assert await busy.locator(".charge-car .charge-spark").inner_text() == "⚡"
+        # Время идёт и стоит ниже и колонки, и машины
+        assert await busy.locator(".charge-clock").inner_text() == "00:10:00"
+        order = await page.evaluate(
+            "(() => {"
+            "  const one = el('charge-body').querySelectorAll('.charge-slot')[1];"
+            "  const pick = (css) => one.querySelector(css).offsetTop;"
+            "  return [pick('.charge-pic'), pick('.charge-car'),"
+            "          pick('.charge-clock')];"
+            "})()"
+        )
+        assert order == sorted(order) and len(set(order)) == 3
+        # Соседние колонки при этом свободны
+        assert await page.locator("#charge-body .charge-slot.free").count() == 2
+        await browser.close()
+
+
+async def test_the_station_asks_which_car_and_how_much_to_pour(server, db):
+    """Выбор идёт окнами: машины по две в ряд, мерки квадратами в ряд."""
+    from bot.webapp.charging import build_charge
+    from tests.test_charge import SUV, drained, driver
+
+    me = await driver(db, credits=1000)
+    me = await drained(db, me, 40)
+    body = await build_charge(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, charge=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "charge")
+        await page.wait_for_selector("#charge-body .charge-slot")
+        await page.evaluate(
+            "window.sent = null;"
+            "window.post = async (url, payload) => {"
+            "  window.sent = payload; return {};"
+            "};"
+        )
+
+        # Нажали на третью колонку — она и спрашивает, что ставим
+        await page.locator("#charge-body .charge-slot").nth(2).click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert "3-я колонка" in await page.locator("#sheet-title").inner_text()
+        assert await page.evaluate(
+            "getComputedStyle(document.querySelector('.charge-cars'))"
+            ".gridTemplateColumns.split(' ').length"
+        ) == 2, "машины по две в ряд"
+
+        await page.locator(".charge-car-tile").first.click()
+        await page.wait_for_selector(".charge-steps")
+
+        # Три мерки квадратами в один ряд
+        assert await page.locator(".charge-step").count() == 3
+        assert await page.evaluate(
+            "getComputedStyle(document.querySelector('.charge-steps'))"
+            ".gridTemplateColumns.split(' ').length"
+        ) == 3
+        squares = await page.locator(".charge-step").all_inner_texts()
+        assert "+50%" in squares[0] and "50 💰" in squares[0]
+        assert "мимо 15%" in squares[1] and "мимо 40%" in squares[2]
+        # Первая выбрана сразу, и внизу две кнопки
+        assert "picked" in (
+            await page.locator(".charge-step").first.get_attribute("class")
+        )
+        assert await page.locator("#sheet-list .btn").all_inner_texts() == [
+            "Заряжать", "Отменить",
+        ]
+
+        # Выбрали вторую и нажали «Заряжать»
+        await page.locator(".charge-step").nth(1).click()
+        assert "picked" in (
+            await page.locator(".charge-step").nth(1).get_attribute("class")
+        )
+        await page.locator("#sheet-list .btn").first.click()
+
+        assert await page.evaluate("window.sent") == {
+            "action": "plug", "code": SUV, "slot": 3, "percent": 75,
+        }
+        await browser.close()
+
+
+async def test_a_car_at_a_house_parking_is_not_offered_to_the_column(
+    server, db
+):
+    """Машину с парковки дома к колонке не подать: за ней надо сходить."""
+    from bot.game.cars import IN_CLAN
+    from bot.webapp.charging import build_charge
+    from tests.test_charge import SUV, drained, driver
+
+    me = await driver(db, credits=1000)
+    me = await drained(db, me, 20)
+    await db.park_car(me.user_id, SUV, IN_CLAN, 1, 3)
+    body = await build_charge(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+    assert body["cars"] == [], "оставленной машины на станции нет вовсе"
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, charge=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "charge")
+        await page.wait_for_selector("#charge-body .charge-slot")
+
+        await page.locator("#charge-body .charge-slot").first.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        assert await page.locator(".charge-car-tile").count() == 0
+        said = await page.locator("#sheet-note").inner_text()
+        assert "с парковки дома сюда не подать" in said
+        await browser.close()
+
+
+async def test_the_ready_column_gives_the_car_back_on_tap(server, db):
+    """Дозарядилась — колонка отдаёт машину по нажатию."""
+    from bot.charge_service import plug
+    from bot.webapp.charging import build_charge
+    from tests.test_charge import SUV, drained, driver
+
+    me = await driver(db, credits=1000)
+    me = await drained(db, me, 20)
+    moment = now_ts()
+    await plug(db, me, SUV, 1, 50, moment)
+    me = await db.get_player(me.user_id)
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    # Пока идёт зарядка — нажатие только торопит
+    going = await build_charge(db, me, moment)
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, charge=going)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "charge")
+        await page.wait_for_selector("#charge-body .charge-car")
+        said = []
+
+        def on_dialog(dialog):
+            said.append(dialog.message)
+            asyncio.ensure_future(dialog.dismiss())
+
+        page.on("dialog", on_dialog)
+        await page.evaluate(
+            "window.sent = null;"
+            "window.post = async (url, payload) => {"
+            "  window.sent = payload; return {};"
+            "};"
+        )
+
+        await page.locator("#charge-body .charge-slot").first.click()
+        assert await page.evaluate("window.sent") is None
+        assert said and "Ещё заряжается" in said[0]
+        await browser.close()
+
+    # А как дозарядилась — отдаёт
+    ready = await build_charge(db, me, moment + 600)
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, charge=ready)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "charge")
+        await page.wait_for_selector("#charge-body .charge-car")
+        await page.evaluate(
+            "window.sent = null;"
+            "window.post = async (url, payload) => {"
+            "  window.sent = payload; return {};"
+            "};"
+        )
+
+        first = page.locator("#charge-body .charge-slot").first
+        assert await first.locator(".charge-clock").inner_text() == (
+            "можно забирать"
+        )
+        assert await first.locator(".charge-car.done").count() == 1
+        await first.click()
+
+        assert await page.evaluate("window.sent") == {
+            "action": "collect", "slot": 1,
+        }
+        await browser.close()
+
+
+async def test_an_empty_car_shows_the_reason_the_wheel_is_dark(server, db):
+    """В ключах у пустой машины «За руль» погасла и говорит почему."""
+    from bot.car_service import mine
+    from tests.test_charge import drained, driver
+
+    me = await driver(db)
+    me = await drained(db, me, 0)
+    keys = await mine(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, keys=keys)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
+        await page.wait_for_selector(".keys .car")
+
+        said = await page.locator(".keys .car").first.inner_text()
+        assert "Заряд" in said and "0% · 0 км" in said
+        wheel = page.locator(".keys .car .btn").first
+        assert await wheel.inner_text() == "За руль"
+        # Погасла — и это всё, что страница может сказать: отказ с
+        # причиной держит сервер, а не кнопка
+        assert await wheel.is_disabled()
+        await browser.close()
+
+
+async def test_the_street_car_lives_on_the_map_and_not_in_the_bag(
+    server, db
+):
+    """Брошенная машина — на карте, а не в ключах: там её и забирают."""
+    from bot.car_service import here_rows, leave_here
+    from tests.test_theft import HATCH, NOW, a_theft, officer
+
+    row = await a_theft(db)
+    thief = await db.get_player(2)
+    await leave_here(db, thief, HATCH, NOW)
+    cop = await officer(db)
+    cop.location = "bar"
+    await db.save_player(cop)
+    here = await here_rows(db, cop, NOW)
+    card = build_card(cop, TOKEN, viewer_id=cop.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card,
+            keys={"keys": [], "limit": 1},
+            city=city_map(here="bar", cars=here),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        # В инвентаре её нет вовсе: в ключах только то, что при бойце
+        await open_screen(page, "bag")
+        assert await page.locator("#bag-keys").is_hidden()
+
+        # А на карте — значок со счётчиком, и он открывает список
+        await open_screen(page, "map")
+        await page.wait_for_selector("#map-cars:not(.hidden)")
+        chip = page.locator("#map-cars")
+        assert await chip.inner_text() == "🚗 1"
+        await chip.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        said = await page.locator("#sheet-list").inner_text()
+        assert str(row["plate"]) in said and "в розыске" in said
+        # Патрулю — увезти разыскиваемую в участок
+        await page.evaluate(
+            """() => {
+                window.hereAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        take = page.locator("#sheet-list .btn", has_text="В участок")
+        assert await take.count() == 1
+        await take.click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {
+            "action": "deliver", "car": int(row["id"]),
+        }
+        await browser.close()
+
+
+# ---------- электростанция: «Чёрный пуск» ----------
+
+
+async def test_the_station_lobby_offers_the_mission(server, db):
+    """Лобби станции: окно, правила списком и кнопка «Начать миссию».
+
+    Кнопка горит только в окно входа: вне его сервер всё равно
+    откажет, и живая кнопка звала бы на отказ.
+    """
+    from bot.blackout_service import lobby_for
+    from tests.test_blackout import NOW, make_player as a_fighter
+
+    one = a_fighter(1, "Тайлер")
+    one.location = "power_station"
+    await db.save_player(one)
+    body = await lobby_for(db, one, NOW)
+    card = build_card(one, TOKEN, viewer_id=one.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .btn")
+
+        said = await page.locator("#blackout").inner_text()
+        assert "Миссия «Чёрный пуск»" in said
+        start = page.locator("#blackout-body .btn", has_text="Начать миссию")
+        assert await start.count() == 1
+        assert await start.is_enabled() is bool(body["window"])
+
+        # Правила — четырьмя строками под кнопкой
+        rules = await page.locator("#blackout-body .thing-note").inner_text()
+        assert "каждый день с 19:00 до 23:00" in rules
+        assert "На прохождение даётся 3 часа" in rules
+        assert "Отряд до 5 человек" in rules
+        assert "при гибели" in rules.lower() and "через 3 часа" in rules
+        assert "через 3 суток" in rules
+        await browser.close()
+
+
+async def test_the_closed_window_says_when_it_opens(server, db):
+    """Закрытое окно называет день и час, а не «через столько-то».
+
+    Экран писал «Следующее — 29898240:00»: часам выдачи подсовывали
+    метку времени вместо длительности. До следующего вечера бывает
+    двадцать с лишним часов, и обратный отсчёт в такой срок читается
+    хуже даты.
+    """
+    from bot.blackout_service import lobby_for
+    from tests.test_blackout import make_player as a_fighter
+    from bot.game.clock import MOSCOW
+    from datetime import datetime
+
+    shut = int(datetime(2026, 11, 4, 23, 30, tzinfo=MOSCOW).timestamp())
+    one = a_fighter(1, "Тайлер")
+    one.location = "power_station"
+    await db.save_player(one)
+    body = await lobby_for(db, one, shut)
+    assert body["window"] is False
+    assert body["opens_text"] == "завтра в 19:00", body["opens_text"]
+    card = build_card(one, TOKEN, viewer_id=one.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .btn")
+
+        note = await page.locator("#blackout-note").inner_text()
+        assert note == "Окно закрыто. Следующее откроется — завтра в 19:00."
+        assert ":00." not in note.replace("19:00.", ""), note
+        # И кнопка серая: входить некуда
+        start = page.locator("#blackout-body .btn", has_text="Начать миссию")
+        assert await start.is_enabled() is False
+        await browser.close()
+
+
+async def test_the_raid_screen_stands_in_one_order(server, db):
+    """Экран рейда: сцена, шкала, джойстик с гнёздами, схема, отряд.
+
+    Порядок тут не вкусовщина, а просьба с плейтеста: сверху смотрят,
+    ниже ходят, в самом низу сверяются. Списка дверей и журнала на
+    экране нет вовсе — куда идти, видно на сцене и на схеме.
+    """
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 4)
+    body = await state_for(db, people[0], NOW)
+    assert not body["fight"], "в стартовой комнате не дерутся"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stick-row")
+
+        said = await page.locator("#blackout").inner_text()
+        assert "диспетчерской" in said
+        # Гнёзда модулей стоят рядом с джойстиком, в одной с ним строке,
+        # и это картинки: названия ушли в подсказку
+        row = page.locator("#blackout-body .stick-row")
+        assert await row.locator(".stick-pad").count() == 1
+        hints = await row.locator(".blackout-item").evaluate_all(
+            "(cells) => cells.map((one) => one.title)"
+        )
+        assert len(hints) == 3, hints
+        for title in ("Фазовый синхронизатор", "Силовой сердечник",
+                      "Ключ аварийного запуска"):
+            assert any(title in hint for hint in hints), hints
+        # Ничего ещё не найдено — все три серые
+        assert await row.locator(".blackout-item.have").count() == 0
+        # Схема этажа с туманом
+        assert await page.locator("#blackout-body .minimap").count() == 1
+        assert await page.locator(".minimap-room.here").count() == 1
+        # Ни дверей списком, ни журнала
+        assert "Выходы" not in said and "Журнал" not in said
+        # Отряд — последним блоком экрана
+        last = await page.evaluate(
+            "() => document.querySelector('#blackout-body')"
+            ".lastElementChild.innerText"
+        )
+        assert "Боец-2" in last, last
+        await browser.close()
+
+
+async def test_the_minimap_shows_where_the_partners_stand(server, db):
+    """Это подземелье: на схеме видно и себя, и партнёров по данджу."""
+    from bot.blackout_service import act, look, snapshot
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 3)
+    # Один уходит сам, двое остаются: подземелье проходят вместе, но
+    # стоять в одной комнате никто не обязан
+    at = NOW
+    await act(db, people[1], "go", {"room": "O02"}, "m1", at)
+    run = await look(db, run.id, at + 10)
+    body = snapshot(run, people[0].user_id, at + 10)
+    body["screen"] = "run"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .minimap")
+
+        # Фишки: по одной на каждого, и ровно одна своя
+        assert await page.locator(".minimap-chip").count() == 3
+        assert await page.locator(".minimap-chip.me").count() == 1
+        # Ушедший стоит в своей комнате, а не рядом со мной
+        mine = await page.locator(".minimap-room.here .minimap-chip").count()
+        assert mine == 2, "партнёр, ушедший в другую комнату, остался на месте"
+        await browser.close()
+
+
+async def test_the_station_screen_refreshes_itself_on_the_move(server, db):
+    """Шаг виден сам: выходить на карту и заходить снова не нужно.
+
+    Этот баг плейтест нашёл первым: боец нажимал дверь, десять секунд
+    шёл — и экран всё это время показывал прежнюю комнату, пока не
+    выйдешь на карту города и не вернёшься. Экран рейда теперь
+    спрашивает снимок сам, пока открыт.
+    """
+    from bot.blackout_service import act, look, snapshot
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    await act(db, people[0], "go", {"room": "O02"}, "step", NOW)
+    walking = snapshot(await look(db, run.id, NOW + 2), people[0].user_id,
+                       NOW + 2)
+    walking["screen"] = "run"
+    arrived = snapshot(await look(db, run.id, NOW + 10), people[0].user_id,
+                       NOW + 10)
+    arrived["screen"] = "run"
+    assert walking["walking"] and not arrived["walking"]
+    # Дошёл — и сразу бой: в проходной зомби. Это и есть та правда,
+    # которую экран обязан получить сам
+    assert arrived["fight"] and not walking["fight"]
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            executable_path=CHROMIUM, args=["--no-proxy-server"]
+        )
+        page = await browser.new_page(viewport={"width": 420, "height": 900})
+        await page.route("**/api/card*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(card),
+        ))
+        asked = {"count": 0}
+
+        async def answer(route):
+            asked["count"] += 1
+            body = walking if asked["count"] < 2 else arrived
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(body),
+            )
+
+        await page.route("**/api/blackout", answer)
+        await page.route(IMAGES, lambda route: route.abort())
+        await page.goto(f"{server.make_url('/')}")
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .shelf")
+
+        # Первый снимок — в пути
+        assert "В пути" in await page.locator("#blackout").inner_text()
+        # Второго никто не просит: экран спрашивает его сам
+        await page.wait_for_function(
+            "() => document.querySelector('#blackout').innerText"
+            ".includes('Бой · ход')",
+            timeout=9000,
+        )
+        assert asked["count"] >= 2
+        await browser.close()
+
+
+async def test_the_keys_step_from_where_the_fighter_looks(server, db):
+    """Шесть клавиш: четыре шага от взгляда и два поворота.
+
+    Шаг считается не по карте, а от того, куда боец повёрнут: «вперёд»
+    у смотрящего на север и у смотрящего на юг уводит в разные
+    комнаты. Поэтому на клавишах стрелки, а не стороны света.
+    """
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    view = body["view"]
+    # На входе боец развёрнут к выходу, а не в стену
+    assert view["facing"] == "east"
+    assert view["sides"]["ahead"]["room"] == "O02"
+    assert view["sides"]["left"]["wall"] and view["sides"]["behind"]["wall"]
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stick-pad")
+
+        # Четыре шага и два поворота
+        assert await page.locator(".stick-key").count() == 6
+        assert await page.locator(".key-turn").count() == 2
+        # Вперёд — можно, в стену — нет
+        assert not await page.locator(".key-up").first.is_disabled()
+        assert await page.locator(".key-left").first.is_disabled()
+        assert await page.locator(".key-down").first.is_disabled()
+        said = await page.locator("#blackout").inner_text()
+        assert "Смотрим на восток" in said
+        await browser.close()
+
+
+async def test_the_stage_draws_the_room_with_its_doorways(server, db):
+    """Сцена: стены, пол, потолок и проём там, где есть ход."""
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stage-canvas")
+
+        assert await page.locator(".stage-floor").count() == 1
+        assert await page.locator(".stage-ceiling").count() == 1
+        assert await page.locator(".stage-wall").count() == 3
+        # Ход один — значит и проём один, и он не заперт
+        assert await page.locator(".stage-door").count() == 1
+        assert await page.locator(".stage-door.shut").count() == 0
+        # Проём показывает, где выход, но не уводит: ходят джойстиком
+        assert await page.locator(".stage-door").first.evaluate(
+            "(one) => getComputedStyle(one).pointerEvents"
+        ) == "none"
+        # Фон зоны лежит под стенами
+        assert await page.locator(".stage-back").count() == 1
+        # И шкала перехода на месте, пока никуда не идём
+        assert "Готов идти" in await page.locator("#blackout").inner_text()
+        await browser.close()
+
+
+async def test_the_stage_puts_the_zombies_in_the_room(server, db):
+    """Зомби стоят на сцене, с полоской здоровья, а не только в списке."""
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter, walk
+
+    people, run = await enter(db, 1)
+    at = await walk(db, people, run, "O02", NOW)
+    body = await state_for(db, people[0], at)
+    assert body["view"]["foes"], "в проходной зомби"
+    assert body["view"]["locked"], "выходы заперты боем"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stage-canvas")
+
+        assert await page.locator(".stage-foe").count() == len(
+            body["view"]["foes"]
+        )
+        assert await page.locator(".stage-foe-hp").count() == len(
+            body["view"]["foes"]
+        )
+        # Комнату видно и в бою — а вот управления под шкалой уже нет
+        assert await page.locator(".stick-pad").count() == 0
+        await browser.close()
+
+
+async def test_the_minimap_arrow_shows_which_way_the_fighter_looks(server, db):
+    """На схеме у своего бойца стрелка, и она поворачивается вместе с ним."""
+    from bot.blackout_service import act, state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    mine = [
+        one for room in body["map"]["rooms"] for one in room["party"]
+        if one["me"]
+    ]
+    assert mine and mine[0]["facing"] == "east"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .minimap")
+
+        # Стрелка одна — своя. Чужие взгляды на схеме не рисуются
+        assert await page.locator(".minimap-arrow").count() == 1
+        spin = await page.locator(".minimap-arrow").first.get_attribute(
+            "transform"
+        )
+        # Стрелка нарисована остриём вверх: на восток её кладут набок
+        assert "rotate(90)" in spin, spin
+        await browser.close()
+
+    # Повернулись — стрелка повернулась
+    await act(db, people[0], "turn", {"where": "right"}, "t1", NOW)
+    after = await state_for(db, people[0], NOW)
+    mine = [
+        one for room in after["map"]["rooms"] for one in room["party"]
+        if one["me"]
+    ]
+    assert mine[0]["facing"] == "south"
+
+
+async def test_the_minimap_signs_where_each_stair_leads(server, db):
+    """Лестница на схеме подписана: вверх или вниз и на какой этаж."""
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    # Отряд входит на территорию, а лестница тут одна — на другом её
+    # конце. Доходить до неё боем ради подписи незачем: что и куда
+    # ведёт, считает сервер, и это проверено отдельно
+    # (`test_every_stair_on_the_minimap_says_where_it_leads`). Здесь
+    # спрашивается только одно — попадает ли подпись на схему
+    here = next(one for one in body["map"]["rooms"] if one["here"])
+    here["stairs"] = [
+        {"layer": "F1", "title": "1 этаж", "up": True, "rooms": ["F101"]},
+        {"layer": "B", "title": "Подвал", "up": False, "rooms": ["B01"]},
+    ]
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .minimap")
+
+        said = page.locator(".minimap-room.here .minimap-stairs")
+        assert await said.all_text_contents() == ["↑ 1 этаж", "↓ Подвал"]
+        # Под каждой подписью плашка: без неё линия коридора шла бы
+        # сквозь буквы
+        assert await page.locator(
+            ".minimap-room.here .minimap-stairs-plate"
+        ).count() == 2
+        # Подписи лежат под плитой комнаты и не наезжают друг на друга
+        tops = [
+            float(await page.locator(
+                ".minimap-room.here .minimap-stairs-plate"
+            ).nth(step).get_attribute("y"))
+            for step in (0, 1)
+        ]
+        assert tops[1] - tops[0] >= 16, tops
+        # Комнате без лестницы подписывать нечего
+        assert await page.locator(
+            ".minimap-room:not(.here) .minimap-stairs"
+        ).count() == 0
+        await browser.close()
+
+
+async def test_the_dungeon_fight_offers_the_tricks(server, db):
+    """Боёвка как в рейде: та же панель приёмов и та же шкала энергии."""
+    from bot.blackout_service import act, state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 2)
+    at = NOW
+    await act(db, people[0], "lead", {"room": "O02"}, "w1", at)
+    body = await state_for(db, people[0], at + 10)
+    assert body["fight"]["abilities"]["tricks"]
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .tricks")
+
+        assert await page.locator("#blackout-body .energy").count() == 1
+        assert await page.locator("#blackout-body .trick").count() == len(
+            body["fight"]["abilities"]["tricks"]
+        )
+        await browser.close()
+
+
+async def test_the_lobby_says_when_the_station_opens_for_this_fighter(server, db):
+    """Личный откат виден до кнопки, а не отказом после неё."""
+    from bot.blackout_service import lobby_for
+    from bot.game.blackout import LOCK_WON, WON_COOLDOWN_DAYS
+    from tests.test_blackout import NOW, make_player as a_fighter
+
+    one = a_fighter(1, "Тайлер")
+    one.location = "power_station"
+    await db.save_player(one)
+    await db.blackout_lock(
+        one.user_id, NOW + WON_COOLDOWN_DAYS * 86_400, LOCK_WON, NOW
+    )
+    body = await lobby_for(db, one, NOW)
+    assert body["locked_until"] and "пройдена" in body["locked_why"]
+    card = build_card(one, TOKEN, viewer_id=one.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .btn")
+
+        said = await page.locator("#blackout").inner_text()
+        assert "3 дня" in said, said
+        shut = page.locator("#blackout-body .btn", has_text="Станция закрыта")
+        assert await shut.count() == 1
+        assert await shut.first.is_disabled()
+        await browser.close()
+
+
+async def test_the_station_screen_offers_the_potions(server, db):
+    """Передышки за комнату нет — зато есть склянки и кнопка на них.
+
+    Пить зовут после боя, а не во время: в бою экран занят боем, и
+    склянки под ним не показываются вовсе.
+    """
+    from bot.blackout_service import act, state_for
+    from tests.test_blackout import NOW, enter, walk, win_here
+
+    people, run = await enter(db, 2)
+    at = await walk(db, people, run, "O02", NOW)
+    at = await win_here(db, people, run.id, at)
+    for one in people:
+        await act(db, one, "done", {}, f"d{one.user_id}", at)
+    body = await state_for(db, people[0], at)
+    assert not body["fight"] and not body["aftermath"]
+    assert body["potions"], "склянки в рюкзаке должны прийти в снимок"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .shelf")
+
+        said = await page.locator("#blackout").inner_text()
+        assert "Склянки" in said
+        assert "Большой эликсир восстановления" in said
+        # И кнопки «поднять» больше нет: упавших тут не поднимают
+        assert await page.locator(
+            "#blackout-body .btn", has_text="Поднять"
+        ).count() == 0
+        await browser.close()
+
+
+async def test_the_raid_screen_fits_a_narrow_phone(server, db):
+    """Узкий телефон: кнопки не налезают друг на друга и не уезжают."""
+    from bot.blackout_service import look, run_of, snapshot
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 4)
+    run = await look(db, run.id, NOW)
+    body = snapshot(run, people[0].user_id, NOW)
+    body["screen"] = "run"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            executable_path=CHROMIUM, args=["--no-proxy-server"]
+        )
+        page = await browser.new_page(viewport={"width": 320, "height": 760})
+        await page.route("**/api/card*", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(card),
+        ))
+        await page.route("**/api/blackout", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(body),
+        ))
+        await page.route(IMAGES, lambda route: route.abort())
+        await page.goto(f"{server.make_url('/')}")
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .shelf")
+
+        width = await page.evaluate(
+            "() => document.documentElement.scrollWidth"
+        )
+        assert width <= 320, f"страница шире экрана: {width}"
+        boxes = await page.locator("#blackout-body .btn").all()
+        for one in boxes:
+            box = await one.bounding_box()
+            if box is None:
+                continue
+            assert box["x"] >= -1, "кнопка уехала за левый край"
+            assert box["x"] + box["width"] <= 321, "кнопка уехала вправо"
+        await browser.close()
+
+
+# ---------- суд ----------
+
+
+async def test_the_court_shows_the_docket_to_the_robe_and_the_ladder_to_all(
+    server, db
+):
+    """Судья видит дела, остальные — свой приговор. Лестница видна обоим."""
+    from bot.court_service import sentence
+    from bot.webapp.court import build_court
+    from tests.test_theft import NOW, a_theft, judge_at_court
+
+    row = await a_theft(db)
+    judge = await judge_at_court(db)
+    body = await build_court(db, judge, NOW)
+    card = build_card(judge, TOKEN, viewer_id=judge.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, court=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "court")
+        await page.wait_for_selector("#court-body .shelf")
+
+        said = await page.locator("#court-body").inner_text()
+        assert str(row["plate"]) in said and "Вор" in said
+        # Мера написана заранее: судья решает, быть приговору или нет
+        assert "300" in said and "1-й" in said.replace(" ", " ")
+        verdict = page.locator("#court-body .btn", has_text="Приговор")
+        assert await verdict.count() == 1
+        await browser.close()
+
+    # А тот же экран глазами осуждённого: своё дело и ни одного чужого
+    await sentence(db, judge, int((await db.theft_cases(judged=False))[0]["id"]), NOW)
+    thief = await db.get_player(2)
+    mine = await build_court(db, thief, NOW)
+    card = build_card(thief, TOKEN, viewer_id=thief.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, court=mine)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "court")
+        await page.wait_for_selector("#court-body .shelf")
+
+        said = await page.locator("#court-body").inner_text()
+        assert "300" in said and str(row["plate"]) in said
+        assert await page.locator(
+            "#court-body .btn", has_text="Приговор"
+        ).count() == 0, "приговоры выносит мантия, а не осуждённый"
+        await browser.close()
+
+
+# ---------- школа боевых искусств ----------
+
+
+async def test_the_school_has_two_tabs_and_opens_on_your_tricks(server, db):
+    """Вкладок две: свои приёмы и обучение. Первой стоит своё."""
+    from bot.webapp.dojo import build_dojo
+    from tests.test_dojo_school import student
+
+    me = await student(db)
+    await db.add_deeds(me.user_id, {"hit": 1200, "dodge": 80})
+    body = await build_dojo(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dojo=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dojo")
+        await page.wait_for_selector("#dojo-body .shelf")
+
+        assert await page.locator("#dojo-tabs .chip").all_inner_texts() == [
+            "Ваши приёмы", "Обучение",
+        ]
+        assert await page.locator("#dojo-tabs .chip.on").inner_text() == (
+            "Ваши приёмы"
+        )
+        heads = await page.locator("#dojo-body .shelf-head").all_inner_texts()
+        assert heads == ["Приёмы · 4 из 4", "Сделано в боях"]
+        # Свои приёмы — с ценой по своей ступени
+        said = await page.locator("#dojo-body").inner_text()
+        assert "Сильный удар" in said and "3 ⚡ · приём 1 ступени" in said
+        assert "Точных ударов · Воин" in said and "1\u00a0200" in said
+        # Каталога на этой вкладке нет
+        assert await page.locator("#dojo-body .dojo-line").count() == 0
+        await browser.close()
+
+
+async def test_the_study_tab_lists_what_you_can_learn_and_filters_it(
+    server, db
+):
+    """«Обучение»: компактные строки с «+» и фильтр по цене в энергии."""
+    from bot.webapp.dojo import build_dojo
+    from tests.test_dojo_school import student
+
+    me = await student(db)
+    body = await build_dojo(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dojo=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dojo")
+        await page.wait_for_selector("#dojo-body .shelf")
+
+        await page.locator("#dojo-tabs .chip", has_text="Обучение").click()
+        await page.wait_for_selector("#dojo-body .dojo-line")
+
+        # Двенадцать невыученных, у каждого «+» и цена в делах
+        assert await page.locator("#dojo-body .dojo-line").count() == 12
+        assert await page.locator("#dojo-body .dojo-plus").count() == 12
+        nimble = page.locator(
+            "#dojo-body .dojo-line", has_text="Проворность"
+        ).first
+        said = await nimble.inner_text()
+        assert "3 ⚡" in said and "500 уворотов" in said
+
+        # Фильтр по цене: «Все» плюс четыре цены
+        chips = await page.locator("#dojo-body .bubbles .chip").all_inner_texts()
+        assert chips == ["Все", "3 ⚡", "6 ⚡", "9 ⚡", "12 ⚡"]
+        await page.locator("#dojo-body .chip", has_text="6 ⚡").click()
+        await page.wait_for_selector("#dojo-body .dojo-line")
+        assert await page.locator("#dojo-body .dojo-line").count() == 3
+        assert await page.locator(
+            "#dojo-body .shelf-head"
+        ).inner_text() == "Приёмы по 6 ⚡ · 3"
+        await browser.close()
+
+
+async def test_the_plus_tells_what_it_takes_and_starts_the_study(server, db):
+    """«+» спрашивает согласие словами задания и начинает учёбу."""
+    from bot.webapp.dojo import build_dojo
+    from tests.test_dojo_school import student
+
+    me = await student(db)
+    body = await build_dojo(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dojo=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dojo")
+        await page.locator("#dojo-tabs .chip", has_text="Обучение").click()
+        await page.wait_for_selector("#dojo-body .dojo-line")
+        await page.evaluate(
+            "window.sent = null;"
+            "window.post = async (url, payload) => {"
+            "  window.sent = payload; return {};"
+            "};"
+        )
+
+        await page.locator(
+            "#dojo-body .dojo-line", has_text="Проворность"
+        ).first.locator(".dojo-plus").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        said = await page.locator("#sheet-list").inner_text()
+        assert "вам нужно будет увернуться 500 раз" in said
+        assert "«Сильный удар» забудется навсегда" in said
+        assert await page.locator("#sheet-list .btn").all_inner_texts() == [
+            "Начать изучать", "Отмена",
+        ]
+
+        await page.locator("#sheet-list .btn").first.click()
+        assert await page.evaluate("window.sent") == {
+            "action": "start", "code": "nimble",
+        }
+        await browser.close()
+
+
+async def test_the_study_tab_shows_only_the_bar_while_it_fills(server, db):
+    """Пока приём учится, на вкладке только он — со шкалой и числом."""
+    from bot.dojo_service import start
+    from bot.webapp.dojo import build_dojo
+    from tests.test_dojo_school import student
+
+    me = await student(db)
+    await start(db, me, "nimble", now_ts())
+    await db.add_deeds(me.user_id, {"dodge": 125})
+    body = await build_dojo(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dojo=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dojo")
+        await page.locator("#dojo-tabs .chip", has_text="Обучение").click()
+        await page.wait_for_selector("#dojo-body .deed-bar")
+
+        heads = await page.locator("#dojo-body .shelf-head").all_inner_texts()
+        assert heads == ["В обучении"]
+        said = await page.locator("#dojo-body").inner_text()
+        assert "Уворотов 125/500" in said
+        assert "375 уворотов" in said and "«Сильный удар»" in said
+        # Четверть пути — четверть шкалы
+        assert await page.evaluate(
+            "el('dojo-body').querySelector('.deed-fill').style.width"
+        ) == "25%"
+        # Выбирать нечего: каталога и фильтра на экране нет
+        assert await page.locator("#dojo-body .dojo-line").count() == 0
+        assert await page.locator("#dojo-body .chip").count() == 0
+        assert await page.locator("#dojo-body .btn").all_inner_texts() == [
+            "Бросить"
+        ]
+        await browser.close()
+
+
+async def test_a_full_bar_asks_to_confirm_the_swap_with_pictures(server, db):
+    """Набрал — «Изучить», и окно показывает, что уйдёт и что придёт."""
+    from bot.dojo_service import start
+    from bot.webapp.dojo import build_dojo
+    from tests.test_dojo_school import student
+
+    me = await student(db)
+    await start(db, me, "nimble", now_ts())
+    await db.add_deeds(me.user_id, {"dodge": 500})
+    body = await build_dojo(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dojo=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dojo")
+        await page.locator("#dojo-tabs .chip", has_text="Обучение").click()
+        await page.wait_for_selector("#dojo-body .dojo-ready")
+        await page.evaluate(
+            "window.sent = null;"
+            "window.post = async (url, payload) => {"
+            "  window.sent = payload; return {};"
+            "};"
+        )
+
+        ready = page.locator("#dojo-body .dojo-ready")
+        assert await ready.locator(".shelf-head").inner_text() == (
+            "Набрано: можно изучить"
+        )
+        # Набранный приём место в обучении не занимает: каталог рядом
+        assert await page.locator("#dojo-body .dojo-line").count() == 12
+        await ready.locator(".btn", has_text="Изучить").click()
+        await page.wait_for_selector(".dojo-swap")
+
+        sides = await page.locator(".dojo-swap-side").all_inner_texts()
+        assert len(sides) == 2
+        assert "Забудется" in sides[0] and "Сильный удар" in sides[0]
+        assert "Выучится" in sides[1] and "Проворность" in sides[1]
+        assert await page.locator(".dojo-swap-side .skill-pic").count() == 2
+        assert await page.locator("#sheet-list .btn").all_inner_texts() == [
+            "Подтвердить", "Отменить",
+        ]
+
+        await page.locator("#sheet-list .btn").first.click()
+        assert await page.evaluate("window.sent") == {
+            "action": "learn", "code": "nimble",
+        }
+        await browser.close()
+
+
+# ---------- барбершоп и салон красоты ----------
+
+
+async def test_the_barbershop_shows_the_shelf_with_prices(server):
+    """Полка дома: двенадцать мужских образов, и платные с ценой."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, barber=barber_shelf()
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "barber")
+        await page.wait_for_selector("#barber-body .look")
+
+        assert await page.locator("#barber-title").inner_text() == "Барбершоп"
+        assert await page.locator("#barber-body .look").count() == 12
+        tags = await page.locator("#barber-body .look-tag").all_inner_texts()
+        assert sum(1 for tag in tags if "💰" in tag) == 9
+        assert await page.locator("#shop-purse-barber").inner_text() != ""
+        await browser.close()
+
+
+async def test_buying_a_look_in_the_shop_asks_first(server):
+    """Покупка спрашивает согласие и уходит кодом образа."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, barber=barber_shelf()
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "barber")
+        await page.wait_for_selector("#barber-body .look")
+        await page.evaluate(
+            "window.sent = null;"
+            "window.confirmAction = async () => true;"
+            "window.post = async (url, payload) => {"
+            "  window.sent = payload; return {};"
+            "};"
+        )
+
+        await page.locator(
+            "#barber-body .look", has_text="Ветеран клуба"
+        ).click()
+
+        assert await page.evaluate("window.sent") == {
+            "action": "buy", "code": "veteran",
+        }
+        await browser.close()
+
+
+async def test_a_woman_in_the_barbershop_is_told_why_not(server):
+    """Чужой дом не продаёт и говорит почему — а полку показывает."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    shelf = barber_shelf(mine=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, barber=shelf)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "barber")
+        await page.wait_for_selector("#barber-body .look")
+        await page.evaluate(
+            "window.sent = null;"
+            "window.post = async (url, payload) => {"
+            "  window.sent = payload; return {};"
+            "};"
+        )
+        # Отказ приходит всплывашкой: без Telegram это обычный alert
+        said = []
+
+        def on_dialog(dialog):
+            said.append(dialog.message)
+            asyncio.ensure_future(dialog.dismiss())
+
+        page.on("dialog", on_dialog)
+
+        assert await page.locator("#barber-body .look").count() == 12
+        await page.locator(
+            "#barber-body .look", has_text="Ветеран клуба"
+        ).click()
+
+        assert await page.evaluate("window.sent") is None, "ничего не купили"
+        assert said and "берут их мужчины" in said[0]
+        await browser.close()
+
+
+async def test_the_station_offers_cash_or_card_with_a_discount(server, db):
+    """На станции виден переключатель кошелька и скидка по карте."""
+    from bot.game.bank import CARD_DISCOUNT
+    from bot.webapp.charging import build_charge
+    from tests.test_charge import carded, drained, driver
+
+    me = await carded(db, await driver(db, credits=1000))
+    me = await drained(db, me, 20)
+    body = await build_charge(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, charge=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "charge")
+        await page.wait_for_selector("#charge-body .wallet")
+
+        picks = await page.locator("#charge-body .wallet-pick").all_inner_texts()
+        assert len(picks) == 2
+        assert "Наличные" in picks[0] and "Карта" in picks[1]
+        assert f"−{CARD_DISCOUNT}%" in picks[1], "скидка видна на самой кнопке"
+        assert "card" == await page.locator(
+            "#charge-body .wallet-pick.on"
+        ).get_attribute("data-purse")
+        assert f"−{CARD_DISCOUNT}% к ценам" in await page.locator(
+            "#charge-body .wallet-note"
+        ).inner_text()
+
+        # И мерки посчитаны по карте: 47 вместо пятидесяти
+        await page.locator("#charge-body .charge-slot").first.click()
+        await page.locator(".charge-car-tile").first.click()
+        await page.wait_for_selector(".charge-steps")
+        squares = await page.locator(".charge-step").all_inner_texts()
+        assert "47 💰" in squares[0] and "71 💰" in squares[1]
+        await browser.close()
+
+
+async def test_the_raid_house_keeps_the_raid_button_in_the_header(server):
+    """Кнопка «Рейд» стоит в шапке дома рядом с «Работой».
+
+    Прежде дверь казино открывала раздел рейда, и войти в него иначе было
+    нельзя: переключился на «Бои» — возвращайся через карту. Теперь во
+    всяком рейдовом доме в шапке стоит та же кнопка, что и на полигоне, —
+    а пока раздел рейда открыт, она горит, как «Смена» у работы.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server)
+
+        # Пришли в казино: раздел рейда открыт, и кнопка это показывает
+        assert await page.locator(".raid-entry").count() == 1
+        assert await page.locator(".raid-entry").inner_text() == "🎖 Рейд"
+        assert "on" in (
+            await page.locator(".raid-entry").get_attribute("class")
+        )
+        # Шапка у неё та же, что у «Работы»: обе лежат в .screen-head,
+        # рядом с кнопкой выхода на карту
+        head = page.locator("#club .screen-head")
+        assert await head.locator(".raid-entry").count() == 1
+        assert await head.locator(".back").count() == 1
+
+        # Ушли в рюкзак — кнопка уехала с ним: она рисуется в шапке того
+        # экрана, что открыт
+        await page.locator("#tab-bag").click()
+        await page.wait_for_selector("#bag:not(.hidden)")
+        assert await page.locator("#club .raid-entry").count() == 0
+        assert await page.locator("#bag .screen-head").count() == 0
+
+        # Вернулись в клуб — и кнопка снова в шапке, и снова горит
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club:not(.hidden)")
+        assert "on" in (
+            await page.locator(".raid-entry").get_attribute("class")
+        )
+
+        # В казино она ещё и переключатель: нажата — рейд, отжата — зал
+        await page.locator(".raid-entry").click()
+        await page.wait_for_selector("#casino:not(.hidden)")
+        assert "on" not in (
+            await page.locator("#casino .raid-entry").get_attribute("class")
+        )
+        await page.locator("#casino .raid-entry").click()
+        await page.wait_for_selector("#club-raid:not(.hidden)")
+        await browser.close()
+
+
+# ---------- номера, угон и патруль ----------
+
+
+async def test_the_wash_shows_the_plate_and_offers_a_new_one(server, db):
+    """Автомойка: знак крупно, розыск красным и цена нового номера."""
+    from bot.car_service import buy, steal, wheel
+    from bot.police_service import file_theft
+    from bot.webapp.wash import build_wash
+    from tests.test_theft import NOW, make_player as a_driver, mafioso, stand
+
+    owner = await stand(db, a_driver(1, "Жертва", seen=0))
+    await buy(db, owner, "street_compact", NOW)
+    await wheel(db, owner, "street_compact", NOW)
+    row = await db.car_row(1, "street_compact")
+    # Угоняют там, где стоит хозяин, а номер перебивают на мойке
+    thief = await mafioso(db, a_driver(2, "Вор"))
+    await steal(db, thief, int(row["id"]), NOW)
+    victim = await db.get_player(1)
+    victim.location = "vcpd"
+    await db.save_player(victim)
+    await file_theft(db, victim, int(row["id"]), NOW)
+
+    fresh = await db.get_player(2)
+    fresh.location = "car_wash"
+    await db.save_player(fresh)
+    body = await build_wash(db, fresh, NOW)
+    card = build_card(fresh, TOKEN, viewer_id=fresh.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(fresh))
+        await page.route("**/api/wash", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        ))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "wash")
+        await page.wait_for_selector("#wash-body .shelf")
+
+        plate = page.locator("#wash-body .plate")
+        assert await plate.inner_text() == str(row["plate"])
+        # В розыске — красная рамка: по этому знаку машину и ищут
+        assert "wanted" in (await plate.get_attribute("class"))
+        said = await page.locator("#wash-body").inner_text()
+        assert "в розыске" in said
+        assert "Перебить номер" in said and "500" in said.replace(" ", " ")
+        await browser.close()
+
+
+async def test_the_traffic_sheet_offers_the_fine_and_the_address(server, db):
+    """Автоучёт в участке: без прав — штраф, в розыске — адрес, а не кнопка."""
+    from bot.car_service import buy, steal, wheel
+    from bot.police_service import file_theft
+    from bot.webapp.driving import build_police
+    from bot.webapp.police import build_police_board
+    from tests.test_theft import (
+        NOW, make_player as a_driver, mafioso, officer, stand,
+    )
+
+    owner = await stand(db, a_driver(1, "Жертва", seen=0))
+    await buy(db, owner, "street_compact", NOW)
+    await wheel(db, owner, "street_compact", NOW)
+    row = await db.car_row(1, "street_compact")
+    thief = await mafioso(db, a_driver(2, "Вор", where="bar"))
+    await steal(db, thief, int(row["id"]), NOW)
+    victim = await db.get_player(1)
+    victim.location = "vcpd"
+    await db.save_player(victim)
+    await file_theft(db, victim, int(row["id"]), NOW)
+
+    cop = await officer(db)
+    body = build_police(cop)
+    body.update(await build_police_board(db, cop, NOW))
+    card = build_card(cop, TOKEN, viewer_id=cop.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, police=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "police")
+        await page.wait_for_selector("#police-body .shelf")
+
+        said = await page.locator("#police-body").inner_text()
+        assert "Автоучёт" in said and str(row["plate"]) in said
+        assert "в розыске" in said and "без прав" in said
+        # Розыск машин говорит, где она стоит: кнопки возврата нет
+        assert "Розыск машин" in said and "Бар" in said
+        for gone in ("Изъять", "Вернуть"):
+            assert await page.locator(
+                "#police-body .btn", has_text=gone
+            ).count() == 0, f"кнопки «{gone}» в участке быть не должно"
+        await browser.close()
+
+
+async def test_a_foreign_script_error_is_reported_with_its_real_place(server):
+    """«Script error.» из чужого скрипта не выдаётся за падение карточки.
+
+    Такое приходит из `telegram-web-app.js`: он лежит на telegram.org, и
+    браузер по правилу одного источника отдаёт одно «Script error.» без
+    текста и стека. Раньше обработчик строил `new Error` сам, и стек
+    получался по месту вызова — по самому обработчику. В журнале это
+    выглядело как падение карточки в строке, где она только слушает, и
+    чинить было нечего. Теперь место берётся из события.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    reports: list[dict] = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+
+        async def catch(route):
+            reports.append(json.loads(route.request.post_data or "{}"))
+            await route.fulfill(
+                status=200, content_type="application/json", body="{}"
+            )
+
+        await page.route("**/api/oops", catch)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.evaluate(
+            """() => window.dispatchEvent(new ErrorEvent("error", {
+                message: "Script error.",
+                filename: "https://telegram.org/js/telegram-web-app.js",
+                lineno: 112,
+                colno: 7,
+            }))"""
+        )
+        await page.wait_for_function("() => true")
+        for _ in range(50):
+            if reports:
+                break
+            await page.wait_for_timeout(100)
+        await browser.close()
+
+    assert reports, "отчёт о чужой ошибке до сервера не доехал"
+    said = reports[0]
+    assert "telegram-web-app.js:112:7" in said["message"], said["message"]
+    assert "Script error." in said["message"]
+    assert not said["stack"], "подложного стека в отчёте быть не должно"
+
+
+async def test_the_look_stays_while_the_fighter_walks(server, db):
+    """В пути комнату видно и джойстик на месте — просто он не слушается.
+
+    Раньше экран на время перехода убирал управление целиком, и десять
+    секунд человек смотрел на пустое место. Смотреть в пути есть на
+    что: та комната, из которой выходишь, никуда не делась.
+    """
+    from bot.blackout_service import act, look, snapshot
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    await act(db, people[0], "go", {"room": "O02"}, "step", NOW)
+    body = snapshot(await look(db, run.id, NOW + 2), people[0].user_id, NOW + 2)
+    body["screen"] = "run"
+    assert body["walking"], "боец в пути"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stage-canvas")
+
+        assert await page.locator(".stick-pad").count() == 1, "джойстик на месте"
+        assert await page.locator(".key-up").first.is_disabled(), (
+            "в пути клавиши не слушаются"
+        )
+        said = await page.locator("#blackout").inner_text()
+        assert "В пути" in said and " с" in said
+        await browser.close()
+
+
+async def test_the_take_button_stands_under_the_walk_bar(server, db):
+    """Кнопка «взять» стоит сразу под шкалой хода, выше джойстика."""
+    from bot.blackout_service import look, member, raise_flag, snapshot
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    run = await look(db, run.id, NOW)
+    one = member(run.state, people[0].user_id)
+    one["room"] = "F209"  # тайник с модулем
+    raise_flag(run.state, "hunter_defeated", NOW)
+    body = snapshot(run, people[0].user_id, NOW)
+    body["screen"] = "run"
+    assert body["pickup"]["can_take"], "модуль лежит и его можно взять"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stick-row")
+
+        take = page.locator("#blackout-body .btn", has_text="Взять")
+        assert await take.count() == 1
+        # Порядок блоков: сцена, шкала, действия, джойстик
+        order = await page.evaluate(
+            "() => [...document.querySelector('#blackout-body').children]"
+            ".map((one) => one.className)"
+        )
+        assert order[0].startswith("stage") and order[1] == "walkbar", order
+        assert order[2] == "shelf" and order[3] == "stick-row", order
+        await browser.close()
+
+
+async def test_the_fight_takes_the_screen_and_hands_it_back(server, db):
+    """Бой занимает экран целиком, а вернуть управление — кнопкой.
+
+    Ниже шкалы хода в бою нет ничего, кроме самого боя: джойстик,
+    схема и склянки под ним — приглашение нажать не то. Кончился бой —
+    на том же месте итог и «Завершить бой», и только после неё экран
+    снова становится ходячим.
+    """
+    from bot.blackout_service import act, state_for
+    from tests.test_blackout import NOW, enter, walk, win_here
+
+    people, run = await enter(db, 2)
+    at = await walk(db, people, run, "O02", NOW)
+    fight = await state_for(db, people[0], at)
+    assert fight["fight"], "в проходной дерутся"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=fight)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .raid-board")
+
+        # Обе стороны на доске: отряд и зомби, как в любом другом рейде
+        assert await page.locator(".raid-mates .stack-card").count() >= 1
+        assert await page.locator(".raid-foes .boss-card").count() == 1
+        assert await page.locator("#blackout-body #blackout-go"
+                                  ).count() == 1
+        # И ничего больше ниже шкалы
+        for gone in (".stick-pad", ".minimap", ".blackout-items"):
+            assert await page.locator(gone).count() == 0, gone
+        await browser.close()
+
+    at = await win_here(db, people, run.id, at)
+    over = await state_for(db, people[0], at)
+    assert over["aftermath"] and not over["fight"]
+    await act(db, people[0], "done", {}, "d1", at)
+    calm = await state_for(db, people[0], at)
+    assert not calm["aftermath"]
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            executable_path=CHROMIUM, args=["--no-proxy-server"]
+        )
+        page = await browser.new_page(viewport={"width": 420, "height": 900})
+        await page.route("**/api/card*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(card),
+        ))
+        pressed = {"yes": False}
+
+        async def answer(route):
+            if route.request.method == "POST":
+                pressed["yes"] = True
+            body = calm if pressed["yes"] else over
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(body),
+            )
+
+        await page.route("**/api/blackout", answer)
+        await page.route(IMAGES, lambda route: route.abort())
+        await page.goto(f"{server.make_url('/')}")
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .fight-finish")
+
+        said = await page.locator(".fight-finish").inner_text()
+        assert "зачищена" in said, said
+        assert await page.locator(".stick-pad").count() == 0
+        await page.locator(
+            "#blackout-body .btn", has_text="Завершить бой"
+        ).click()
+        await page.wait_for_selector("#blackout-body .stick-row")
+        assert pressed["yes"], "кнопка должна дойти до сервера"
+        assert await page.locator(".minimap").count() == 1
+        await browser.close()
+
+
+async def test_the_station_picks_the_turn_the_way_every_fight_does(server, db):
+    """Выбор хода на станции — те же столбцы переключателей, что везде.
+
+    Станция рисовала свой ряд мелких кнопок в строку, и боец, который
+    ходит в рейды, видел здесь другой орган управления. Теперь тут
+    `zoneColumns`: столбец на руку с оружием, столбец блока — и блок
+    сразу своей ширины, как на ринге.
+    """
+    from bot.blackout_service import act, state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 2)
+    await act(db, people[0], "lead", {"room": "O02"}, "w1", NOW)
+    body = await state_for(db, people[0], NOW + 10)
+    fight = body["fight"]
+    assert fight and fight["hands"], "столбцы ударов считает сервер"
+    assert len(fight["attacks"]) == 5, "зон удара пять"
+    wide = fight["blocks"][0]["title"].count("+") + 1
+    assert wide >= 2, "блок шире одной зоны, как и везде"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .zone-columns")
+
+        # Столбцов столько же, сколько рук, плюс блок
+        heads = await page.locator("#blackout-body .zone-head"
+                                   ).all_inner_texts()
+        assert len(heads) == len(fight["hands"]) + 1, heads
+        assert "Блок" in heads[-1]
+        # И это переключатели, а не кнопки
+        dots = page.locator("#blackout-body .zone input[type=radio]")
+        assert await dots.count() == 5 + len(fight["blocks"])
+        # Пока ход не намечен целиком, «Вперёд!» не нажать
+        go = page.locator("#blackout-body #blackout-go")
+        assert await go.is_disabled()
+        await page.locator("#blackout-body .zone", has_text="Корпус"
+                           ).first.click()
+        assert await go.is_disabled(), "удар есть, блока нет"
+        await page.locator(
+            "#blackout-body .zone-list"
+        ).last.locator(".zone").first.click()
+        assert not await go.is_disabled()
+        await browser.close()
+
+
+async def test_the_launch_parts_are_pictures_grey_until_found(server, db):
+    """Элементы запуска — картинки: серая не найдена, цветная найдена."""
+    from bot.blackout_service import look, raise_flag, snapshot
+    from bot.game.blackout import SYNCHRONIZER
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    run = await look(db, run.id, NOW)
+    raise_flag(run.state, SYNCHRONIZER, NOW)  # один модуль уже у отряда
+    body = snapshot(run, people[0].user_id, NOW)
+    body["screen"] = "run"
+    found = [one for one in body["items"] if one["have"]]
+    assert len(found) == 1 and found[0]["image"], "картинка модуля в снимке"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, blackout=body, images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .blackout-item-pic")
+
+        assert await page.locator(".blackout-item-pic").count() == 3
+        # Найденный — в цвете, остальные обесцвечены
+        shades = await page.locator(".blackout-item-pic").evaluate_all(
+            "(pics) => pics.map((one) => getComputedStyle(one).filter)"
+        )
+        colour = [one for one in shades if one in ("none", "")]
+        assert len(colour) == 1, shades
+        assert all("grayscale" in one for one in shades if one not in colour)
+        # Подпись названия ушла в подсказку, а не в строку под картинкой
+        said = await page.locator("#blackout-body .stick-row").inner_text()
+        assert "Фазовый синхронизатор" not in said
+        await browser.close()
+
+
+async def test_a_drawn_room_steps_aside_for_its_own_panorama(server, db):
+    """Есть своя панорама — нарисованная комната уходит целиком.
+
+    Фотография на каждую сторону стоит больше любой геометрии: поверх
+    неё рисовать нечего, кроме зомби и ящика. А нет панорамы — комната
+    остаётся нарисованной, и отдельного списка готовых комнат для
+    этого никто не ведёт: картинка просто не загрузится.
+    """
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    assert body["view"]["eyes"], "адреса своих кадров собирает сервер"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    # Панорамы ещё нет: картинка не доходит, комната рисуется
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stage-canvas")
+        await page.wait_for_selector("#blackout-body .stage-wall")
+        assert await page.locator(".stage-shell").count() == 1
+        await browser.close()
+
+    # Панорама есть — стен не остаётся
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, blackout=body, images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stage-canvas")
+        await page.wait_for_selector("#blackout-body .stage.photo")
+        assert await page.locator(".stage-shell").count() == 0
+        assert await page.locator(".stage-wall").count() == 0
+        # Зомби и ящик при этом остаются: они на фотографии и рисуются
+        assert await page.locator(".stage-eye").count() == 1
+        await browser.close()
+
+
+async def test_the_room_takes_the_png_when_there_is_no_jpg(server, db):
+    """Кадры сохраняют то `.jpg`, то `.png` — годится любой.
+
+    Отрисовка идёт пачками, и в одной папке лежит одно, в соседней
+    другое. Экран пробует по очереди: не нашёлся первый — берётся за
+    следующий, и только когда кончились все, рисует комнату сам.
+    """
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    kinds = [one.rsplit(".", 1)[1] for one in body["view"]["eyes"]]
+    assert kinds == ["jpg", "png"], kinds
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, blackout=body, images=True
+        )
+        # Правила ставятся после общего: в Playwright выигрывает позднее
+        await page.route("**/*.jpg", lambda route: route.fulfill(status=404))
+        await page.route("**/*.png", lambda route: route.fulfill(
+            status=200, content_type="image/png", body=PIXEL
+        ))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stage.photo")
+
+        # Нарисованная комната ушла, а на сцене висит именно `.png`
+        assert await page.locator(".stage-shell").count() == 0
+        href = await page.locator(".stage-eye").first.get_attribute("href")
+        assert href.endswith(".png"), href
+        await browser.close()
+
+
+async def test_a_mirrored_room_hangs_its_frame_the_other_way_round(server, db):
+    """Кадры зеркальных комнат экран отражает, а прочих — нет.
+
+    У трёх комнат станции лево с правом нарисованы наоборот.
+    Перестановкой стен это не чинится — стены-то на своих местах, — и
+    чинит это сам экран, отражая картинку по горизонтали.
+    """
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async def shown(flip: bool) -> str | None:
+        body["view"]["eyes_flip"] = flip
+        async with async_playwright() as pw:
+            browser, page = await open_page(
+                pw, server, card, blackout=body, images=True
+            )
+            await page.wait_for_selector("#hero:not(.hidden)")
+            await open_screen(page, "blackout")
+            await page.wait_for_selector("#blackout-body .stage.photo")
+            said = await page.locator(".stage-eye").first.get_attribute(
+                "transform"
+            )
+            await browser.close()
+            return said
+
+    assert await shown(False) is None, "обычную комнату не отражают"
+    assert await shown(True) == "translate(640,0) scale(-1,1)"
+
+
+async def test_the_screen_does_not_redraw_itself_when_nothing_changed(
+    server, db
+):
+    """Тот же снимок — тот же экран, без моргания раз в пять секунд.
+
+    Снимок приходит каждые две-шесть секунд, и почти всегда он тот же:
+    отряд стоит, никто не ходит. Перерисовка по нему создавала заново
+    и картинки, а трёхмегабайтная панорама на это отвечает морганием.
+    Проверяем по самому узлу сцены: пережил опрос — значит картинку
+    никто не выбрасывал.
+    """
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stage-canvas")
+
+        # Метим узел сцены и просим перерисовать тем же снимком
+        await page.evaluate(
+            "() => { document.querySelector('.stage').dataset.mark = 'one'; }"
+        )
+        await page.evaluate("() => renderBlackout(blackoutData)")
+        assert await page.locator(".stage[data-mark=one]").count() == 1, (
+            "сцену пересобрали на том же снимке"
+        )
+
+        # А когда боец повернулся — сцена новая, иначе он смотрел бы
+        # в старую стену
+        await page.evaluate(
+            """() => {
+                const next = JSON.parse(JSON.stringify(blackoutData));
+                next.view.facing = "south";
+                next.view.facing_title = "юг";
+                renderBlackout(next);
+            }"""
+        )
+        assert await page.locator(".stage[data-mark=one]").count() == 0
+        await browser.close()
+
+
+async def test_the_vote_chip_folds_into_a_circle_and_still_opens(server, db):
+    """Плашка выборов: пять секунд целиком, дальше кружок — и он работает.
+
+    Голосование не ждёт, пока на него посмотрят, поэтому плашка висит
+    поверх любого экрана. Но держать подпись с отсчётом поверх игры всё
+    время незачем: сказала своё — свернулась в угол кружком.
+    """
+    voter, _, ballot, _ = await election_states(db)
+    card = build_card(voter, TOKEN, viewer_id=voter.user_id)
+    card["ballot"] = ballot
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector("#ballot-veil:not(.hidden)")
+        await page.locator("#ballot-buttons .btn").last.click()
+
+        chip = page.locator("#vote-chip")
+        assert "Идут выборы" in await chip.inner_text()
+        # Угол именно левый нижний
+        box = await chip.bounding_box()
+        wide = await page.evaluate("() => window.innerWidth")
+        assert box["x"] < wide / 2, box
+        # Не голосовал — серая
+        shade = await chip.evaluate(
+            "(one) => getComputedStyle(one).backgroundColor"
+        )
+        assert shade == "rgb(91, 99, 109)", shade
+
+        # Через пять секунд — кружок с одним значком
+        await page.wait_for_selector("#vote-chip.mini", timeout=9000)
+        assert (await chip.inner_text()).strip() == "🗳"
+        round_box = await chip.bounding_box()
+        assert abs(round_box["width"] - round_box["height"]) < 2, round_box
+
+        # И кружок открывает лист обратно
+        await chip.click()
+        assert await page.locator("#ballot-veil").is_visible()
+        await browser.close()
+
+
+async def test_the_chip_turns_green_once_the_vote_is_cast(server, db):
+    """Проголосовал — плашка зелёная, и в ней отметка, а не отсчёт."""
+    voter, _, _, done = await election_states(db)
+    card = build_card(voter, TOKEN, viewer_id=voter.user_id)
+    card["ballot"] = done
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector("#ballot-veil:not(.hidden)")
+        await page.locator("#ballot-buttons .btn").click()
+
+        chip = page.locator("#vote-chip")
+        assert "Голос отдан" in await chip.inner_text()
+        shade = await chip.evaluate(
+            "(one) => getComputedStyle(one).backgroundColor"
+        )
+        assert shade == "rgb(46, 160, 67)", shade
+        # Нажатие на неё говорит, что голос уже отдан, а не даёт второй бланк
+        await chip.click()
+        assert "Твой голос отдан" in await page.locator(
+            "#ballot-note"
+        ).inner_text()
+        assert await page.locator("#ballot-list .ballot-row").count() == 1
+        await browser.close()
+
+
+async def test_the_administration_counts_the_votes_while_they_are_cast(
+    server, db
+):
+    """Текущий расклад виден в администрации, пока голосование идёт."""
+    from bot.election_service import state, vote
+    from bot.webapp.elections import build_elections
+    from tests.test_elections import SUNDAY, citizen
+
+    voter, _, _, _ = await election_states(db)
+    # Ещё два голоса за Марлу: расклад должен это показать
+    for number in (4, 5):
+        one = await citizen(db, number, f"Житель-{number}", where="bar")
+        await vote(db, one, 1, now=SUNDAY)
+    body = build_elections(voter, await state(db, voter, SUNDAY), SUNDAY)
+    assert body["tally_shown"] and not body["counting"]
+    assert [one["votes"] for one in body["candidates"] if one["user_id"] == 1]
+
+    async with async_playwright() as pw:
+        browser, page = await open_admin(pw, server, voter, body)
+
+        said = await page.locator("#elections-body").inner_text()
+        assert "Голосование идёт, счёт меняется" in said
+        votes = await page.locator(".candidate-votes").all_inner_texts()
+        assert votes == ["3 голоса", "0 голосов", "0 голосов"], votes
+        # Первым стоит тот, за кого отдали больше
+        first = await page.locator(".candidate-name").first.inner_text()
+        assert "Марла" in first, first
+        await browser.close()
+
+
+async def test_the_zombie_opens_his_card_from_the_fight(server, db):
+    """Нажал на зомби — видно, кто он, чем бьёт и что на нём надето."""
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter, walk
+
+    people, run = await enter(db, 1)
+    at = await walk(db, people, run, "O02", NOW)
+    body = await state_for(db, people[0], at)
+    assert body["fight"]["cards"]["fighter"]["gear"]
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, blackout=body, images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .raid-board")
+
+        await page.locator(".raid-foes .boss-card").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        said = await page.locator("#sheet").inner_text()
+        assert "Зомби-боец" in said and "Воин" in said
+        for row in ("Сила", "Здоровье", "Урон", "Крит"):
+            assert row in said, row
+        # Экипировка — та, в которой он дерётся: девять занятых слотов
+        assert await page.locator("#sheet .foe-slot").count() == 9
+        assert await page.locator("#sheet .foe-face").count() == 1
+        assert "Разводной ключ" in said, said
+
+        # Нажал на вещь — видно, что она даёт
+        await page.locator("#sheet .foe-slot", has_text="Разводной ключ"
+                           ).click()
+        await page.wait_for_selector("#sheet-title")
+        gear = await page.locator("#sheet").inner_text()
+        assert "Разводной ключ" in gear and "Урон" in gear
+        # И обратно к бойцу
+        await page.locator("#sheet .btn", has_text="К бойцу").click()
+        assert "Зомби-боец" in await page.locator("#sheet-title").inner_text()
+        await browser.close()
+
+
+async def test_the_station_fight_reads_like_every_other_one(server, db):
+    """Ход боя на станции — теми же словами судьи, что на ринге."""
+    from bot.blackout_service import act, state_for
+    from tests.test_blackout import NOW, enter, walk
+
+    people, run = await enter(db, 1)
+    at = await walk(db, people, run, "O02", NOW)
+    await act(db, people[0], "fight",
+              {"attacks": ["head"], "block": ["chest"]}, "h1", at)
+    body = await state_for(db, people[0], at)
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .fight-log")
+
+        said = await page.locator("#blackout-body .fight-log").inner_text()
+        assert "Ход боя" in said
+        assert "→" not in said, "строки «такой-то → такому-то» больше нет"
+        assert await page.locator(
+            "#blackout-body .fight-log .log-line"
+        ).count() >= 2
+        await browser.close()
+
+
+# ---------- казино ----------
+
+
+def casino_draw(prize: dict | None = None, open_now: bool = True) -> dict:
+    """Барабан «Карусели удачи», как его отдаёт сервер."""
+    from bot.game.art import CASINO_COVERS
+    from bot.game.carousel import ROLL_PRICE, SPIN_SECONDS, belt
+
+    return {
+        "title": "Карусель удачи",
+        "about": "Оружие, щиты, жетоны и машины.",
+        "cover": CASINO_COVERS + "/super-draw.webp",
+        "price": ROLL_PRICE,
+        "spin": SPIN_SECONDS,
+        "belt": [
+            {
+                "kind": one.kind, "code": one.code, "title": one.title,
+                "price": one.price, "image": one.image, "chance": 1.0,
+            }
+            for one in belt()
+        ],
+        "now": now_ts(),
+        "open": open_now,
+        "shut": "" if open_now else "Казино закрыто. Откроется в 08:00.",
+        "wallet": {"chips": 300, "reserved": 0},
+        "prize": prize,
+    }
+
+
+def casino_lobby(
+    chips: int = 300, credits: int = 500, open_now: bool = True
+) -> dict:
+    """Лобби казино, как его отдаёт сервер."""
+    from bot.webapp.casino import ROULETTE_FIELDS
+    from bot.game.art import CASINO_COVERS
+    from bot.game.casino import GAME_LIST, REDS, WHEEL, cover_url
+
+    return {
+        "credits": credits,
+        "wallet": {"chips": chips, "reserved": 0},
+        "fields": ROULETTE_FIELDS,
+        "wheel": list(WHEEL),
+        "reds": sorted(REDS),
+        "now": now_ts(),
+        "draw": casino_draw(),
+        "lobby": {
+            "wallet": {"chips": chips, "reserved": 0},
+            "seat": None,
+            "open": open_now,
+            "edge": now_ts() + 3600,
+            "shut": "" if open_now else
+                    "Казино закрыто. Откроется в 08:00 по Москве.",
+            "draw": {
+                "code": "carousel", "title": "Карусель удачи",
+                "about": "Оружие, щиты, жетоны и машины.",
+                "cover": casino_draw()["cover"], "price": 250,
+            },
+            "games": [
+                {
+                    "code": one.code, "title": one.title, "about": one.about,
+                    "emoji": one.emoji, "least": one.least, "most": one.most,
+                    "step": one.step, "cover": cover_url(one.code),
+                    "tables": [{
+                        "id": number + 1, "taken": 0, "seats": one.seats,
+                        "phase": "wait", "phase_title": "Ждём игроков",
+                        "until": 0, "round": 0, "mine": False,
+                    }],
+                }
+                for number, one in enumerate(GAME_LIST)
+            ],
+        },
+    }
+
+
+def casino_table(game: str = "dice", phase: str = "accept", **extra) -> dict:
+    """Снимок стола, как его отдаёт сервер."""
+    from bot.webapp.casino import ROULETTE_FIELDS
+    from bot.game.casino import REDS, WHEEL, cover_url, game as rules_of
+
+    rules = rules_of(game)
+    seats = [{
+        "seat": "1", "user": 42, "name": "Растафарайчик", "avatar": "🥊",
+        "me": True, "bet": 0, "pick": "", "bets": [], "ready": False,
+        "gone": False, "cards": [], "count": 0, "open": False, "total": 0,
+        "soft": False, "stood": False, "said": "", "paid": 0, "turn": False,
+    }]
+    seats += [
+        {"seat": str(number), "user": 0, "empty": True}
+        for number in range(2, rules.seats + 1)
+    ]
+    table = {
+        "id": 1, "game": game, "title": rules.title, "about": rules.about,
+        "emoji": rules.emoji, "cover": cover_url(game), "seats": seats,
+        "phase": phase, "phase_title": "Приём ставок", "round": 1,
+        "until": now_ts() + 90, "since": now_ts() - 30, "now": now_ts(),
+        "turn": "", "result": None, "last": None, "events": [],
+        "least": rules.least, "most": rules.most, "step": rules.step,
+        "accept": rules.accept, "wallet": {"chips": 300, "reserved": 0},
+        "open": True, "edge": now_ts() + 3600, "shut": "",
+        "mine": True,
+    }
+    table.update(extra)
+    return {
+        "credits": 500,
+        "wallet": {"chips": 300, "reserved": 0},
+        "fields": ROULETTE_FIELDS,
+        "wheel": list(WHEEL),
+        "reds": sorted(REDS),
+        "now": now_ts(),
+        "table": table,
+        "seated": True,
+    }
+
+
+async def test_the_casino_lobby_shows_four_tables_and_the_cashier(server, db):
+    """На входе видно кассу и четыре стола с лимитами."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=casino_lobby())
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector("#casino-body .casino-game")
+
+        names = await page.locator(".casino-game h3").all_inner_texts()
+        assert len(names) == 4
+        assert any("рулетка" in one for one in names)
+        assert any("Кости" in one for one in names)
+        # Касса на месте, и курс назван словами
+        assert await page.locator(".casino-cashier").count() == 1
+        said = await page.locator(".casino-cashier").inner_text()
+        assert "один к одному" in said
+        # Фишки видно в шапке
+        assert "300" in await page.locator("#casino-purse").inner_text()
+        await browser.close()
+
+
+async def test_the_cashier_asks_the_server_to_change_money(server, db):
+    """Кнопка кассы шлёт обмен, а не меняет деньги на экране."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    asked = []
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=casino_lobby())
+
+        async def catch(route):
+            if route.request.method == "POST":
+                asked.append(json.loads(route.request.post_data or "{}"))
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(casino_lobby(chips=400, credits=400)),
+            )
+
+        await page.route("**/api/casino*", catch)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-cashier")
+        await page.locator(".casino-cashier input").fill("100")
+        await page.get_by_text("Купить фишки").click()
+        # Ждём не переменную страницы, а то, что видит человек: ответ
+        # сервера перерисовал кассу
+        await page.wait_for_selector(".casino-cashier >> text=На руках 400")
+        assert "400" in await page.locator("#casino-purse").inner_text()
+        assert asked and asked[0]["action"] == "exchange"
+        assert asked[0]["kind"] == "buy" and asked[0]["amount"] == 100
+        # Ключ команды идёт с каждым нажатием: повтор не станет вторым обменом
+        assert asked[0]["command"]
+        await browser.close()
+
+
+async def test_the_table_keeps_four_seats_and_the_empty_one(server, db):
+    """Четыре места, и пустое сохраняет размер."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("dice")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-felt")
+
+        assert await page.locator(".casino-seat").count() == 4
+        assert await page.locator(".casino-seat.empty").count() == 3
+        assert await page.locator(".casino-seat.me").count() == 1
+        # Своё место подписано «Вы», а не ником
+        assert "Вы" in await page.locator(".casino-seat.me").inner_text()
+        # Пустое место не схлопывается
+        empty = await page.locator(".casino-seat.empty").first.bounding_box()
+        mine = await page.locator(".casino-seat.me").bounding_box()
+        assert empty["height"] >= mine["height"] * 0.7
+        await browser.close()
+
+
+async def test_the_quick_stakes_reach_the_ceiling_of_the_table(server, db):
+    """Верхняя быстрая ставка — сам потолок стола, а не десять минимумов.
+
+    Лесенка шла «минимум ×1, ×2, ×5, ×10», и на блэкджеке с минимумом в
+    двадцать выше двухсот было не подняться — хотя стол принимает
+    тысячу. Потолок должен браться одним нажатием.
+    """
+    from bot.game.casino import game as rules_of
+
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("blackjack")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-stakes button")
+
+        rules = rules_of("blackjack")
+        steps = await page.locator(".casino-stakes button").all_inner_texts()
+        clean = [one.replace("\u00a0", "") for one in steps]
+        assert clean[0] == str(rules.least)
+        assert clean[-1] == str(rules.most), f"потолок не взять: {clean}"
+        await browser.close()
+
+
+async def test_the_table_with_one_stake_has_no_field_of_its_own(server, db):
+    """На столе с общим взносом своей ставки нет: там не ставка, а взнос."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("highcard")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-felt")
+
+        assert await page.locator(".casino-own").count() == 0
+        await browser.close()
+
+
+async def test_a_stake_of_your_own_goes_up_to_the_ceiling(server, db):
+    """Своя ставка: набрал число — поставил, и уходит оно на сервер.
+
+    Между двадцатью и тысячей промежуточных сумм больше, чем кнопок в
+    ряду, и доходить до своей прибавлениями по ступеньке — работа,
+    которой быть не должно.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    sent = []
+
+    async def catch(route):
+        if route.request.method == "POST":
+            sent.append(json.loads(route.request.post_data or "{}"))
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(casino_table("blackjack")),
+            )
+            return
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(casino_table("blackjack")),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("blackjack")
+        )
+        await page.route("**/api/casino*", catch)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-own")
+
+        await page.locator(".casino-own .field-input").fill("640")
+        await page.locator(".casino-own-go").click()
+        await page.wait_for_function(
+            "() => document.querySelector('.casino-stake-box')"
+            " && !document.querySelector('.casino-own .field-input').value"
+        )
+        # Набранное принято: оно же уходит на сервер при ставке
+        said = await page.locator("#casino-body").inner_text()
+        assert "640" in said, said
+        await browser.close()
+
+
+async def test_an_impossible_stake_is_refused_in_the_same_words(server, db):
+    """Отказ до нажатия — теми же словами, что и отказ службы.
+
+    Иначе выходит, что правил два: одно на странице, другое на сервере.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("blackjack")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-own")
+
+        field = page.locator(".casino-own .field-input")
+        oops = page.locator(".casino-own-oops")
+
+        # Блэкджек: от 20 до 1000, шаг 2
+        for typed, words in (
+            ("1200", "Наибольшая ставка — 1000."),
+            ("10", "Наименьшая ставка — 20."),
+            ("41", "Ставка должна быть кратна 2."),
+            ("0", "Ставка должна быть больше нуля."),
+        ):
+            await field.fill(typed)
+            await page.locator(".casino-own-go").click()
+            await page.wait_for_function(
+                "said => el('casino-body').innerText.includes(said)",
+                arg=words,
+            )
+            assert await oops.inner_text() == words, typed
+            # И ставка от отказа не поменялась
+            assert await field.input_value() == typed
+        await browser.close()
+
+
+async def test_the_dice_table_offers_three_outcomes(server, db):
+    """Три большие кнопки под лотком, и выплаты на них подписаны."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("dice")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-tray")
+
+        picks = page.locator(".casino-pick")
+        assert await picks.count() == 3
+        said = await picks.all_inner_texts()
+        assert any("Меньше 7" in one and "×2,3" in one for one in said)
+        assert any("Ровно 7" in one and "×5,75" in one for one in said)
+        # Кнопка не меньше 44 точек: по ней жмут большим пальцем
+        box = await picks.first.bounding_box()
+        assert box["height"] >= 44
+        await browser.close()
+
+
+async def test_the_dice_show_their_faces_only_after_they_stop(server, db):
+    """Сумму называют после остановки костей, а не до."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    rolling = casino_table("dice", phase="play", result={
+        "dice": [3, 4], "sum": 7, "outcome": "seven", "title": "Ровно 7",
+    })
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=rolling)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-tray")
+        assert await page.locator(".casino-shout").inner_text() == "…"
+
+        settled = casino_table("dice", phase="done", result=rolling["table"]["result"])
+        await page.evaluate("(data) => renderCasino(data)", settled)
+        shout = await page.locator(".casino-shout").inner_text()
+        assert "3 + 4 = 7" in shout and "Ровно 7" in shout
+        await browser.close()
+
+
+async def test_the_wheel_is_drawn_by_the_order_the_server_sent(server, db):
+    """Колесо рисуется по кольцу с сервера, а не «число × шаг»."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("roulette")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-wheel")
+
+        # Два слоя: диск и шарик
+        assert await page.locator(".casino-wheel canvas").count() == 2
+        # Поля стола — с сервера, вместе с выплатами
+        fields = await page.locator(".casino-field").all_inner_texts()
+        assert any("Красное" in one for one in fields)
+        assert any("13–24" in one for one in fields)
+        # Сетка чисел прячется за кнопкой: на телефоне 37 клеток не нужны
+        assert await page.locator(".casino-numbers").count() == 0
+        await page.get_by_text("На число").click()
+        await page.wait_for_selector(".casino-numbers")
+        assert await page.locator(".casino-numbers button").count() == 37
+        await browser.close()
+
+
+async def test_the_blackjack_hides_the_hole_card(server, db):
+    """Вторая карта крупье не видна, пока партия не посчитана."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    body = casino_table("blackjack", phase="turns", result={"upcard": "K♠"})
+    mine = body["table"]["seats"][0]
+    mine.update(cards=["9♥", "7♦"], count=2, total=16, turn=True, bet=20)
+    body["table"]["turn"] = "1"
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-hand")
+
+        faces = await page.locator(".casino-card:not(.back)").all_inner_texts()
+        assert "K♠" in faces and "9♥" in faces
+        assert await page.locator(".casino-card.back").count() == 1
+        # Ход за мной — кнопки живые
+        assert await page.get_by_text("Ещё карту").is_enabled()
+        await browser.close()
+
+
+async def test_the_casino_fits_a_narrow_phone(server, db):
+    """На 360 точках стол не уезжает вбок."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("roulette")
+        )
+        await page.set_viewport_size({"width": 360, "height": 780})
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-felt")
+        wide = await page.evaluate(
+            "() => document.documentElement.scrollWidth"
+            " - document.documentElement.clientWidth"
+        )
+        assert wide <= 1, f"горизонтальная прокрутка: {wide}"
+        await browser.close()
+
+
+async def test_the_lobby_shows_a_cover_for_every_table(server, db):
+    """У каждого стола своя обложка, и адрес её приходит с сервера."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby(), images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-game")
+        # У каждого из четырёх столов своя, и пятая — у карусели: она
+        # стоит отдельной плашкой выше столов
+        covers = page.locator(".casino-game .casino-cover")
+        assert await covers.count() == 4
+        where = await covers.first.get_attribute("src")
+        assert where.endswith("/casino/covers/seven.webp"), where
+        draw = await page.locator(
+            ".casino-draw-card .casino-cover"
+        ).get_attribute("src")
+        assert draw.endswith("/casino/covers/super-draw.webp"), draw
+        await browser.close()
+
+
+async def test_the_keyboard_survives_the_polling(server, db):
+    """Пока набирают сумму, экран не перерисовывается.
+
+    Опрос идёт раз в секунду, и каждая перерисовка выбрасывала поле
+    из-под пальца вместе с клавиатурой: набрать сумму было нельзя.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=casino_lobby())
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector("#casino-sum")
+
+        await page.locator("#casino-sum").click()
+        await page.keyboard.type("150")
+        # Пришёл очередной снимок — поле и набранное остались на месте
+        await page.evaluate(
+            "(data) => renderCasino(data)", casino_lobby(chips=301)
+        )
+        assert await page.evaluate(
+            "() => document.activeElement && document.activeElement.id"
+        ) == "casino-sum"
+        assert await page.locator("#casino-sum").input_value() == "150"
+        # А кошелёк в шапке всё-таки обновился
+        assert "301" in await page.locator("#casino-purse").inner_text()
+        await browser.close()
+
+
+async def test_the_waiting_is_a_bar_and_not_a_jumping_number(server, db):
+    """Ожидание круга — полоса, а не секунды."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    body = casino_table("dice")
+    table = body["table"]
+    table["since"] = table["now"] - 30
+    table["until"] = table["now"] + 90
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector("#casino-bar")
+        await page.wait_for_timeout(400)
+
+        said = await page.locator("#casino-clock").inner_text()
+        assert "с" not in said.replace("Приём ставок", ""), said
+        # Четверть круга прошла — полоса на четверть
+        part = await page.evaluate(
+            "() => parseFloat(document.querySelector('#casino-bar span')"
+            ".style.width)"
+        )
+        assert 20 <= part <= 30, part
+        await browser.close()
+
+
+async def test_the_ball_sits_in_the_pocket_that_won(server, db):
+    """Шарик останавливается под меткой — там, где выпавшее число.
+
+    Он считался по месту числа на неподвижном колесе, а колесо к тому
+    времени уже повернулось: подпись говорила «35», шарик стоял у
+    семёрки.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    body = casino_table("roulette", phase="accept")
+    body["table"]["last"] = {
+        "round": 1,
+        "result": {"number": 35, "colour": "black", "title": "35 · чёрное"},
+        "seats": {},
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector("#casino-ball")
+        await page.wait_for_timeout(300)
+
+        # Ищем сам шарик: метку сверху отсекаем по высоте
+        spot = await page.evaluate(
+            """() => {
+              const ball = document.getElementById('casino-ball');
+              const paint = ball.getContext('2d');
+              const dots = paint.getImageData(0, 0, ball.width, ball.height).data;
+              let sumX = 0, sumY = 0, seen = 0;
+              for (let y = 50; y < ball.height; y += 1) {
+                for (let x = 0; x < ball.width; x += 1) {
+                  const at = (y * ball.width + x) * 4;
+                  if (dots[at + 3] > 200 && dots[at] > 220
+                      && dots[at + 1] > 220 && dots[at + 2] > 200) {
+                    sumX += x; sumY += y; seen += 1;
+                  }
+                }
+              }
+              return seen ? {x: sumX / seen, y: sumY / seen, seen} : null;
+            }"""
+        )
+        assert spot and spot["seen"] > 20, spot
+        middle = 232
+        assert abs(spot["x"] - middle) < 20, spot
+        # Верхняя треть колеса: карман стоит под меткой
+        assert spot["y"] < middle * 0.6, spot
+        # А диск повёрнут так, что под меткой оказалось именно 35
+        turned = await page.evaluate(
+            "() => document.getElementById('casino-disc').style.transform"
+        )
+        from bot.game.casino import WHEEL
+
+        want = -(WHEEL.index(35) * 360 / 37)
+        spun = float(re.search(r"-?\d+(\.\d+)?", turned).group(0))
+        assert abs(spun - want) < 1, (turned, want)
+        await browser.close()
+
+
+async def test_the_covers_do_not_blink_on_every_poll(server, db):
+    """Опрос раз в секунду не должен пересоздавать картинки.
+
+    Перерисовка делала новые `<img>`, и каждая секунда начиналась с
+    пустого места: обложки моргали.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby(), images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-cover")
+
+        # Метим картинку и шлём тот же снимок ещё раз
+        await page.evaluate(
+            "() => { document.querySelector('.casino-cover').dataset.mark = 'я'; }"
+        )
+        await page.evaluate("(data) => renderCasino(data)", casino_lobby())
+        await page.evaluate("(data) => renderCasino(data)", casino_lobby())
+        mark = await page.evaluate(
+            "() => document.querySelector('.casino-cover').dataset.mark || ''"
+        )
+        assert mark == "я", "картинку пересоздали — она мигнёт"
+
+        # А изменившийся снимок экран всё-таки перерисовывает
+        await page.evaluate(
+            "(data) => renderCasino(data)", casino_lobby(chips=7)
+        )
+        assert "7" in await page.locator("#casino-purse").inner_text()
+        await browser.close()
+
+
+async def test_the_lobby_row_is_seats_and_a_button(server, db):
+    """В строке стола только занятость и кнопка: номер столу ни к чему."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=casino_lobby())
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-table-row")
+
+        said = await page.locator(".casino-table-row").first.inner_text()
+        assert "0/4" in said
+        assert "Сесть" in said
+        assert "Стол" not in said and "№" not in said, said
+        # И серой плиты под столом нет
+        paint = await page.evaluate(
+            "() => getComputedStyle(document.querySelector('.casino-table-row'))"
+            ".backgroundColor"
+        )
+        assert paint in ("rgba(0, 0, 0, 0)", "transparent"), paint
+        await browser.close()
+
+
+async def test_the_raid_button_stays_out_of_the_game(server, db):
+    """В лобби кнопка рейда есть, за столом — нет."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=casino_lobby())
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-game")
+        assert await page.locator("#casino .raid-entry").count() == 1
+
+        await page.evaluate(
+            "(data) => renderCasino(data)", casino_table("dice")
+        )
+        await page.wait_for_selector(".casino-felt")
+        assert await page.locator(".raid-entry").count() == 0
+        await browser.close()
+
+
+async def test_the_settled_hand_explains_who_won_and_why(server, db):
+    """После розыгрыша видно обе руки и сказано, почему вышло так."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    body = casino_table("blackjack", phase="done")
+    mine = body["table"]["seats"][0]
+    mine.update(
+        cards=["9♥", "7♦", "4♣"], count=3, total=20, bet=20, paid=40,
+        said="Победа",
+        why="У вас 9♥ 7♦ 4♣ — 20; у крупье K♠ 8♦ — 18. "
+            "Ваша рука ближе к 21 — начислено 40.",
+    )
+    body["table"]["result"] = {
+        "dealer": ["K♠", "8♦"], "total": 18, "blackjack": False,
+        "bust": False, "upcard": "K♠",
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-why")
+
+        # Рука крупье открыта целиком, и сумма названа
+        dealer = await page.locator(".casino-hand").first.inner_text()
+        assert "Крупье · 18" in dealer and "K♠" in dealer and "8♦" in dealer
+        # Итог: короткий, числами и словами
+        assert "Победа" in await page.locator(".casino-outcome").inner_text()
+        assert "+20" in await page.locator(".casino-outcome").inner_text()
+        sums = await page.locator(".casino-sums").inner_text()
+        assert "Ставка 20" in sums and "начислено 40" in sums
+        why = await page.locator(".casino-why").inner_text()
+        assert "у крупье" in why and "ближе к 21" in why
+        await browser.close()
+
+
+async def test_the_table_asks_before_it_takes_the_bet(server, db):
+    """Касание поля выбирает его, а ставит — «Сделать ставку».
+
+    Деньги не должны уходить от касания стола: выбрал — увидел, что
+    выбрал и на сколько, и только потом поставил.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    asked = []
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("roulette")
+        )
+
+        async def catch(route):
+            if route.request.method == "POST":
+                asked.append(json.loads(route.request.post_data or "{}"))
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(casino_table("roulette")),
+            )
+
+        await page.route("**/api/casino*", catch)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-field")
+
+        # Подписи над рядами говорят, что выбирают. Читаем текст, а не
+        # то, что нарисовано: прописные тут от стиля, а не от слов
+        hints = await page.locator(".casino-hint").all_text_contents()
+        assert hints[0] == "Выбирай размер ставки"
+        assert hints[1] == "Выбирай, на что ставишь"
+
+        # Выбрали номинал и поле — на сервер ничего не ушло
+        await page.get_by_text("25", exact=True).click()
+        await page.get_by_text("Красное", exact=True).click()
+        assert asked == [], asked
+        place = page.locator(".casino-actions .btn").first
+        assert await place.inner_text() == "Сделать ставку"
+        # А что именно уйдёт — сказано строкой над кнопками
+        chosen = await page.locator(".casino-chosen").inner_text()
+        assert "25" in chosen and "Красное" in chosen, chosen
+
+        # И только нажатие на неё ставит
+        await place.click()
+        await page.wait_for_function("() => true")
+        assert len(asked) == 1, asked
+        assert asked[0]["action"] == "bet"
+        assert asked[0]["spot"] == "color" and asked[0]["pick"] == "red"
+        assert asked[0]["amount"] == 25
+        await browser.close()
+
+
+async def test_the_number_is_chosen_but_not_yet_bet(server, db):
+    """«На число» открывает сетку; выбранное число ждёт подтверждения."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    asked = []
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("roulette")
+        )
+
+        async def catch(route):
+            if route.request.method == "POST":
+                asked.append(json.loads(route.request.post_data or "{}"))
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(casino_table("roulette")),
+            )
+
+        await page.route("**/api/casino*", catch)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-field")
+
+        await page.get_by_text("На число", exact=True).click()
+        await page.wait_for_selector(".casino-numbers")
+        await page.locator(".casino-numbers button").nth(7).click()
+        # Сетка закрылась, ставка не ушла, а кнопка называет число
+        assert await page.locator(".casino-numbers").count() == 0
+        assert asked == [], asked
+        chosen = await page.locator(".casino-chosen").inner_text()
+        assert "Число 7" in chosen, chosen
+        place = page.locator(".casino-actions .btn").first
+
+        await place.click()
+        await page.wait_for_function("() => true")
+        assert asked and asked[0]["spot"] == "number"
+        assert asked[0]["pick"] == "7"
+        await browser.close()
+
+
+async def test_the_table_has_only_the_four_buttons(server, db):
+    """За столом рулетки четыре кнопки, и «Уйти» — одна из них."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("roulette")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-actions")
+
+        said = await page.locator(".casino-actions .btn").all_inner_texts()
+        assert len(said) == 4, said
+        assert "Сделать ставку" in said[0]
+        assert said[1] == "Отменить ставку"
+        assert said[2] == "На число"
+        assert said[3] == "Уйти"
+        await browser.close()
+
+
+async def test_the_mark_stands_above_the_numbers(server, db):
+    """Метка стоит над ободом, а не поверх цифры.
+
+    Она закрывала как раз то число, ради которого на неё и смотрят.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    body = casino_table("roulette", phase="accept")
+    body["table"]["last"] = {
+        "round": 1,
+        "result": {"number": 35, "colour": "black", "title": "35 · чёрное"},
+        "seats": {},
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector("#casino-disc")
+        await page.wait_for_timeout(300)
+
+        # Обод начинается ниже метки: верхние 34 точки диска пусты
+        clean = await page.evaluate(
+            """() => {
+              const disc = document.getElementById('casino-disc');
+              const dots = disc.getContext('2d')
+                .getImageData(0, 0, disc.width, 32).data;
+              for (let at = 3; at < dots.length; at += 4) {
+                if (dots[at] > 10) return false;
+              }
+              return true;
+            }"""
+        )
+        assert clean, "колесо залезло под метку"
+        await browser.close()
+
+
+async def test_the_wheel_runs_fast_then_slows_to_a_stop(server, db):
+    """Две секунды ровного вращения, три — торможение до остановки."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("roulette")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector("#casino-disc")
+
+        left = await page.evaluate(
+            "() => [0, 500, 1000, 2000, 3500, 5000, 6000]"
+            ".map((age) => casinoLeft(age))"
+        )
+        # Разгон ровный: за полсекунды столько же, сколько за следующие
+        assert round(left[0] - left[1]) == round(left[1] - left[2]) == 540
+        # К концу разгона остаётся один оборот с небольшим
+        assert round(left[3]) == 1080
+        # Дальше кубическое торможение: на середине пути остаётся
+        # ровно восьмая часть оборота — это и есть «замедляется»
+        assert round(left[4]) == round(left[3] / 8)
+        # И полная остановка ровно на пяти секундах
+        assert left[5] == 0 and left[6] == 0
+        await browser.close()
+
+
+async def test_the_casino_keeps_its_view_on_both_screens(server, db):
+    """Вид изнутри висит и в зале, и в рейде: дом-то один.
+
+    Прежде на экране казино стояла обложка стола, и, перейдя кнопкой
+    из зала в рейд, боец выходил будто из другого здания.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_map(
+            pw, server, city_map("casino"),
+            card=build_card(make_player("casino"), TOKEN, viewer_id=42),
+            images=True,
+        )
+        await page.locator(".zone-house").filter(has_text="Казино").click()
+        await page.wait_for_selector("#casino:not(.hidden)")
+        await page.wait_for_selector("#casino-interior:not(.hidden)")
+        hall = await page.locator("#casino-pic").get_attribute("src")
+        assert hall, "вид изнутри не доехал"
+
+        await page.locator(".raid-entry").click()
+        await page.wait_for_selector("#club-raid:not(.hidden)")
+        await page.wait_for_selector("#club-interior:not(.hidden)")
+        assert await page.locator("#club-pic").get_attribute("src") == hall
+        await browser.close()
+
+
+async def test_a_late_answer_does_not_steal_the_raid_button(server, db):
+    """Ответ казино, долетевший после ухода, чужую шапку не трогает.
+
+    Он снимал кнопку «Рейд» отовсюду разом, и вернуться в зал было
+    нечем — после нескольких переключений кнопка просто исчезала.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_map(
+            pw, server, city_map("casino"),
+            card=build_card(make_player("casino"), TOKEN, viewer_id=42),
+        )
+        await page.locator(".zone-house").filter(has_text="Казино").click()
+        await page.wait_for_selector("#casino:not(.hidden)")
+        await page.locator(".raid-entry").click()
+        await page.wait_for_selector("#club-raid:not(.hidden)")
+
+        # Снимок стола приходит, когда экран казино уже закрыт
+        await page.evaluate(
+            "(data) => renderCasino(data)", casino_table("dice")
+        )
+        assert await page.locator("#club .raid-entry").count() == 1
+
+        # И кнопка по-прежнему возвращает в зал
+        await page.locator("#club .raid-entry").click()
+        await page.wait_for_selector("#casino:not(.hidden)")
+        await browser.close()
+
+
+async def test_the_night_casino_says_when_it_opens(server, db):
+    """Ночью вместо столов записка, а касса на месте."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby(open_now=False)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-shut")
+
+        said = await page.locator(".casino-shut").inner_text()
+        assert "08:00" in said, said
+        assert await page.locator(".casino-game").count() == 0, "столы закрыты"
+        # Фишки — деньги игрока: сдать их он вправе в любой час
+        assert await page.locator(".casino-cashier").count() == 1
+        await browser.close()
+
+
+# ---------- «Карусель удачи» ----------
+
+
+async def test_the_carousel_stands_above_the_tables(server, db):
+    """Карусель сверху, своим цветом и с кнопкой «Играть»."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby(), images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-draw-card")
+
+        # Она стоит выше первого стола
+        order = await page.evaluate(
+            "() => [...document.querySelectorAll("
+            "'.casino-draw-card, .casino-game')].map((one) => one.className)"
+        )
+        assert order[0].startswith("casino-draw-card"), order
+        said = await page.locator(".casino-draw-card").inner_text()
+        assert "Карусель удачи" in said and "250" in said
+        assert "Играть" in said
+        # И цвет у неё свой, не как у столов
+        paint = await page.evaluate(
+            "() => getComputedStyle("
+            "document.querySelector('.casino-draw-card')).backgroundImage"
+        )
+        assert "gradient" in paint, paint
+        await browser.close()
+
+
+async def test_the_belt_runs_and_the_roll_costs_two_fifty(server, db):
+    """Лента едет, в рамке только она, ролл стоит 250."""
+    from bot.game.carousel import prizes
+
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby()
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-draw-card")
+        await page.get_by_text("Играть", exact=True).click()
+        await page.wait_for_selector(".casino-belt")
+
+        # Весь барабан на ленте, и положен он дважды: по кругу и без шва
+        cards = await page.locator(".casino-prize").count()
+        assert cards == 2 * len(prizes()), cards
+        assert await page.locator(".casino-belt-mark").count() == 1
+        # Лента и правда едет
+        was = await belt_at(page)
+        await page.wait_for_timeout(400)
+        assert await belt_at(page) < was, "лента стоит на месте"
+
+        # В рамке только лента: подписи про цену ролла под ней нет, и
+        # пустого поля под подписью тоже
+        felt = await page.locator(".casino-felt").inner_text()
+        assert "Ролл стоит" not in felt and "реже" not in felt, felt
+        assert await page.locator(".casino-middle").count() == 0
+        tall = await page.evaluate(
+            "() => document.querySelector('.casino-felt').offsetHeight"
+            " - document.querySelector('.casino-belt').offsetHeight"
+        )
+        assert tall <= 24, f"рамка выше ленты на {tall} точек"
+
+        said = await page.locator(".casino-actions").inner_text()
+        assert "Ролл за 250" in said
+        await browser.close()
+
+
+async def belt_at(page) -> float:
+    """Где сейчас лента: смещение в точках, вперёд — в минус."""
+    return await page.evaluate(
+        "() => parseFloat(document.querySelector('.casino-belt-run')"
+        ".style.transform.replace(/[^0-9.-]/g, '')) || 0"
+    )
+
+
+async def test_leaving_the_casino_screen_stands_up_from_the_table(server, db):
+    """Ушёл с экрана — экран сам встал из-за стола.
+
+    Хоть на карту, хоть в рейд, хоть в соседний дом: место за четырьмя
+    стульями не держат за тем, кто на него не смотрит. Сервер за этим
+    следит на своей стороне — там дверь одна, служба дороги, — но из
+    казино в рейд ходят, никуда не уезжая, и сказать об этом некому,
+    кроме экрана.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    body = casino_lobby()
+    body["table"] = casino_table("dice", "accept")
+    body["seated"] = True
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=body)
+        said: list[dict] = []
+
+        async def watch(route):
+            if route.request.method == "POST":
+                said.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(body),
+            )
+
+        await page.route("**/api/casino*", watch)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-felt")
+
+        await open_screen(page, "map")
+        await page.wait_for_timeout(300)
+
+        assert [one["action"] for one in said] == ["leave"], said
+        # И второй раз не спрашиваем: вставать уже неоткуда
+        await open_screen(page, "bag")
+        await page.wait_for_timeout(200)
+        assert len(said) == 1, said
+        await browser.close()
+
+
+async def test_the_drum_stops_on_the_prize_and_stays_there(server, db):
+    """Барабан встаёт на выпавшем предмете и дальше не крутится.
+
+    Это главное свойство карусели: приз назван сервером до первого
+    кадра, и лента не выбирает — она доезжает до названного и встаёт
+    под меткой. Не обязательно серединой: встать можно и краешком,
+    лишь бы метка попала в карточку.
+    """
+    from bot.game.carousel import SPIN_SECONDS
+
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby()
+        )
+
+        # Время живое, а вращение одно: в базе `at` стоит на месте, и
+        # подменять его на каждый запрос значило бы крутить барабан
+        # заново каждую секунду
+        spun: dict[str, int] = {}
+
+        async def spinning(route):
+            body = casino_lobby()
+            now = now_ts()
+            spun.setdefault("at", now)
+            body["now"] = body["draw"]["now"] = now
+            body["draw"]["prize"] = {
+                "kind": "car", "code": "iron_muscle",
+                "title": "Тяжёлый маслкар", "price": 20000, "image": "",
+                "sells_for": 10000, "at": spun["at"],
+                "ready": spun["at"] + SPIN_SECONDS,
+            }
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(body),
+            )
+
+        await page.route("**/api/casino*", spinning)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-draw-card")
+        await page.get_by_text("Играть", exact=True).click()
+        await page.wait_for_selector(".casino-belt")
+
+        # Ждём остановки. Пока барабан крутится, на месте приза стоит
+        # многоточие — ждать надо названия, а не непустой строки
+        await page.wait_for_function(
+            "() => { const one = document.querySelector('.casino-shout');"
+            " return one && one.textContent === 'Тяжёлый маслкар'; }",
+            timeout=20_000,
+        )
+        await page.wait_for_timeout(300)
+
+        under = await page.evaluate("""() => {
+          const mark =
+            document.querySelector('.casino-belt-mark').getBoundingClientRect();
+          const at = (mark.left + mark.right) / 2;
+          return [...document.querySelectorAll('.casino-prize')]
+            .filter((one) => {
+              const box = one.getBoundingClientRect();
+              return box.left <= at && at <= box.right;
+            })
+            .map((one) => one.dataset.code);
+        }""")
+        assert under == ["iron_muscle"], under
+
+        # И стоит: барабан не поехал дальше сам по себе
+        stood = await belt_at(page)
+        await page.wait_for_timeout(700)
+        assert await belt_at(page) == stood, "лента поехала после остановки"
+        assert await page.locator(".casino-shout").inner_text() \
+            == "Тяжёлый маслкар"
+
+        # А теперь пересоберём ленту заново — так делает любая
+        # перерисовка экрана. Узел станет новым, и если бы место
+        # помнилось меркой с мига прицеливания, приз уехал бы из-под
+        # метки. Он считается от живой ленты и остаётся на месте
+        await page.evaluate("() => renderCasino(casinoData, true)")
+        await page.wait_for_timeout(200)
+        again = await page.evaluate("""() => {
+          const mark =
+            document.querySelector('.casino-belt-mark').getBoundingClientRect();
+          const at = (mark.left + mark.right) / 2;
+          return [...document.querySelectorAll('.casino-prize')]
+            .filter((one) => {
+              const box = one.getBoundingClientRect();
+              return box.left <= at && at <= box.right;
+            })
+            .map((one) => one.dataset.code);
+        }""")
+        assert again == ["iron_muscle"], again
+        await browser.close()
+
+
+
+async def test_the_drum_crawls_past_half_a_dozen_prizes_at_the_end(server, db):
+    """Хвост вращения длинный: мимо метки шагом идёт полдюжины призов.
+
+    Короткое торможение мешает игре: лента гасит скорость за полсекунды
+    и встаёт, и выигрыш появляется ниоткуда. Тут проверяется не
+    картинка, а числа торможения — сколько предметов проходит мимо
+    метки за последние секунды и сколько их остаётся под конец.
+    """
+    from bot.game.carousel import SPIN_SECONDS
+
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby()
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-draw-card")
+        await page.get_by_text("Играть", exact=True).click()
+        await page.wait_for_selector(".casino-belt")
+
+        drum = await page.evaluate("""(spin) => {
+          const belt = document.querySelector('.casino-belt-run');
+          const half = belt.children.length / 2;
+          const wide =
+            belt.children[half].offsetLeft - belt.children[0].offsetLeft;
+          const step =
+            belt.children[1].offsetLeft - belt.children[0].offsetLeft;
+          const far = wide * CASINO_BELT_ROUNDS;
+          // Сколько предметов осталось пройти, когда до остановки
+          // остаётся столько-то секунд
+          const left = (tail) =>
+            far * (1 - casinoBeltEase(1 - tail / spin)) / step;
+          return {
+            rush: far * casinoBeltEase(1 / spin) / wide,
+            tail25: left(2.5), tail15: left(1.5), tail1: left(1),
+          };
+        }""", SPIN_SECONDS)
+
+        # За последние две с половиной секунды — пять-семь предметов
+        assert 5 <= drum["tail25"] <= 7, drum
+        # И к концу всё медленнее: последняя секунда — пара предметов
+        assert drum["tail15"] < drum["tail25"], drum
+        assert drum["tail1"] <= 2, drum
+        # А начинается всё рывком: за первую секунду лента сматывает
+        # больше двух полных копий товара — в полосу
+        assert drum["rush"] > 2, drum
+        await browser.close()
+
+
+async def test_the_belt_does_not_jump_every_five_seconds(server, db):
+    """Лента не подменяет товар и не начинает круг заново.
+
+    Опрос идёт раз в секунду, и в ответе каждый раз новое время. Стоит
+    экрану считать его переменой — и лента перерисовывается каждую
+    секунду: круг начинается заново, товар дёргается на месте. Так и
+    было, только дёргалось раз в пять секунд: лента тогда ещё и
+    пересчитывалась на сервере.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby()
+        )
+        # Время в ответе живое, как у настоящего сервера
+        async def fresh(route):
+            body = casino_lobby()
+            body["now"] = body["draw"]["now"] = now_ts()
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(body),
+            )
+
+        await page.route("**/api/casino*", fresh)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-draw-card")
+        await page.get_by_text("Играть", exact=True).click()
+        await page.wait_for_selector(".casino-belt")
+
+        was = await page.locator(".casino-belt-run").inner_text()
+        # Шесть секунд подряд с замером каждые сто миллисекунд: прежде
+        # ровно на пятой лента и прыгала
+        steps = await page.evaluate("""async () => {
+          const belt = document.querySelector('.casino-belt-run');
+          const half = belt.children.length / 2;
+          const wide =
+            belt.children[half].offsetLeft - belt.children[0].offsetLeft;
+          const at = () => parseFloat(
+            belt.style.transform.replace(/[^0-9.-]/g, "")
+          ) || 0;
+          const out = [];
+          let was = at();
+          for (let i = 0; i < 60; i++) {
+            await new Promise((ok) => setTimeout(ok, 100));
+            const now = at();
+            let step = now - was;
+            if (step > 0) step -= wide; // заворот ленты — не прыжок
+            out.push(step);
+            was = now;
+          }
+          return out;
+        }""")
+
+        assert await page.locator(".casino-belt-run").inner_text() == was, (
+            "товар на ленте подменился"
+        )
+        assert len(steps) == 60
+        assert all(one <= 0 for one in steps), "лента поехала назад"
+        assert min(steps) > -40, f"лента дёрнулась на {min(steps)} точек"
+        assert -800 < sum(steps) < -150, f"прошла {sum(steps)} точек"
+        await browser.close()
+
+
+async def test_the_casino_covers_are_never_built_twice(server, db):
+    """Обложки не создаются заново — потому и не моргают.
+
+    Перерисовка лобби случается всякий раз, как кто-то сел за стол, и
+    прежде она создавала новые `<img>`: браузер начинал каждую с
+    пустого места, и картинки мигали, будто экран обновился.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby(), images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-cover")
+        covers = await page.locator(".casino-cover").count()
+        assert covers >= 5, covers
+
+        await page.evaluate(
+            "() => document.querySelectorAll('.casino-cover').forEach("
+            "(one, i) => { one.dataset.mark = 'сторож' + i; })"
+        )
+        await page.evaluate("() => renderCasino(casinoData, true)")
+
+        marks = await page.evaluate(
+            "() => [...document.querySelectorAll('.casino-cover')]"
+            ".map((one) => one.dataset.mark || 'новая')"
+        )
+        assert marks == ["сторож" + str(one) for one in range(covers)], marks
+        await browser.close()
+
+
+async def test_the_won_prize_waits_for_take_or_sell(server, db):
+    """Выпавший приз ждёт решения: забрать или сдать за жетоны."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    body = casino_lobby()
+    body["draw"] = casino_draw(prize={
+        "kind": "item", "code": "katana", "title": "Катана", "price": 260,
+        "image": "", "sells_for": 130, "at": now_ts() - 9,
+        "ready": now_ts() - 4,
+    })
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-draw-card")
+        await page.get_by_text("Играть", exact=True).click()
+        await page.wait_for_selector(".casino-shout")
+
+        assert await page.locator(".casino-shout").inner_text() == "Катана"
+        sums = await page.locator(".casino-sums").inner_text()
+        assert "260" in sums and "130" in sums
+        # Итог лежит под рамкой, и сукно несёт с собой: его цвета
+        # рассчитаны на тёмное поле, а под рамкой светло — без этого
+        # название приза было почти не видно
+        paint = await page.evaluate(
+            "() => getComputedStyle("
+            "document.querySelector('.casino-middle')).backgroundColor"
+        )
+        assert paint == "rgb(43, 27, 73)", paint
+        said = await page.locator(".casino-actions").inner_text()
+        assert "Забрать себе" in said and "Сдать за 130" in said
+        assert "Ролл за" not in said, "крутить, не разобравшись, нельзя"
+        await browser.close()
+
+
+async def test_the_spinning_drum_hides_the_prize(server, db):
+    """Пока барабан крутится, приза не видно и кнопки погашены."""
+    from bot.game.carousel import SPIN_SECONDS
+
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    body = casino_lobby()
+    body["draw"] = casino_draw(prize={
+        "kind": "car", "code": "iron_muscle", "title": "Тяжёлый маслкар",
+        "price": 20000, "image": "", "sells_for": 10000,
+        "at": now_ts(), "ready": now_ts() + SPIN_SECONDS,
+    })
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-draw-card")
+        await page.get_by_text("Играть", exact=True).click()
+        await page.wait_for_selector(".casino-belt")
+
+        assert await page.locator(".casino-shout").inner_text() == "…"
+        # Приза не видно: на ленте маслкар, конечно, стоит — там стоит
+        # весь барабан, — а вот в итоге под лентой его нет
+        said = await page.locator(".casino-middle").inner_text()
+        assert "маслкар" not in said and "10000" not in said, said
+        # И лента именно крутится, а не ползёт вхолостую. Спрашиваем
+        # прямо, а не меряем пройденное: на рывке лента успевает
+        # завернуться несколько раз за четверть секунды, и расстояние
+        # по двум отсчётам положения не восстановить — выходил то плюс,
+        # то минус. Сколько она проходит под конец, считает
+        # `test_the_drum_crawls_past_half_a_dozen_prizes_at_the_end`
+        assert await page.evaluate("() => !!casinoBeltSpin"), "барабан стоит"
+        assert not await page.get_by_text("Ролл за 250").is_enabled()
+        await browser.close()
+
+
+# ---------- обходчик панорам ----------
+
+
+async def open_walker(pw, server):
+    """Открыть обходчик станции. Это не мини-апп: ни входа, ни карточки."""
+    browser = await pw.chromium.launch(
+        executable_path=CHROMIUM, args=["--no-proxy-server"]
+    )
+    page = await browser.new_page(viewport={"width": 1100, "height": 900})
+    # Кадры лежат в бакете, до которого из теста не дотянуться: пусть
+    # страница честно скажет, что кадра нет
+    await page.route(IMAGES, lambda route: route.abort())
+    await page.goto(f"{server.make_url('/static/station.html')}")
+    await page.wait_for_selector(".four .eye")
+    return browser, page
+
+
+async def test_the_walker_opens_the_station_and_walks_it(server):
+    """Обходчик открывается без входа и ходит по станции.
+
+    Служебная страница: по ней собирают повороты панорам. Зомби,
+    замков и флагов в ней нет вовсе — ходить можно всюду, а значит и
+    проверять нечего, кроме того, что ход ведёт туда, куда ведёт план.
+    """
+    import json
+    from pathlib import Path
+
+    carte = json.loads(
+        (Path(__file__).resolve().parent.parent / "bot" / "webapp"
+         / "static" / "station.json").read_text(encoding="utf-8")
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_walker(pw, server)
+
+        first = carte["order"][0]
+        assert first in await page.locator("#where").inner_text()
+        # Четыре кадра и четыре подписи — по стене на каждую сторону
+        assert await page.locator(".four .eye").count() == 4
+
+        # Поворачиваемся до стены, за которой есть ход, и делаем шаг
+        walls = carte["rooms"][first]["walls"]
+        side = next(iter(walls))
+        sides = ["north", "east", "south", "west"]
+        for _ in range(sides.index(side)):
+            await page.keyboard.press("ArrowRight")
+        await page.keyboard.press("ArrowUp")
+
+        there = walls[side]["to"]
+        assert there in await page.locator("#where").inner_text()
+        # И обратно тем же ходом
+        await page.keyboard.press("ArrowDown")
+        assert first in await page.locator("#where").inner_text()
+        await browser.close()
+
+
+async def test_the_walker_turns_the_frames_and_remembers_it(server):
+    """Поворот всех четырёх разом и память о нём.
+
+    Расстановка `sides[D] = f` читается «за стеной D показывать файл
+    f». Поворот по часовой переносит каждый кадр на следующую стену по
+    часовой стрелке — значит стена берёт кадр у предыдущей. На этом
+    соответствии держится весь смысл обхода, его и проверяем.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_walker(pw, server)
+        # Встаём в комнату, которой расстановки ещё не завели: у
+        # обойдённых она уже стоит, и крутить их незачем
+        await page.evaluate("() => { at = 'E12'; floor = 'E'; paint(); }")
+        here = (await page.locator("#where").inner_text()).split(" ")[0]
+        assert here == "E12"
+
+        # Кадров в тесте нет, и страница пишет имя файла, которого ждёт
+        said = await page.locator("#eye-big .none").inner_text()
+        assert said.endswith("north"), said
+        assert "как нарисовано" in await page.locator("#turn-now").inner_text()
+
+        await page.locator("#turn-right").click()
+        assert "⟳ 1 из 4" in await page.locator("#turn-now").inner_text()
+        said = await page.locator("#eye-big .none").inner_text()
+        assert said.endswith("west"), "смотрим на север, а кадр взят западный"
+
+        await page.locator("#flip").click()
+        assert "on" in (await page.locator("#flip").get_attribute("class"))
+        assert "flip" in (await page.locator("#eye-big").get_attribute("class"))
+
+        # Перезагрузка: расстановка лежит в памяти браузера
+        await page.reload()
+        await page.wait_for_selector(".four .eye")
+        await page.evaluate("() => { at = 'E12'; floor = 'E'; paint(); }")
+        assert "⟳ 1 из 4" in await page.locator("#turn-now").inner_text()
+        kept = json.loads(await page.locator("#out").input_value())
+        assert kept[here] == {
+            "sides": {
+                "north": "west", "east": "north",
+                "south": "east", "west": "south",
+            },
+            "flip": True,
+            "note": "",
+        }
+
+        # Против часовой возвращает как было, и комната уходит из итога
+        await page.locator("#turn-left").click()
+        await page.locator("#flip").click()
+        assert json.loads(await page.locator("#out").input_value()) == {}
+        await browser.close()
+
+
+async def test_the_walker_swaps_any_two_sides(server):
+    """Любые две стороны меняются местами, и это не поворот.
+
+    Поворотом чинится только ровный съезд всех четырёх. Художник мог
+    просто перепутать два имени — север с югом, — и такую комнату
+    никаким поворотом не выправить: из четырёх сторон совпали бы две.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_walker(pw, server)
+        await page.evaluate("() => { at = 'E12'; floor = 'E'; paint(); }")
+        here = (await page.locator("#where").inner_text()).split(" ")[0]
+
+        await page.locator("#swap-ns").click()
+
+        assert "север ↔ юг" in await page.locator("#turn-now").inner_text()
+        said = await page.locator("#eye-big .none").inner_text()
+        assert said.endswith("south"), "за северной стеной теперь южный кадр"
+        kept = json.loads(await page.locator("#out").input_value())
+        assert kept[here]["sides"] == {
+            "north": "south", "east": "east",
+            "south": "north", "west": "west",
+        }
+
+        # И выбором под кадром — любые две, не только пара напротив
+        await page.locator("#reset").click()
+        await page.locator(".four .pick").first.select_option("east")
+        kept = json.loads(await page.locator("#out").input_value())
+        assert kept[here]["sides"] == {
+            "north": "east", "east": "north",
+            "south": "south", "west": "west",
+        }, "кадры поменялись местами, а не затёрли друг друга"
+        await browser.close()
+
+
+async def test_the_walker_can_set_one_arrangement_for_the_whole_station(
+    server,
+):
+    """Расстановку можно разом поставить всем комнатам станции.
+
+    Если художник вёл всю станцию в своей системе координат, крутить
+    шестьдесят четыре комнаты по одной незачем: ставится всем, а
+    несогласные правятся руками.
+    """
+    import json as js
+    from pathlib import Path
+
+    carte = js.loads(
+        (Path(__file__).resolve().parent.parent / "bot" / "webapp"
+         / "static" / "station.json").read_text(encoding="utf-8")
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_walker(pw, server)
+        page.on("dialog", lambda one: asyncio.ensure_future(one.accept()))
+
+        await page.evaluate("() => { at = 'E12'; floor = 'E'; paint(); }")
+        await page.locator("#turn-right").click()
+        await page.locator("#all").click()
+        await page.wait_for_function(
+            "() => Object.keys(JSON.parse("
+            "document.getElementById('out').value)).length > 1"
+        )
+
+        # Спрашиваем саму разметку, а не выгрузку: комната, у которой
+        # внесённая в игру расстановка и так эта же, в выгрузку не
+        # идёт — хранить её незачем
+        everywhere = await page.evaluate(
+            "() => carte.order.every((code) => mark(code).sides.north === 'west')"
+        )
+        assert everywhere, "не всем досталась одна расстановка"
+        assert len(carte["rooms"]) == 64
+        await browser.close()
+
+
+# ---------- конец станции ----------
+
+
+async def test_the_station_says_goodbye_before_the_city(server, db):
+    """Выбывшего не выставляют в город молча: сперва окно и кнопка.
+
+    Прежде экран просто сменялся городским лобби — боец падал в бою и
+    оказывался на карте, не узнав даже, что проиграл.
+    """
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    body["screen"] = "over"
+    body["farewell"] = {
+        "kind": "alone",
+        "words": "Вы проиграли бой. Вы очнётесь у входа на электростанцию.",
+        "button": "Продолжить",
+        "waiting": False,
+        "over": True,
+    }
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#station-veil:not(.hidden)")
+
+        said = await page.locator("#station-said").inner_text()
+        assert said == (
+            "Вы проиграли бой. Вы очнётесь у входа на электростанцию."
+        )
+        assert "Продолжить" in await page.locator(
+            "#station-buttons"
+        ).inner_text()
+
+        # Нажали — окно ушло, и экран пошёл спрашивать сервер заново
+        asked: list[dict] = []
+
+        async def watch(route):
+            if route.request.method == "POST":
+                asked.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(body),
+            )
+
+        await page.route("**/api/blackout*", watch)
+        await page.get_by_text("Продолжить", exact=True).click()
+        await page.wait_for_selector("#station-veil", state="hidden")
+        await page.wait_for_timeout(300)
+
+        assert [one["action"] for one in asked] == ["heard"], asked
+        await browser.close()
+
+
+async def test_the_fallen_one_is_offered_to_wait(server, db):
+    """Упавшему в отряде кнопка другая: «Ждать», и экран остаётся."""
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 3)
+    body = await state_for(db, people[1], NOW)
+    body["farewell"] = {
+        "kind": "squad",
+        "words": (
+            "Вы проиграли бой. Ваши товарищи продолжают миссию без Вас, "
+            "по завершению вы очнётесь у входа на электростанцию."
+        ),
+        "button": "Ждать",
+        "waiting": True,
+        "over": False,
+    }
+    card = build_card(people[1], TOKEN, viewer_id=people[1].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#station-veil:not(.hidden)")
+
+        assert "товарищи продолжают" in await page.locator(
+            "#station-said"
+        ).inner_text()
+        await page.get_by_text("Ждать", exact=True).click()
+        await page.wait_for_selector("#station-veil", state="hidden")
+
+        # Станция осталась на экране: смотреть за отрядом не запрещено
+        assert await page.locator("#blackout-body .stage").count() == 1
+        # И второй раз окно не встаёт само
+        await page.wait_for_timeout(1200)
+        assert await page.locator("#station-veil.hidden").count() == 1
+        await browser.close()
+
+
+async def test_the_walker_starts_from_what_the_game_already_shows(server):
+    """Обходчик начинает с внесённого, а не с чистого листа.
+
+    Сорок три комнаты уже разобраны, и показывать их «как нарисовано»
+    значило бы просить разобрать их заново — да ещё и не отличая от
+    тех, где и правда никто не был.
+    """
+    import json as js
+    from pathlib import Path
+
+    carte = js.loads(
+        (Path(__file__).resolve().parent.parent / "bot" / "webapp"
+         / "static" / "station.json").read_text(encoding="utf-8")
+    )
+    settled = [c for c, one in carte["rooms"].items() if one.get("settled")]
+    assert len(settled) == 43, len(settled)
+
+    async with async_playwright() as pw:
+        browser, page = await open_walker(pw, server)
+        # F303 перевёрнут: за северной стеной лежит южный кадр
+        await page.evaluate("() => { at = 'F303'; floor = 'F3'; paint(); }")
+        said = await page.locator("#eye-big .none").inner_text()
+        assert said.endswith("south"), said
+        assert "внесено в игру" in await page.locator("#turn-now").inner_text()
+
+        # А непройденная комната так и говорит
+        await page.evaluate("() => { at = 'E12'; floor = 'E'; paint(); }")
+        assert "не обойдена" in await page.locator("#turn-now").inner_text()
+        assert "не обойдено комнат: 21" in await page.locator(
+            "#counted"
+        ).inner_text()
+
+        # Зеркальная комната показывается зеркальной
+        await page.evaluate("() => { at = 'O07'; floor = 'O'; paint(); }")
+        assert "flip" in (await page.locator("#eye-big").get_attribute("class"))
+
+        # И выгрузка пустая: править пока нечего
+        assert json.loads(await page.locator("#out").input_value()) == {}
+        await browser.close()
+
+
+# ---------- шкала опыта ----------
+#
+# Четыре строки — «Опыт», «Уровень», «До уровня», «До апгрейда» — говорили
+# то же самое, но вразнобой: сколько пройдено, понимал только тот, кто
+# делил одно число на другое в уме.
+
+
+def a_fighter_at(level: int, exp: int, micro_ups: int, total_exp: int = 0):
+    from bot.game.classes import Stats
+
+    return Player(
+        user_id=42, nickname="Тайлер", class_code="warrior", level=level,
+        exp=exp, micro_ups=micro_ups, total_exp=total_exp or exp,
+        **Stats(strength=20, agility=20, intuition=20, endurance=20).as_dict(),
+    )
+
+
+async def test_the_experience_bar_draws_the_whole_level_at_a_glance(server):
+    """Уровень, засечки апгрейдов и числа — всё на одной шкале."""
+    player = a_fighter_at(10, 6_000, 2, total_exp=44_000)
+    card = build_card(player, TOKEN, viewer_id=42)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector(".xp")
+
+        assert await page.locator(".xp-level-number").inner_text() == "10"
+        assert await page.locator(".xp-level-word").inner_text() == "УРОВЕНЬ"
+        head = await page.locator(".xp-head").inner_text()
+        assert "ОПЫТ" in head and "АПГРЕЙДЫ 2 / 3" in head
+
+        # Засечки стоят там, где апгрейды и дают: три апгрейда и уровень
+        at = await page.locator(".xp-at").all_inner_texts()
+        assert [one.replace(" ", " ") for one in at] == [
+            "2 100", "4 500", "7 200", "10 200"
+        ]
+        assert await page.locator(".xp-mark.taken").count() == 2
+        assert await page.locator(".xp-mark-level").count() == 1
+        # На взятых — галочка, на уровне впереди — его номер
+        assert await page.locator(".xp-mark-level .xp-gem i").inner_text() == "11"
+
+        total = (await page.locator(".xp-total").inner_text()).replace(" ", " ")
+        assert total == "6 000 / 10 200 XP"
+        left = (await page.locator(".xp-next").inner_text()).replace(" ", " ")
+        assert left == "До следующего апгрейда: 1 200 XP"
+
+        # Прежних строк на их месте больше нет
+        body = await page.locator("#hero-stats").inner_text()
+        assert "До уровня" not in body and "До улучшения" not in body
+        await browser.close()
+
+
+async def test_the_flags_of_the_ups_clear_the_line_above_them(server):
+    """Флажки апгрейдов не наезжают на строку «ОПЫТ — АПГРЕЙДЫ».
+
+    Флажок поднимается на тридцать одну точку над дорожкой, а поля над
+    дорожкой было тридцать: он садился ровно на черту сверху. Зазор
+    снизу — такой же, как сверху, иначе шкала висит выше середины
+    своего блока, а между числами и крупным счётом зияет пустота.
+    """
+    player = a_fighter_at(10, 2_500, 1, total_exp=40_000)
+    card = build_card(player, TOKEN, viewer_id=42)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector(".xp")
+
+        for width in (360, 390, 430):
+            await page.set_viewport_size({"width": width, "height": 900})
+            await page.wait_for_timeout(60)
+            gaps = await page.evaluate("""() => {
+              const low = (list, pick) => Math.min(...[...list].map(pick));
+              const head = document.querySelector('.xp-head').getBoundingClientRect();
+              const flag = low(document.querySelectorAll('.xp-flag'),
+                               (one) => one.getBoundingClientRect().top);
+              const at = document.querySelectorAll('.xp-at');
+              const under = at.length
+                ? Math.max(...[...at].map((one) => one.getBoundingClientRect().bottom))
+                : document.querySelector('.xp-scale').getBoundingClientRect().bottom;
+              const total = document.querySelector('.xp-total').getBoundingClientRect();
+              return {above: flag - head.bottom, below: total.top - under};
+            }""")
+            assert gaps["above"] > 0, (
+                f"при {width} точках флажок лёг на строку выше: {gaps}"
+            )
+            # Сверху и снизу поля одного порядка: шкала стоит посередине
+            assert abs(gaps["above"] - gaps["below"]) <= 10, (
+                f"при {width} точках шкала висит не по центру: {gaps}"
+            )
+        await browser.close()
+
+
+async def test_the_bar_is_filled_to_exactly_what_is_earned(server):
+    """Залито ровно столько, сколько пройдено на этом уровне.
+
+    Шесть тысяч из десяти с небольшим — это доля уровня, а не доля всего
+    набранного за жизнь: общий опыт у бойца сорок четыре тысячи, и
+    спутать одно с другим легче лёгкого.
+    """
+    card = build_card(
+        a_fighter_at(10, 6_000, 2, total_exp=44_000), TOKEN, viewer_id=42
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector(".xp-fill")
+
+        width = await page.locator(".xp-fill").evaluate(
+            "node => node.style.width"
+        )
+        assert width == "58.82%"
+        await browser.close()
+
+
+async def test_at_the_ceiling_the_bar_is_full_and_has_no_notches(server):
+    """На потолке идти некуда: дорожка залита целиком, засечек нет."""
+    card = build_card(
+        a_fighter_at(15, 0, 0, total_exp=120_000), TOKEN, viewer_id=42
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector(".xp")
+
+        assert await page.locator(".xp-mark").count() == 0
+        assert await page.locator(".xp-fill").evaluate(
+            "node => node.style.width"
+        ) == "100%"
+        assert "ПОТОЛОК" in await page.locator(".xp-head").inner_text()
+        total = (await page.locator(".xp-total").inner_text()).replace(" ", " ")
+        assert total == "120 000 XP"
+        assert "Потолок" in await page.locator(".xp-next").inner_text()
+        await browser.close()
+
+
+# ---------- экран загрузки ----------
+
+
+async def test_the_loading_screen_shows_the_picture_and_waits_two_seconds(server):
+    """Заставка висит не меньше двух секунд, даже если карточка уже тут.
+
+    На быстрой связи карточка приезжает за сотню миллисекунд, и картина
+    успевала только моргнуть — со стороны это выглядело сбоем вёрстки.
+    """
+    import time
+
+    from bot.game.art import LOADING
+
+    card = build_card(a_fighter_at(10, 6_000, 2), TOKEN, viewer_id=42)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, loader_wait=True)
+        started = time.monotonic()
+
+        # Картинку ставит сервер: в вёрстке адреса бакета нет
+        picture = await page.locator(".loader-pic").evaluate(
+            "node => node.style.backgroundImage"
+        )
+        assert LOADING in picture
+
+        # Карточка уже отрисована, а заставка ещё висит
+        await page.wait_for_selector("#hero", state="attached")
+        assert await page.locator("#loader").is_visible()
+        assert await page.locator(".loader-spin").count() == 1
+        assert await page.locator("#loader-text").inner_text()
+
+        await page.wait_for_selector(
+            "#loader.hidden", state="attached", timeout=5_000
+        )
+        assert time.monotonic() - started >= 1.7, "заставка ушла раньше срока"
+        await browser.close()
+
+
+async def test_the_daily_window_waits_until_the_splash_is_gone(server):
+    """Окно награды не ложится поверх заставки ни на один кадр.
+
+    Карточка приезжает за сотню миллисекунд, окно открывалось сразу, а
+    заставка висела свои секунды — и поверх неё лежало предложение
+    забрать награду у игры, которая ещё не началась.
+    """
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, loader_wait=True)
+
+        # Карточка уже отрисована, заставка ещё висит — окна быть не должно
+        await page.wait_for_selector("#hero", state="attached")
+        assert await page.locator("#loader").is_visible()
+        assert await page.locator("#daily-veil").is_hidden(), (
+            "окно награды легло поверх заставки"
+        )
+
+        # Заставка ушла — и только теперь окно
+        await page.wait_for_selector(
+            "#loader.hidden", state="attached", timeout=8_000
+        )
+        await page.wait_for_selector("#daily-veil:not(.hidden)", timeout=3_000)
+        assert "день 3" in await page.locator("#daily-veil").inner_text()
+        await browser.close()
+
+
+async def test_the_splash_never_catches_the_reward_window_on_top(server):
+    """Ни на одном кадре заставка и окно награды не видны разом.
+
+    Проверяем не два мига, а всё время запуска: наблюдатель следит за
+    обоими и запоминает каждый случай, когда они оказались видны
+    одновременно.
+    """
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, loader_wait=True)
+        # Наблюдатель встаёт раньше, чем уходит заставка, и смотрит на
+        # каждую правку страницы
+        await page.evaluate("""() => {
+          window.__together = 0;
+          const seen = () => {
+            const loader = document.getElementById('loader');
+            const veil = document.getElementById('daily-veil');
+            if (!loader || !veil) return;
+            const up = !loader.classList.contains('hidden');
+            const open = !veil.classList.contains('hidden');
+            if (up && open) window.__together += 1;
+          };
+          seen();
+          new MutationObserver(seen).observe(document.body, {
+            attributes: true, subtree: true, attributeFilter: ['class'],
+          });
+        }""")
+
+        await page.wait_for_selector("#daily-veil:not(.hidden)", timeout=8_000)
+        together = await page.evaluate("() => window.__together")
+        assert together == 0, f"видны разом на {together} правках"
+        await browser.close()
+
+
+async def test_a_broken_launch_drops_what_waited_for_the_splash(server):
+    """Запуск сорвался — очередь на показ отменяется.
+
+    Сейчас в неё попасть и не успеть: окно награды встаёт в очередь из
+    отрисовки карточки, а карточки при срыве нет вовсе. Проверяем сам
+    затвор, а не сцену: он стои́т на случай, когда отрисовка и отказ
+    однажды встретятся — и молча показанное поверх ошибки окно
+    обещало бы игру, которой нет.
+    """
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, loader_wait=True)
+        await page.wait_for_selector("#hero", state="attached")
+        assert await page.locator("#loader").is_visible()
+
+        # Окно уже ждёт конца заставки. Срываем запуск
+        done = await page.evaluate("""() => {
+          const was = [];
+          afterLoader(() => was.push('показали'));
+          fail('Карточка не открылась.');
+          return was;
+        }""")
+        assert done == [], "очередь отработала до срыва"
+
+        await page.wait_for_selector(
+            "#loader.hidden", state="attached", timeout=8_000
+        )
+        await page.wait_for_timeout(200)
+        assert await page.locator("#daily-veil").is_hidden(), (
+            "окно награды встало поверх ошибки"
+        )
+        assert await page.locator("#error").is_visible()
+        await browser.close()
+
+
+async def test_the_reward_window_never_doubles_on_redraws(server):
+    """Перерисовки карточки не плодят окно и не открывают его заново.
+
+    Карточка перерисовывается после каждого действия. Закрыл окно —
+    значит закрыл: открывать его обратно следующей же отрисовкой нельзя.
+    """
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(make_player()))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+        assert await page.locator("#daily-veil").count() == 1
+
+        # Закрыли — и десять перерисовок подряд
+        await page.locator("#daily-veil .btn").last.click()
+        await page.wait_for_selector("#daily-veil.hidden", state="attached")
+        await page.evaluate(
+            "card => { for (let i = 0; i < 10; i++) render(card, true); }", card
+        )
+        assert await page.locator("#daily-veil").is_hidden(), "окно вернулось само"
+        assert await page.locator("#daily-veil").count() == 1
+        await browser.close()
+
+
+# ---------- кошельки над рюкзаком ----------
+
+
+async def test_the_wallets_stand_above_the_backpack(server):
+    """Счёт и наличные в один ряд над рюкзаком, а не среди показателей.
+
+    Деньги стояли строкой рядом с рейтингом, где им делать нечего:
+    нужны они там, где покупают.
+    """
+    player = make_player()
+    player.credits = 430
+    player.account_balance = 1_200
+    player.account_number = "VB-1"
+    player.card_at = 1
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
+
+        heads = await page.locator("#wallets .wallet-tile-head").all_inner_texts()
+        assert heads == ["💳 Карта", "💰 Наличные"]
+        sums = await page.locator("#wallets .wallet-tile-sum span").all_inner_texts()
+        assert [one.replace(" ", " ") for one in sums] == [
+            "1 200 💰", "430 💰"
+        ]
+        # Пополняют наличные: звёзды приходят в карман, а не на счёт
+        assert await page.locator("#wallets .cash .plus").count() == 1
+        assert await page.locator("#wallets .card .plus").count() == 0
+        await browser.close()
+
+
+async def test_the_plus_stands_in_the_same_line_as_the_cash(server):
+    """Плюс не растягивает плашку наличных на лишнюю строку.
+
+    Своей строкой он делал плашку наличных на треть выше соседней, и
+    ряд из двух одинаковых плашек переставал быть рядом из двух
+    одинаковых плашек.
+    """
+    player = make_player()
+    player.credits = 30_430
+    player.account_balance = 702
+    player.account_number = "VB-1"
+    player.card_at = 1
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
+        await page.set_viewport_size({"width": 390, "height": 900})
+        await page.wait_for_timeout(60)
+
+        # Плюс стоит внутри строки суммы, а не отдельным рядом под ней
+        assert await page.locator("#wallets .wallet-tile-sum .plus").count() == 1
+        line = await page.locator("#wallets .cash .wallet-tile-sum").bounding_box()
+        plus = await page.locator("#wallets .cash .plus").bounding_box()
+        middle = plus["y"] + plus["height"] / 2
+        assert line["y"] <= middle <= line["y"] + line["height"], (
+            "плюс выпал из строки суммы"
+        )
+
+        # И обе плашки одной высоты: лишней строки нет ни у одной
+        on_card = await page.locator("#wallets .card").bounding_box()
+        in_hand = await page.locator("#wallets .cash").bounding_box()
+        assert round(on_card["height"]) == round(in_hand["height"]), (
+            f"плашки разной высоты: {on_card['height']} и {in_hand['height']}"
+        )
+        await browser.close()
+
+
+async def test_without_an_account_only_the_cash_tile_stands(server):
+    """Ноль на счету, которого не открывали, обещал бы счёт."""
+    player = make_player()
+    player.credits = 430
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
+
+        assert await page.locator("#wallets .wallet-tile").count() == 1
+        assert await page.locator("#wallets .card").count() == 0
+        await browser.close()
+
+
+# ---------- приёмы плитками ----------
+
+
+def a_fighter_with_tricks():
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["abilities"] = {
+        "slots": 4,
+        "known": [
+            {"code": "a", "title": "Двойка", "icon": "🥊", "image": "",
+             "cost": 3, "tier": 2, "note": "Два удара подряд в одну зону."},
+            {"code": "b", "title": "Подсечка", "icon": "🦵", "image": "",
+             "cost": 4, "tier": 4, "note": "Сбивает соперника с ног."},
+            {"code": "c", "title": "Захват", "icon": "🤼", "image": "",
+             "cost": 5, "tier": 6, "note": "Держит соперника ход."},
+            {"code": "d", "title": "Контратака", "icon": "↩️", "image": "",
+             "cost": 6, "tier": 8, "note": "Отвечает на пропущенный удар."},
+        ],
+        "choice": None,
+        "next_tier": 12,
+    }
+    return card
+
+
+async def test_the_tricks_stand_in_a_row_of_tiles(server):
+    """Четыре плитки в ряд: картинка и название, остальное по нажатию.
+
+    Прежде строка приёма несла и картинку, и цену, и описание — четыре
+    таких подряд читались как список правил, а не как набор приёмов.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, a_fighter_with_tricks())
+        await page.wait_for_selector(".skill")
+
+        tiles = page.locator("#skills-list .skill")
+        assert await tiles.count() == 4
+        names = await page.locator("#skills-list .skill-title").all_inner_texts()
+        assert names == ["Двойка", "Подсечка", "Захват", "Контратака"]
+        # В ряду только картинка и название: ни цены, ни описания
+        first = await tiles.first.inner_text()
+        assert "Двойка" in first and "3 ⚡" not in first
+        assert "Два удара подряд" not in first
+        assert await page.locator("#skills-list .skill-note").count() == 0
+        assert await page.locator("#skills-list .skill-cost").count() == 0
+        # Четыре в ряд, а не в столбик
+        boxes = [await tiles.nth(one).bounding_box() for one in range(4)]
+        assert len({round(one["y"]) for one in boxes}) == 1, "плитки не в ряд"
+        await browser.close()
+
+
+def a_fighter_with_long_tricks():
+    """Боец с самыми длинными названиями, какие есть в игре.
+
+    «Сокрушительный» — четырнадцать букв, и это худший случай: если
+    влезает он, влезет любое другое название.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["abilities"] = {
+        "slots": 4,
+        "known": [
+            {"code": "a", "title": "Сокрушительный удар", "icon": "👊",
+             "image": "", "cost": 3, "tier": 2, "note": "Бьёт."},
+            {"code": "b", "title": "Критический удар", "icon": "👊",
+             "image": "", "cost": 4, "tier": 4, "note": "Бьёт."},
+            {"code": "c", "title": "Восстановление", "icon": "💚",
+             "image": "", "cost": 5, "tier": 6, "note": "Лечит."},
+            {"code": "d", "title": "Воля к победе", "icon": "🔥",
+             "image": "", "cost": 6, "tier": 8, "note": "Держит."},
+        ],
+        "choice": None,
+        "next_tier": 12,
+    }
+    return card
+
+
+# Ширина слова при данном шрифте — то, что решает, разорвут его или нет.
+# Меряем каждое слово отдельно и сравниваем с колонкой под название:
+# если слово шире колонки, браузеру остаётся только разорвать его
+WIDEST_WORD = """() => {
+  const probe = document.createElement('span');
+  probe.style.cssText = 'position:absolute;white-space:nowrap;visibility:hidden';
+  document.body.appendChild(probe);
+  const out = [...document.querySelectorAll('#skills-list .skill-title')].map((one) => {
+    probe.style.font = getComputedStyle(one).font;
+    const room = one.getBoundingClientRect().width;
+    const word = Math.max(...one.textContent.split(' ').map((bit) => {
+      probe.textContent = bit;
+      return probe.getBoundingClientRect().width;
+    }));
+    return {text: one.textContent, room: room, word: word};
+  });
+  probe.remove();
+  return out;
+}"""
+
+
+async def test_the_longest_trick_name_fits_the_tile_without_breaking(server):
+    """Слова в плитке не рвутся: строка кончается там, где был пробел.
+
+    «Критиче-ский удар» читается как опечатка, и переносы отсюда убраны
+    вовсе. Но четверть экрана под «Сокрушительный» мала при любом
+    читаемом кегле — поэтому кегль привязан к ширине самой плитки.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, a_fighter_with_long_tricks())
+        await page.wait_for_selector(".skill")
+
+        for width in (360, 390, 430):
+            await page.set_viewport_size({"width": width, "height": 900})
+            await page.wait_for_timeout(60)
+            for one in await page.evaluate(WIDEST_WORD):
+                assert one["word"] <= one["room"] + 0.5, (
+                    f"при {width} точках «{one['text']}» рвут по слогам: "
+                    f"слову нужно {one['word']:.0f}, а колонка {one['room']:.0f}"
+                )
+        await browser.close()
+
+
+async def test_the_row_of_tricks_never_pushes_the_page_sideways(server):
+    """Ряд приёмов не вылезает за ширину экрана.
+
+    В вебе Телеграма это видно сразу: страница начинает ездить вбок.
+    Колонки сетки заданы как `minmax(0, 1fr)` — у простого `1fr`
+    нижняя граница равна самому длинному слову, и оно растягивало ряд.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, a_fighter_with_long_tricks())
+        await page.wait_for_selector(".skill")
+
+        for width in (320, 360, 390, 430):
+            await page.set_viewport_size({"width": width, "height": 900})
+            await page.wait_for_timeout(60)
+            out = await page.evaluate("""() => {
+              const over = [];
+              document.querySelectorAll('#hero *').forEach((one) => {
+                const box = one.getBoundingClientRect();
+                if (box.width && box.right > window.innerWidth + 0.5)
+                  over.push(one.tagName + '.' + one.className);
+              });
+              return {over: over, page: document.documentElement.scrollWidth};
+            }""")
+            assert out["over"] == [], f"при {width} точках вылезли: {out['over']}"
+            assert out["page"] <= width, f"страница шире экрана: {out['page']}"
+        await browser.close()
+
+
+async def test_a_trick_opens_with_a_big_picture_and_its_words(server):
+    """Нажал на приём — всплывашка с крупной картинкой и описанием."""
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, a_fighter_with_tricks())
+        await page.wait_for_selector(".skill")
+
+        await page.locator("#skills-list .skill").nth(1).click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        assert await page.locator("#sheet-title").inner_text() == "Подсечка"
+        assert "выучен на 4 уровне" in await page.locator("#sheet-note").inner_text()
+        assert await page.locator("#sheet .skill-wide").count() == 1
+        assert (
+            await page.locator("#sheet .skill-note").inner_text()
+            == "Сбивает соперника с ног."
+        )
+        await page.locator("#sheet .btn", has_text="Закрыть").click()
+        await page.wait_for_selector("#sheet.hidden", state="attached")
+        await browser.close()
+
+
+# ---------- машина у здания ----------
+
+
+async def test_the_car_at_the_porch_shows_itself_and_its_buttons_below(server):
+    """В рамке машина, под рамкой — что с ней делать.
+
+    Картинки у машины не было вовсе: отличать «Бронированный
+    внедорожник» от «Неонового купе» приходилось по строке.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    here = [{
+        "id": 7, "code": "suv", "title": "Бронированный внедорожник",
+        "image": "https://example.invalid/suv.png", "plate": "Р919ВК",
+        "owner": "x RED x", "owner_id": 9, "mine": False, "street": True,
+        "impound": False, "service": "", "stolen": False, "wanted": False,
+        "can_steal": True, "why": "", "can_deliver": False,
+    }]
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, city=city_map(cars=here)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "map")
+        await page.wait_for_function("mapData && mapData.cars.length > 0")
+        await page.evaluate("carsHereSheet()")
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        frame = page.locator("#sheet .car-here")
+        assert await frame.locator(".thing-title").inner_text() == (
+            "Бронированный внедорожник · Р919ВК"
+        )
+        assert await frame.locator(".car-here-pic").count() == 1
+        assert await frame.locator(".thing-note").inner_text() == (
+            "Хозяин: x RED x"
+        )
+        # Кнопок в рамке нет — они под ней, одним рядом
+        assert await frame.locator(".btn").count() == 0
+        acts = page.locator("#sheet .car-here-acts")
+        # «Закрыть» тут нет вовсе: всплывашку закрывают крестом в шапке,
+        # а внизу эта кнопка читалась как кнопка последней машины
+        assert await acts.locator(".btn").all_inner_texts() == ["🔑 Угнать"]
+        assert await page.locator("#sheet .btn", has_text="Закрыть").count() == 0
+
+        # Кнопка стоит ПОД рамкой, а не на ней: отрицательный отступ
+        # наезжал ряду кнопок на нижний край рамки машины
+        under = await frame.bounding_box()
+        over = await acts.bounding_box()
+        assert over["y"] >= under["y"] + under["height"], "кнопка налезла на рамку"
+        await browser.close()
+
+
+async def test_two_cars_at_the_porch_each_keep_their_own_buttons(server):
+    """У каждой машины свой ряд кнопок, и лишней кнопки внизу нет."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    def a_car(one, title, plate, mine):
+        return {
+            "id": one, "code": "suv", "title": title, "image": "",
+            "plate": plate, "owner": "x RED x", "owner_id": 9, "mine": mine,
+            "street": True, "impound": False, "service": "", "stolen": False,
+            "wanted": False, "can_steal": not mine, "why": "",
+            "can_deliver": False,
+        }
+    here = [
+        a_car(7, "Бронированный внедорожник", "Р919ВК", False),
+        a_car(8, "Прокачанный GT", "Р254ВН", True),
+    ]
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, city=city_map(cars=here)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "map")
+        await page.wait_for_function("mapData && mapData.cars.length > 1")
+        await page.evaluate("carsHereSheet()")
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        assert await page.locator("#sheet .car-here").count() == 2
+        rows = page.locator("#sheet .car-here-acts")
+        assert await rows.count() == 2
+        assert await rows.nth(0).locator(".btn").all_inner_texts() == ["🔑 Угнать"]
+        assert await rows.nth(1).locator(".btn").all_inner_texts() == ["Забрать"]
+        # Ни одной «Закрыть» — ни в рядах, ни отдельной внизу списка
+        assert await page.locator("#sheet .btn", has_text="Закрыть").count() == 0
+        await browser.close()
+
+
+# ---------- список игроков: порядок и отбор ----------
+
+
+async def open_desk(pw, server, section="players", **kwargs):
+    """Открыть справочную клуба на нужном разделе."""
+    browser, page = await open_page(
+        pw, server, build_card(make_player(), TOKEN, viewer_id=42), **kwargs
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await page.locator("#tab-club").click()
+    await page.wait_for_selector("#club-players:not(.hidden)")
+    if section != "players":
+        await page.locator(f"#club-sections .chip").get_by_text(
+            {"ladder": "Рейтинг недели", "stats": "Статистика игрока"}[section],
+            exact=True,
+        ).click()
+        await page.wait_for_selector(f"#club-{section}:not(.hidden)")
+    return browser, page
+
+
+async def test_the_player_list_offers_an_order_and_a_level(server):
+    """Над списком два переключателя: порядок и уровень.
+
+    Порядок пузырями — их два, и видны оба сразу. Уровень списком:
+    уровней десятки, и двадцать пузырей заняли бы весь экран.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_desk(
+            pw, server,
+            club=a_rating(
+                a_rated(42, "Тайлер", 4, 1100),
+                a_rated(43, "Марла", 7, 1400),
+            ),
+        )
+        await page.wait_for_function("clubData !== null")
+
+        orders = await page.locator("#club-order .chip").all_inner_texts()
+        assert orders == ["По рейтингу", "По алфавиту"]
+        # Нажат тот, по которому список и пришёл
+        assert await page.locator("#club-order .chip.on").inner_text() == "По рейтингу"
+
+        levels = await page.locator("#club-level option").all_inner_texts()
+        assert levels == ["любой", "4", "7"], "в отборе уровни, которых нет"
+        await browser.close()
+
+
+async def test_choosing_a_level_asks_the_server_from_the_first_page(server):
+    """Выбрали уровень — спрашиваем с первой страницы и с отбором.
+
+    Оставаться на третьей странице после отбора незачем: в урезанном
+    списке её может не быть вовсе.
+    """
+    asked = []
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    body = a_rating(a_rated(42, "Тайлер", 4, 1100), a_rated(43, "Марла", 7, 1400))
+
+    async def give(route):
+        asked.append(route.request.url)
+        await route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.route("**/api/club*", give)
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+        await page.wait_for_function("clubData !== null")
+
+        await page.select_option("#club-level", "7")
+        # Ответ подменён одним и тем же телом, так что нового от старого
+        # по данным не отличить: ждём самого запроса, со стороны перехвата
+        for _ in range(100):
+            if any("level=7" in url for url in asked):
+                break
+            await page.wait_for_timeout(20)
+
+        assert any("level=7" in url for url in asked), asked
+        assert any("page=1&sort=rating&level=7" in url for url in asked), asked
+        await browser.close()
+
+
+async def test_the_alphabetical_list_says_why_there_are_no_places(server):
+    """В переставленном списке мест нет, и записка об этом говорит.
+
+    Без неё исчезновение мест читается как поломка экрана.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_desk(
+            pw, server,
+            club=a_rating(
+                a_rated(42, "Тайлер", 4, 1100), places=False,
+            ),
+        )
+        await page.wait_for_function("clubData !== null")
+        # Пришёл список по алфавиту: сервер сказал это в ответе
+        await page.evaluate(
+            "renderClub({...clubData, sort: 'name',"
+            " fighters: clubData.fighters.map((o) => ({...o, place: 0}))})"
+        )
+
+        said = await page.locator("#club-note").inner_text()
+        assert "без мест" in said and "ELO" in said
+        assert await page.locator(".fighter-place").count() == 0
+        await browser.close()
+
+
+async def test_an_empty_level_is_not_an_empty_club(server):
+    """«На этом уровне никого» и «в клубе никого» — разные новости."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk(pw, server, club=a_rating())
+        await page.wait_for_function("clubData !== null")
+
+        assert "В клубе пока никого" in await page.locator("#club-note").inner_text()
+
+        await page.evaluate("renderClub({...clubData, level: 9, total: 0})")
+        said = await page.locator("#club-note").inner_text()
+        assert "На этом уровне бойцов нет" in said
+        assert "сними отбор" in said
+        await browser.close()
+
+
+# ---------- рейтинг недели ----------
+
+
+async def test_the_weekly_rating_shows_place_fights_and_prize(server):
+    """Строка недели: место, ник, уровень, ELO, бои и предварительный приз."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk(
+            pw, server, "ladder",
+            ladder=ladder_state(
+                ladder_rank(1, a_rated(43, "Марла", 7, 1400), fights=14),
+                ladder_rank(2, a_rated(42, "Тайлер", 4, 1100), fights=10),
+            ),
+        )
+        await page.wait_for_function("ladderData !== null")
+
+        rows = page.locator("#ladder-list .fighter")
+        assert await rows.count() == 2
+        first = await rows.nth(0).inner_text()
+        assert "1" in first and "Марла" in first and "[7]" in first
+        assert "14 б." in first
+        assert "400" in first, "награда за первое место"
+
+        second = await rows.nth(1).inner_text()
+        assert "Тайлер" in second and "10 б." in second and "375" in second
+        # Своя строка подсвечена: её ищут глазами
+        assert await page.locator("#ladder-list .fighter.me").count() == 1
+        await browser.close()
+
+
+async def test_the_weekly_rating_says_the_prize_is_preliminary(server):
+    """Границы недели и подпись о предварительности — на экране."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk(
+            pw, server, "ladder",
+            ladder=ladder_state(
+                ladder_rank(1, a_rated(42, "Тайлер", 4, 1100)),
+                mine=10, my_place=1,
+            ),
+        )
+        await page.wait_for_function("ladderData !== null")
+
+        assert "Неделя с" in await page.locator("#ladder-window").inner_text()
+        said = await page.locator("#ladder-note").inner_text()
+        assert "предварительная" in said and "воскресенье" in said
+        # Своя строка: место и награда
+        mine = await page.locator("#ladder-mine").inner_text()
+        assert "на 1 месте" in mine and "400" in mine
+        await browser.close()
+
+
+async def test_a_fighter_below_the_threshold_sees_his_progress(server):
+    """До порога вместо места — «7 из 10» и сколько боёв осталось."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk(
+            pw, server, "ladder", ladder=ladder_state(mine=7),
+        )
+        await page.wait_for_function("ladderData !== null")
+
+        mine = await page.locator("#ladder-mine").inner_text()
+        assert "7 из 10 PvP-боёв в Бойцовском клубе" in mine
+        assert "осталось 3 боя" in mine
+        assert "месте" not in mine, "места у непрошедшего нет"
+        await browser.close()
+
+
+async def test_an_empty_weekly_rating_says_so_in_words(server):
+    """Пустой рейтинг подписан словами, а не пустотой."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk(pw, server, "ladder", ladder=ladder_state())
+        await page.wait_for_function("ladderData !== null")
+
+        said = await page.locator("#ladder-note").inner_text()
+        assert said == "Пока никто не провёл 10 PvP-боёв за эту неделю."
+        assert await page.locator("#ladder-list .fighter").count() == 0
+        # Кнопки «ещё раз» тут нет: перезагружать пустоту незачем
+        assert await page.locator("#ladder-oops").is_hidden()
+        await browser.close()
+
+
+async def test_a_broken_weekly_rating_offers_to_try_again(server):
+    """Оборванная загрузка — своя записка и кнопка, а не пустой список.
+
+    Пустой рейтинг и не открывшийся рейтинг выглядели бы одинаково, не
+    скажи мы словами, что случилось: в первом случае жать нечего, во
+    втором — только и остаётся.
+    """
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    tries = []
+
+    async def give(route):
+        tries.append(1)
+        if len(tries) == 1:
+            await route.fulfill(status=500, body="")
+            return
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(
+                ladder_state(ladder_rank(1, a_rated(42, "Тайлер", 4, 1100)))
+            ),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.route("**/api/ladder*", give)
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+        await page.locator("#club-sections .chip").get_by_text(
+            "Рейтинг недели", exact=True
+        ).click()
+        await page.wait_for_selector("#ladder-oops:not(.hidden)")
+
+        assert "не открылся" in await page.locator("#ladder-oops-note").inner_text()
+        assert await page.locator("#ladder-list .fighter").count() == 0
+
+        await page.locator("#ladder-again").click()
+        await page.wait_for_function("ladderData !== null")
+        assert await page.locator("#ladder-oops").is_hidden()
+        assert await page.locator("#ladder-list .fighter").count() == 1
+        await browser.close()
+
+
+async def test_the_rating_says_what_came_for_the_last_week(server):
+    """Награда приходит сама — и экран говорит, за что.
+
+    Без этой строки лишние кредиты в кармане остались бы без
+    объяснения: вручную награду никто не получает.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_desk(
+            pw, server, "ladder",
+            ladder=ladder_state(
+                mine=3,
+                last={
+                    "period": "2026-11-01",
+                    "place": 3,
+                    "prize": 350,
+                    "rating": 1500,
+                    "fights": 12,
+                    "paid_at": 1,
+                },
+            ),
+        )
+        await page.wait_for_function("ladderData !== null")
+
+        said = await page.locator("#ladder-paid").inner_text()
+        assert "3 место" in said and "350" in said and "в кармане" in said
+        await browser.close()
+
+
+async def test_no_prize_for_the_week_shows_no_payout_line(server):
+    """Не попал в призы — строки о прошлой неделе нет вовсе."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk(pw, server, "ladder", ladder=ladder_state())
+        await page.wait_for_function("ladderData !== null")
+        assert await page.locator("#ladder-paid").is_hidden()
+        await browser.close()
+
+
+async def test_below_the_fiftieth_place_the_prize_is_a_dash(server):
+    """За место ниже пятидесятого — прочерк, а не ноль.
+
+    Ноль читается как «посчитали и вышло нисколько», а здесь не платят
+    вовсе.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_desk(
+            pw, server, "ladder",
+            ladder=ladder_state(
+                ladder_rank(51, a_rated(42, "Тайлер", 4, 900)),
+            ),
+        )
+        await page.wait_for_function("ladderData !== null")
+
+        prize = page.locator("#ladder-list .ladder-prize")
+        assert await prize.inner_text() == "—"
+        assert "ladder-none" in (await prize.get_attribute("class"))
+        await browser.close()
+
+
+async def test_the_prize_table_hides_under_a_fold(server):
+    """Призовая таблица под складкой: её смотрят один раз."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk(pw, server, "ladder", ladder=ladder_state())
+        await page.wait_for_function("ladderData !== null")
+
+        assert await page.locator("#ladder-table").is_hidden()
+        await page.locator("#ladder-prizes summary").click()
+        rows = await page.locator("#ladder-table li").all_inner_texts()
+        assert len(rows) == 7
+        assert "1 место" in rows[0] and "400" in rows[0]
+        assert "20–50 место" in rows[-1] and "50" in rows[-1]
+        await browser.close()
+
+
+async def test_the_weekly_rating_turns_pages_of_fifty(server):
+    """Страницы по пятьдесят, а места — по всему рейтингу."""
+    first = ladder_state(
+        *[
+            ladder_rank(one + 1, a_rated(100 + one, f"Первый {one + 1}", 5, 2000 - one))
+            for one in range(50)
+        ],
+        total=55,
+    )
+    second = ladder_state(
+        *[
+            ladder_rank(51 + one, a_rated(200 + one, f"Второй {one + 1}", 5, 1900 - one))
+            for one in range(5)
+        ],
+        offset=50, total=55,
+    )
+    pages = {1: first, 2: second}
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+
+    async def give(route):
+        number = int(route.request.url.split("page=")[-1].split("&")[0])
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(pages.get(number, first)),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.route("**/api/ladder*", give)
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+        await page.locator("#club-sections .chip").get_by_text(
+            "Рейтинг недели", exact=True
+        ).click()
+        await page.wait_for_function("ladderData !== null")
+
+        assert await page.locator("#ladder-pager:not(.hidden)").count() == 1
+        assert "1–50 из 55" in await page.locator("#ladder-where").inner_text()
+        assert await page.locator("#ladder-prev").is_disabled()
+
+        await page.locator("#ladder-next").click()
+        # Ждём отрисованную страницу, а не номер: номер страница ставит
+        # до запроса, и по нему видно только, что о ней попросили
+        await page.wait_for_function("ladderData && ladderData.offset === 50")
+        assert "51–55 из 55" in await page.locator("#ladder-where").inner_text()
+        # Место первой строки второй страницы — пятьдесят первое
+        assert await page.locator(
+            "#ladder-list .fighter-place"
+        ).nth(0).inner_text() == "51"
+        assert await page.locator("#ladder-next").is_disabled()
+        await browser.close()
+
+
+async def test_reopening_the_tab_asks_the_server_again(server):
+    """Новое открытие рейтинга берёт свежие данные, а не вчерашние.
+
+    Рейтинг меняется с каждым боем в городе: показать запомненный
+    значило бы врать о местах и наградах.
+    """
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    asked = []
+
+    async def give(route):
+        asked.append(1)
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(ladder_state(mine=len(asked))),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.route("**/api/ladder*", give)
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+        chips = page.locator("#club-sections .chip")
+        await chips.get_by_text("Рейтинг недели", exact=True).click()
+        await page.wait_for_function("ladderData !== null")
+        assert len(asked) == 1
+
+        await chips.get_by_text("Список игроков", exact=True).click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+        await chips.get_by_text("Рейтинг недели", exact=True).click()
+        await page.wait_for_function("ladderData && ladderData.mine.fights === 2")
+        assert len(asked) == 2
+        await browser.close()
+
+
+async def test_the_barman_sends_a_short_fighter_to_grow(server):
+    """Глава кончилась раньше уровня: бармен зовёт расти, значка нет.
+
+    Подходить к нему пока незачем, и восклицательный знак над стойкой
+    был бы обманом — дела за ним нет.
+    """
+    player = make_player("bar")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    # Первая глава сдана целиком, уровень всё ещё первый
+    bar = bar_state(
+        done=("ring", "pro", "bank", "policy", "looks_intro"), level=1
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, bar=bar)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "tavern")
+        await page.wait_for_selector("#tavern-body .shelf")
+
+        assert await page.locator("#tavern-npc-mark").inner_text() == ""
+        assert await page.locator("#tavern-npc-mark").is_hidden()
+        # Разговор свёрнут: бармен сам не заговаривает, дела-то нет
+        assert await page.locator("#tavern-body .talk").count() == 0
+        assert "подрастёшь" in await page.locator(
+            "#tavern-body .thing-note"
+        ).inner_text()
+
+        # Подошли сами — он говорит, до какого уровня расти
+        await page.locator(".btn", has_text="Подойти к стойке").click()
+        await page.wait_for_selector("#tavern-body .talk")
+        said = await page.locator(".talk-text").inner_text()
+        assert "Достигни уровня 2" in said
+        await browser.close()
+
+
+async def test_opening_a_move_card_tells_the_server(server, db):
+    """Карточка приёма с условиями — событие для бармена.
+
+    Войти в школу и прочитать условия изучения — разные дела, и у
+    бармена задание про второе. Карточку рисует страница из уже
+    приехавшего каталога, поэтому сама она сказать об этом иначе не
+    может.
+    """
+    from bot.webapp.dojo import build_dojo
+    from tests.test_dojo_school import student
+
+    me = await student(db)
+    await db.add_deeds(me.user_id, {"hit": 1200, "dodge": 80})
+    body = await build_dojo(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+    seen = []
+
+    async def catch(route):
+        seen.append(json.loads(route.request.post_data or "{}"))
+        await route.fulfill(
+            status=200, content_type="application/json", body="{}"
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dojo=body)
+        await page.route("**/api/seen", catch)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dojo")
+        await page.wait_for_function("dojoData !== null")
+        await page.locator("#dojo-tabs .chip", has_text="Обучение").click()
+        await page.wait_for_selector(".dojo-line")
+
+        # Пока карточку не открыли — серверу не говорили ничего
+        assert seen == []
+        await page.locator(".dojo-plus").first.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        for _ in range(100):
+            if seen:
+                break
+            await page.wait_for_timeout(20)
+
+        assert len(seen) == 1, seen
+        assert seen[0]["catalog"] == "dojo"
+        assert seen[0]["code"], "код приёма не доехал"
         await browser.close()

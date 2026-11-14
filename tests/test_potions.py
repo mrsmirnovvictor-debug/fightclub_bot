@@ -6,6 +6,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from bot.config import Config
 from bot.game.classes import Stats, get_class
 from bot.game.health import now_ts
+from bot.game.hospital import FULL_PRICE, PATCH_HEAL, PATCH_PRICE
 from bot.game.locations import Service
 from bot.game.raid import CELLAR_BOSS
 from bot.game.potions import (
@@ -61,7 +62,9 @@ def test_every_potion_has_a_price_and_does_something():
         assert potion.price > 0, potion.code
         assert potion.describe(), potion.code
         if potion.kind is PotionKind.HEAL:
-            assert potion.heal > 0 and not potion.seconds
+            # Ноль у лечебной склянки значит «до полного», как у полного
+            # выздоровления в больнице
+            assert (potion.heal > 0 or potion.full) and not potion.seconds
         elif potion.kind is PotionKind.BOOST:
             assert potion.seconds == EFFECT_SECONDS
             assert potion.bonus.total() or potion.hp
@@ -71,11 +74,52 @@ def test_every_potion_has_a_price_and_does_something():
 
 
 def test_the_shelf_holds_exactly_what_was_asked_for():
-    """Два эликсира восстановления и четыре временных — больше ничего."""
+    """Два эликсира восстановления и четыре временных — больше ничего.
+
+    Временных четыре: сила, проворство, интуиция и запас здоровья.
+    Выносливости среди них нет — её не поднимает ни одна вещь в городе,
+    и склянка была единственным исключением из правила.
+    """
     heals = [p for p in POTIONS if p.kind is PotionKind.HEAL]
     boosts = [p for p in POTIONS if p.kind is PotionKind.BOOST]
-    assert sorted(p.heal for p in heals) == [30, 60]
+    assert sorted(p.heal for p in heals) == [0, PATCH_HEAL]
     assert sorted(p.bonus.total() + p.hp for p in boosts) == [10, 10, 10, 60]
+
+
+def test_the_pharmacy_charges_what_the_clinic_charges():
+    """Лечение навынос стоит столько же, сколько лечение в больнице.
+
+    Аптека продаёт не другое здоровье, а то же самое с собой: брать за
+    дорогу дороже или дешевле значило бы сказать, что в склянке оно
+    другое.
+    """
+    small, big = get_potion("heal_small"), get_potion("heal_big")
+    assert (small.heal, small.price) == (PATCH_HEAL, PATCH_PRICE)
+    assert small.level_required == 1, "перевязку продают всякому"
+    assert big.full and big.price == FULL_PRICE
+    assert big.level_required == 1
+    assert "до полного" in big.describe()
+
+
+def test_no_elixir_raises_endurance():
+    """Выносливость не поднимает ни вещь, ни склянка — и это правило.
+
+    Снятый эликсир выносливости был единственным исключением: прибавку
+    он давал, а повторить её было нечем, и на прилавке он обещал то,
+    чего в городе нет.
+    """
+    from bot.game.classes import ALL_STATS, Stat
+
+    raised = {
+        stat.value
+        for potion in POTIONS
+        for stat in ALL_STATS
+        if potion.bonus.get(stat)
+    }
+    assert Stat.ENDURANCE.value not in raised
+    assert raised == {
+        stat.value for stat in ALL_STATS if stat is not Stat.ENDURANCE
+    }
 
 
 def test_duration_reads_like_a_sentence():
@@ -246,7 +290,7 @@ def test_a_drunk_elixir_goes_into_the_fist_fight_too():
         ActiveEffect(code="boost_strength", until=now_ts() + EFFECT_SECONDS),
         ActiveEffect(code="boost_hp", until=now_ts() + EFFECT_SECONDS),
     ]
-    bare = derive(player.fclass, player.base_stats, player.level)
+    bare = derive(player.fclass, player.base_stats)
 
     fighter = Fighter.from_player(player, armed=False)
 
@@ -258,18 +302,44 @@ def test_a_drunk_elixir_goes_into_the_fist_fight_too():
 
 
 def test_the_counter_has_a_shelf_for_everything_you_drink():
+    """В аптеке — то, что пьют. Билеты стоят у оружейника."""
     player = make_player()
     shop = build_shop(player, Service.POTIONS)
     misc = shop["sections"][-1]
 
     assert misc["slot"] == "misc"
     assert misc["title"] == "Прочее"
-    assert [row["code"] for row in misc["items"]] == [p.code for p in POTIONS]
+    drinkable = [one.code for one in POTIONS if not one.is_pass]
+    assert [row["code"] for row in misc["items"]] == drinkable
     assert all(row["suits"] == [] for row in misc["items"])
-    # пьётся всё, кроме пропуска: его тратит подвал, а не игрок
-    rows = {row["code"]: row for row in misc["items"]}
-    assert all(rows[p.code]["consumable"] is not p.is_pass for p in POTIONS)
-    assert rows[RAID_PASS]["consumable"] is False
+    assert all(row["consumable"] for row in misc["items"])
+
+
+def test_the_tickets_moved_to_the_armourer():
+    """Билеты не пьют, их предъявляют на входе — и лежат они у оружейника.
+
+    В аптеке они были по недоразумению: пропуск копится в той же
+    стопке, что склянки, вот и попал на тот же прилавок.
+    """
+    from bot.game.locations import service_for
+
+    player = make_player()
+    shelves = build_shop(player, Service.WEAPONS)["sections"]
+    tickets = shelves[-1]
+
+    assert tickets["slot"] == "tickets" and tickets["title"] == "Билеты"
+    assert [row["code"] for row in tickets["items"]] == [
+        one.code for one in POTIONS if one.is_pass
+    ]
+    assert all(row["consumable"] is False for row in tickets["items"])
+    # И покупка идёт туда же, куда показывает прилавок
+    assert all(
+        service_for(one.code) is Service.WEAPONS
+        for one in POTIONS if one.is_pass
+    )
+    # А в аптеке их больше нет
+    misc = build_shop(player, Service.POTIONS)["sections"][-1]
+    assert not [row for row in misc["items"] if row["code"] == RAID_PASS]
 
 
 def test_a_locked_potion_is_shown_but_marked():
@@ -279,8 +349,12 @@ def test_a_locked_potion_is_shown_but_marked():
 
     assert rows["heal_small"]["unlocked"]
     assert not rows["boost_strength"]["unlocked"]
-    # с первого уровня открыты малый эликсир и рейд-пасс
+    # с первого уровня открыты обе лечебные склянки, и только они:
+    # билеты переехали к оружейнику и тут больше не стоят
     assert misc["open"] == 2
+    # А на той полке с первого уровня открыты все три билета
+    tickets = build_shop(rookie, Service.WEAPONS)["sections"][-1]
+    assert tickets["open"] == 3
 
 
 def test_the_card_carries_the_bag_of_bottles_and_what_is_running():
@@ -353,7 +427,9 @@ async def test_the_mini_app_starts_the_effect_and_shows_the_clock(client, db):
     assert body["used"]["healed"] == 0
     assert body["used"]["seconds_left"] > EFFECT_SECONDS - 5
     assert [effect["code"] for effect in body["card"]["effects"]] == ["boost_hp"]
-    assert body["card"]["effects"][0]["left_text"] == "2 ч"
+    # Ровно два часа или на минуту меньше: между покупкой и ответом
+    # проходит время, и на медленной машине его видно
+    assert body["card"]["effects"][0]["left_text"] in ("2 ч", "1 ч 59 мин")
 
 
 async def test_the_mini_app_refuses_a_bottle_that_is_not_in_the_bag(client, db):
@@ -394,13 +470,29 @@ async def test_a_reset_takes_the_bottles_and_the_buffs_with_it(db):
 
 
 def test_every_potion_is_drawn_and_no_two_share_a_bottle():
-    """Каждая склянка нарисована, и все шесть картинок разные."""
+    """Каждая склянка нарисована, и все картинки разные.
+
+    Склянки лежат в своей папке и под своим кодом. Пропуска — нет: их
+    не пьют, и рисовали их вместе с рейдами. Все три перерисовали разом
+    и выгрузили своей папкой, где имя файла — по рейду, а не по коду
+    вещи: файла `potions/stadium_pass.jpeg` в бакете нет вовсе.
+    """
     from bot.game import art
+    from bot.game.potions import PotionKind
 
     for potion in POTIONS:
+        if potion.kind is PotionKind.PASS and potion.image:
+            # Пропуска перерисовали все разом и выгрузили своей папкой
+            assert potion.picture.startswith(f"{art.RAID_TICKETS}/"), potion.code
+            assert potion.picture.endswith(".webp"), potion.code
+            continue
         assert potion.picture.startswith(f"{art.POTIONS}/"), potion.code
         assert potion.picture.endswith(".jpeg"), potion.code
     assert len({potion.picture for potion in POTIONS}) == len(POTIONS)
+    # Имя файла — по рейду: пропуск в игре зовётся иначе
+    assert get_potion("stadium_pass").picture == art.raid_ticket("football-fans")
+    assert get_potion("raid_pass").picture == art.raid_ticket("casino-boss")
+    assert get_potion("base_pass").picture == art.raid_ticket("military-base")
 
 
 def test_the_shop_row_carries_the_potion_picture():
@@ -417,7 +509,7 @@ def test_the_shop_row_carries_the_potion_picture():
 
 
 async def test_another_boost_puts_out_the_one_that_was_running(db):
-    """Выпил ловкость поверх силы — сила погасла, ловкость встала на её место."""
+    """Выпил проворство поверх силы — сила погасла, проворство встало на её место."""
     player = make_player()
     await db.save_player(player)
     await buy_potion(db, player, "boost_strength")
@@ -532,11 +624,11 @@ def test_the_card_marks_which_potions_are_temporary():
 
 
 async def test_an_elixir_shows_up_in_the_stat_it_boosts(client, db):
-    """Выпил эликсир ловкости — «Ловкость» на карточке выросла.
+    """Выпил эликсир проворства — «Проворство» на карточке выросло.
 
     Боевые числа эликсир учитывали и раньше: движок берёт характеристики
     вместе с выпитым, и уворот от склянки поднимался. А строка
-    «Ловкость» складывала только своё и надетое — выходило, что склянка
+    «Проворство» складывало только своё и надетое — выходило, что склянка
     подействовала на бой, но не на бойца.
     """
     player = make_player(user_id=42, level=5, credits=1000)
@@ -594,8 +686,23 @@ def test_the_bag_shows_the_pass_with_its_wear():
 
 
 def test_the_pass_says_what_it_is_for():
-    """Описание называет вещь своими словами: чья печать и на что талон."""
+    """Описание называет рейд, и больше ничего.
+
+    Длинное описание на карточке не помещалось: билет вдвое шире своей
+    высоты и занимает всю ширину, а под ним оставалось четыре строки
+    про печати и корешки. Рейд — единственное, что про билет надо
+    знать.
+    """
     note = get_potion(RAID_PASS).note
 
-    assert "казино Vegas City" in note
-    assert CELLAR_BOSS.raid_title in note, "названия рейда и талона разошлись"
+    assert note == (
+        "Билет позволит вам участвовать в рейде «Ограбление Босса Казино»."
+    )
+    assert CELLAR_BOSS.raid_title in note, "названия рейда и билета разошлись"
+    # И так у всех трёх: сперва «Билет позволит», потом название рейда
+    for one in POTIONS:
+        if not one.is_pass:
+            continue
+        assert one.note.startswith("Билет позволит вам участвовать в рейде «")
+        assert one.note.endswith("».")
+        assert len(one.note) < 90, (one.code, len(one.note))

@@ -65,10 +65,18 @@ def regen_per_second(max_hp: int) -> float:
 
 
 def regenerated_hp(stored_hp: int, max_hp: int, seconds_passed: float) -> int:
-    """Сколько здоровья у бойца сейчас, если он отдыхал столько секунд."""
+    """Сколько здоровья у бойца сейчас, если он отдыхал столько секунд.
+
+    Затянувшееся считаем целым делением, а не через `regen_per_second`:
+    запас в секунду — дробь, и умножение на неё врёт в последнем знаке.
+    Отбросив дробную часть, эта ошибка иногда отбрасывает вместе с ней
+    целую единицу здоровья — а по ней решается, пустят ли в бой.
+    Сложение занесено под floor без потерь: запас на момент замера —
+    целое число, и `floor(целое + x)` это то же `целое + floor(x)`.
+    """
     if seconds_passed <= 0:
         return max(0, min(max_hp, stored_hp))
-    healed = stored_hp + regen_per_second(max_hp) * seconds_passed
+    healed = stored_hp + (max_hp * seconds_passed) // FULL_REGEN_SECONDS
     return max(0, min(max_hp, int(healed)))
 
 
@@ -87,7 +95,14 @@ def seconds_to_reach(hp: int, max_hp: int, target_percent: float) -> int:
     target = required_hp(max_hp, target_percent)
     if hp >= target:
         return 0
-    return max(1, math.ceil((target - hp) / regen_per_second(max_hp)))
+    # Делим целыми по той же причине: `(target - hp) / regen_per_second`
+    # на ровном ответе даёт 480.00000000000006, и `ceil` поднимает его
+    # до 481. Отсчёт тогда обещает секунду, которая бойцу не нужна, —
+    # допуск случается раньше, чем бот его называет, и обратный счётчик
+    # расходится с ответом на кнопку. Деление нацело точно: ждать надо
+    # ровно столько секунд, чтобы `regenerated_hp` дошёл до `target`
+    need = (target - hp) * FULL_REGEN_SECONDS
+    return max(1, -(-need // max_hp))
 
 
 def seconds_until_ready(hp: int, max_hp: int) -> int:
@@ -107,3 +122,26 @@ def format_duration(seconds: int) -> str:
     if minutes:
         return f"{minutes} мин"
     return f"{rest} сек"
+
+
+def format_term(seconds: int) -> str:
+    """Длинный срок: «29 дней», «22 часа», «40 мин».
+
+    Для сроков в сутки и месяцы `format_duration` не годится: месяц
+    аренды он называет «43200 мин», и это не читается вовсе. Единица
+    здесь одна, самая крупная из подходящих: до минуты на сроке в месяц
+    никто не считает, а строка должна помещаться в строку.
+    """
+    from bot.game.presence import plural
+
+    seconds = max(0, int(seconds))
+    days, rest = divmod(seconds, 24 * 60 * 60)
+    if days:
+        return f"{days} {plural(days, 'день', 'дня', 'дней')}"
+    hours, rest = divmod(rest, 60 * 60)
+    if hours:
+        return f"{hours} {plural(hours, 'час', 'часа', 'часов')}"
+    minutes = rest // 60
+    if minutes:
+        return f"{minutes} мин"
+    return format_duration(seconds)

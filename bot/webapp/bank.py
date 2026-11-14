@@ -21,6 +21,7 @@ from typing import Any
 
 from bot.game.bank import (
     ACCOUNT_TITLE,
+    MOVE_TITLES,
     BANK_TITLE,
     CARD,
     CARD_BENEFITS,
@@ -31,7 +32,8 @@ from bot.game.bank import (
     CARD_TITLE,
     CARD_YEAR_PRICE,
     CASH,
-    DISCOUNTS,
+    CARD_DISCOUNT,
+    DISCOUNT_PLACES,
     PURSE_EMOJI,
     PURSE_TITLES,
     YEAR_DAYS,
@@ -41,9 +43,9 @@ from bot.game.bank import (
     year_text,
 )
 from bot.game.clock import club_moment
-from bot.game.health import now_ts
+from bot.game.health import format_term, now_ts
 from bot.game.locations import Service
-from bot.models import Player
+from bot.models import CardMove, Player
 
 # Вкладки банка. Порядок — от того, чего у бойца ещё нет, к тому, чем он
 # пользуется каждый день: пустой банк должен звать открыть счёт, а не
@@ -51,7 +53,22 @@ from bot.models import Player
 TABS: tuple[tuple[str, str], ...] = (
     ("new", "Новый продукт"),
     ("accounts", "Счета"),
+    ("deposits", "Вклады"),
+    ("loans", "Кредиты"),
     ("atm", "Банкомат"),
+    ("log", "Выписка"),
+)
+
+# За какой срок показывают выписку. Тридцать дней — то, что открывается
+# само: месяц это и есть «последнее время». Остальные сроки выбирают
+# руками, и последний из них — без границы вовсе
+STATEMENT_DAYS = 30
+PERIODS: tuple[tuple[str, str, int], ...] = (
+    ("week", "7 дней", 7),
+    ("month", "30 дней", 30),
+    ("quarter", "3 месяца", 90),
+    ("year", "Год", 365),
+    ("all", "Всё время", 0),
 )
 
 
@@ -68,7 +85,7 @@ def purse_payload(
     moment = now_ts() if now is None else now
     purse = player.purse_for(moment, service)
     takes_card = card_works(service)
-    percent = discount_of(service)
+    percent = discount_of(service, player.tier_rank(moment))
     return {
         "purse": purse,
         "prefers": player.pay_from,
@@ -98,7 +115,10 @@ def _purse_note(
 ) -> str:
     """Строка под переключателем: почему здесь платят именно так."""
     if not player.has_card:
-        return "Карта Vegas Банка даёт скидки в городе. Оформляется в банке."
+        return (
+            f"Карта Vegas Банка даёт скидку {CARD_DISCOUNT}% в городе, "
+            "а с подпиской больше. Оформляется в банке."
+        )
     if not takes_card:
         return "Здесь платят только наличными: карта тут не ходит."
     if not player.card_works(moment):
@@ -186,35 +206,247 @@ def card_payload(player: Player, moment: int) -> dict[str, Any]:
 PLACE_TITLES: dict[Service, str] = {
     Service.CLOTHES: "Магазин одежды",
     Service.FAN: "Фанатская экипировка",
+    Service.JEWEL: "Ювелирный магазин",
     Service.WEAPONS: "Оружейный магазин",
     Service.POTIONS: "Аптека",
     Service.HEAL: "Больница",
     Service.INSURANCE: "Страховая компания",
     Service.TRAIN: "Тренажёрный зал",
+    Service.CHARGE: "АЗС",
 }
 
 
-def discounts_payload() -> list[dict[str, Any]]:
-    """Прайс скидок: где и сколько снимает карта.
+def discounts_payload(rank: int = 0) -> list[dict[str, Any]]:
+    """Прайс скидок: где карта их даёт и сколько снимает у этого бойца.
 
-    Собирается из той же таблицы, по которой считается цена. Списком
+    Собирается той же функцией, по которой считается цена. Списком
     руками он однажды разошёлся бы с правилами — и обещал бы то, чего
     касса не даёт.
+
+    Процент один на все места, но зависит от ступени, поэтому список
+    собирается под бойца, а не раз и навсегда: подписчик должен видеть
+    свои двадцать, а не чужие пять.
     """
     return [
         {
             "code": service.value,
             "title": PLACE_TITLES.get(service, service.title),
-            "percent": percent,
+            "percent": discount_of(service, rank),
         }
-        for service, percent in DISCOUNTS.items()
+        for service in sorted(DISCOUNT_PLACES, key=lambda one: PLACE_TITLES[one])
     ]
 
 
-def build_bank(
-    player: Player, now: int | None = None, said: str = ""
+def statement_payload(
+    moves: list[CardMove],
+    days: int = STATEMENT_DAYS,
+    income: int = 0,
+    spent: int = 0,
+    since: int = 0,
+    until: int = 0,
+    now: int | None = None,
 ) -> dict[str, Any]:
-    """Банк целиком: счёт, карта, банкомат и прайс скидок."""
+    """Выписка по карте: строки за срок и два числа под ними.
+
+    Срок приходит уже посчитанным: сколько дней показывать, решает
+    страница, а какие строки в них попали — база. Здесь только перевод
+    в то, что умеет нарисовать экран.
+    """
+    moment = now_ts() if now is None else now
+    return {
+        "days": days,
+        "periods": [
+            {"code": code, "title": title, "days": span, "on": span == days}
+            for code, title, span in PERIODS
+        ],
+        # Свой срок: если он задан, ни один из готовых не подсвечен
+        "since": club_moment(since) if since else "",
+        "until": club_moment(until) if until else "",
+        "custom": bool(since or until),
+        "rows": [
+            {
+                "when": club_moment(one.at),
+                "amount": one.amount,
+                "plus": one.amount > 0,
+                "kind": one.kind,
+                "kind_title": MOVE_TITLES.get(one.kind, "Операция"),
+                "note": one.note,
+                # За что платили. У старых строк пусто — экран их рисует
+                # одним заголовком, как рисовал до комментария
+                "about": one.about,
+                "balance": one.balance,
+            }
+            for one in moves
+        ],
+        "income": income,
+        "spent": spent,
+        "note": (
+            "По карте за этот срок ничего не проходило."
+            if not moves
+            else "Наличные в выписку не попадают: банк видит только счёт."
+        ),
+        "now": club_moment(moment),
+    }
+
+
+def deposit_row(one, moment: int) -> dict[str, Any]:
+    """Вклад на экране: сколько, до какого часа и что принесёт."""
+    left = one.left(moment)
+    return {
+        "id": one.id,
+        "amount": one.amount,
+        "months": one.months,
+        "income": one.income,
+        "total": one.total,
+        "opened": club_moment(one.opened_at) if one.opened_at else "",
+        "until": club_moment(one.paid_until) if one.paid_until else "",
+        "ripe": one.ripe(moment),
+        "left": left,
+        "left_text": format_term(left) if left else "",
+    }
+
+
+def loan_row(loan, moment: int) -> dict[str, Any]:
+    """Кредит на экране: график, долг и пени."""
+    from bot.game.credit import days_between, late_penalty
+
+    if loan is None:
+        return {}
+    days = days_between(loan.penalty_at, moment) if loan.late else 0
+    penalty = loan.penalty + late_penalty(loan.owed, days)
+    left = max(0, loan.due_at - moment)
+    return {
+        "amount": loan.amount,
+        "months": loan.months,
+        "payment": loan.payment,
+        "paid": loan.paid,
+        "pays_left": loan.left,
+        "body_left": loan.body_left,
+        "taken": club_moment(loan.taken_at) if loan.taken_at else "",
+        "due": club_moment(loan.due_at) if loan.due_at else "",
+        "due_in": left,
+        "due_text": format_term(left) if left else "",
+        "late": loan.late,
+        "owed": loan.owed,
+        "penalty": penalty,
+        "debt": loan.owed + penalty,
+        "late_days": days,
+    }
+
+
+def credit_payload(
+    player: Player,
+    moment: int,
+    deposits: list | None = None,
+    loan=None,
+) -> dict[str, Any]:
+    """Вклады и кредиты: что открыто, что можно открыть и почём.
+
+    Калькулятор считается здесь: у страницы нет ни ставки, ни формулы
+    аннуитета, и повторять их на клиенте значило бы однажды разойтись с
+    банком в цене. Страница рисует таблицу, которую ей дали.
+    """
+    from bot.credit_service import weekly_income, why_not
+    from bot.game.credit import (
+        DEPOSIT_MIN,
+        DEPOSIT_MONTHS,
+        DEPOSIT_RATE,
+        LATE_RATE,
+        LOAN_ACCOUNT_AGE,
+        LOAN_MAX,
+        LOAN_MIN,
+        LOAN_RATE,
+        LOAN_TERMS,
+        biggest_loan,
+        deposit_income,
+        monthly_payment,
+        overpay,
+        total_cost,
+    )
+
+    rows = [deposit_row(one, moment) for one in (deposits or [])]
+    weekly = weekly_income(player)
+    denial = why_not(player, moment)
+    # Потолок суммы на каждый срок считается перебором, и считать его
+    # по четыре раза на строку было бы расточительством: один раз на срок
+    tops = {months: biggest_loan(weekly, months) for months in LOAN_TERMS}
+    top = tops[LOAN_TERMS[-1]]
+    calc = []
+    for months in LOAN_TERMS:
+        fits = tops[months]
+        # Чего не дадут, то считают по минимальной сумме: строка всё
+        # равно показывает платёж, от которого банк и отказался
+        amount = fits or LOAN_MIN
+        calc.append(
+            {
+                "months": months,
+                "min": LOAN_MIN,
+                "min_payment": monthly_payment(LOAN_MIN, months),
+                "fits": bool(fits),
+                "top": fits,
+                "payment": monthly_payment(amount, months),
+                "total": total_cost(amount, months),
+                "overpay": overpay(amount, months),
+            }
+        )
+    return {
+        "deposit": {
+            "min": DEPOSIT_MIN,
+            "rate": round(DEPOSIT_RATE * 100),
+            "terms": [
+                {
+                    "months": months,
+                    # Что принесёт самый малый вклад на этот срок: по
+                    # нему и сравнивают сроки
+                    "income": deposit_income(DEPOSIT_MIN, months),
+                }
+                for months in DEPOSIT_MONTHS
+            ],
+            "balance": player.account_balance,
+            "can_open": bool(
+                player.has_account and player.account_balance >= DEPOSIT_MIN
+            ),
+            "rows": rows,
+            "total": sum(one["amount"] for one in rows),
+        },
+        "loan": {
+            "min": LOAN_MIN,
+            "max": LOAN_MAX,
+            "rate": round(LOAN_RATE * 100),
+            "late_rate": round(LATE_RATE * 100),
+            "terms": list(LOAN_TERMS),
+            "week_days": LOAN_ACCOUNT_AGE // (24 * 60 * 60),
+            "weekly": weekly,
+            # Сколько банк даст при этом доходе на самый долгий срок:
+            # потолок считает он, а не страница
+            "top": top,
+            "why": denial,
+            "can_take": bool(not denial and not loan and top),
+            "mine": loan_row(loan, moment),
+            # Калькулятор: по строке на срок. В каждой — платёж за
+            # самый малый кредит, потолок суммы при этом доходе и то,
+            # выносит ли доход такой платёж вообще. Считает банк:
+            # повторять формулу аннуитета на странице значило бы
+            # однажды разойтись с ним в цене
+            "calc": calc,
+        },
+    }
+
+
+def build_bank(
+    player: Player,
+    now: int | None = None,
+    said: str = "",
+    statement: dict[str, Any] | None = None,
+    deposits: list | None = None,
+    loan=None,
+) -> dict[str, Any]:
+    """Банк целиком: счёт, карта, банкомат, выписка и прайс скидок.
+
+    `statement` собирают снаружи: за строками выписки надо в базу, а
+    этот сбор в базу не ходит. Пусто — выписки нет, и вкладка покажет
+    пустой список: это честнее, чем прятать её у того, у кого карта есть.
+    """
     moment = now_ts() if now is None else now
     return {
         "title": BANK_TITLE,
@@ -224,8 +456,11 @@ def build_bank(
         # Не «card»: этим ключом во всех экранах едет карточка бойца, и
         # банковская карта его затирала. Одно слово, два разных предмета
         "bank_card": card_payload(player, moment),
-        "discounts": discounts_payload(),
+        "discounts": discounts_payload(player.tier_rank(moment)),
+        "statement": statement if statement is not None else statement_payload([]),
         "purse": purse_payload(player, moment, Service.BANK),
+        # Вклады и кредиты: то, за что банк и зовётся банком
+        "credit": credit_payload(player, moment, deposits, loan),
         # Переключатель в банке — про настройку, а не про этот дом. «Здесь
         # банк скидки не обещал» на его собственном экране читалось бы
         # как отказ, хотя речь о том, чем платить в городе
@@ -248,10 +483,13 @@ def build_bank(
 
 
 __all__ = [
+    "PERIODS",
+    "STATEMENT_DAYS",
     "TABS",
     "account_payload",
     "build_bank",
     "card_payload",
     "discounts_payload",
     "purse_payload",
+    "statement_payload",
 ]

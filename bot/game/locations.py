@@ -45,10 +45,31 @@ class Service(str, Enum):
     HEAL = "heal"  # больница: здоровье за кредиты
     PREMIUM = "premium"  # элитный магазин, за звёзды
     FAN = "fan"  # фанатский магазин: экипировка своей команды
+    JEWEL = "jewel"  # ювелирный магазин: кольца и ожерелья
+    SCHOOL = "school"  # автошкола: курс ПДД и экзамен на права
+    POLICE = "police"  # полицейский участок: там выдают права
     MARKET = "market"  # комиссионка: торговля между бойцами
     TRADE = "trade"  # рынок: обмен из рук в руки
     INSURANCE = "insurance"  # страховая: полис страхования жизни и здоровья
     TRAIN = "train"  # тренажёрный зал: тренировки на характеристики
+    MAFIA = "mafia"  # Особняк мафии: кланы, заявки и приём в семью
+    ESTATE = "estate"  # жилой дом: аренда квартиры, сейф и кладовая
+    POST = "post"  # почта: посылки между бойцами
+    TAVERN = "tavern"  # бар: бармен и его задания
+    STUDY = "study"  # учёба: запись на курс, занятия и выпускной экзамен
+    VOTE = "vote"  # администрация: выдвижение в мэры и выборы
+    PRISON = "prison"  # тюрьма: свой срок и список сидящих
+    ARENA = "arena"  # турнирная арена: недельный плей-офф
+    CARS = "cars"  # автосалон и служебные гаражи: машины города
+    DORM = "dorm"  # общежитие: комната студенту, пока он учится
+    USED_CARS = "used_cars"  # авторынок: машины из рук в руки
+    CHARGE = "charge"  # АЗС: зарядные колонки для машин
+    DOJO = "dojo"  # школа боевых искусств: приёмы за дела в бою
+    LOOKS = "looks"  # барбершоп и салон красоты: образы бойца
+    WASH = "wash"  # автомойка: номера машин перебивают здесь
+    COURT = "court"  # суд: приговоры по делам об угоне
+    BLACKOUT = "blackout"  # электростанция: кооперативный рейд «Чёрный пуск»
+    CASINO = "casino"  # игорный зал: рулетка, кости и карты на фишки
 
     @property
     def title(self) -> str:
@@ -68,10 +89,31 @@ SERVICE_TITLES: dict[Service, str] = {
     Service.HEAL: "лечиться",
     Service.PREMIUM: "покупать за звёзды",
     Service.FAN: "покупать фанатскую экипировку",
+    Service.JEWEL: "выбирать украшения",
+    Service.SCHOOL: "учиться на права",
+    Service.MAFIA: "заводить дела с мафией",
+    Service.POLICE: "получать документы",
     Service.MARKET: "торговать с бойцами",
     Service.TRADE: "меняться из рук в руки",
     Service.INSURANCE: "страховаться",
     Service.TRAIN: "тренироваться",
+    Service.ESTATE: "снимать жильё",
+    Service.POST: "отправлять посылки",
+    Service.TAVERN: "брать задания у бармена",
+    Service.STUDY: "учиться и сдавать экзамен",
+    Service.VOTE: "выдвигаться в мэры",
+    Service.PRISON: "сидеть и считать срок",
+    Service.ARENA: "драться в недельном турнире",
+    Service.CARS: "брать машину",
+    Service.DORM: "жить в общежитии",
+    Service.USED_CARS: "торговать машинами с рук",
+    Service.CHARGE: "заряжать машину",
+    Service.DOJO: "учиться приёмам",
+    Service.LOOKS: "менять внешность",
+    Service.WASH: "перебивать номера",
+    Service.COURT: "судить и обжаловать",
+    Service.BLACKOUT: "идти на станцию за светом",
+    Service.CASINO: "играть на фишки",
 }
 
 
@@ -157,6 +199,9 @@ class Location:
     # легли первые четырнадцать домов. Районы второй очереди выгрузили
     # в другую, и это единственное, чем они отличаются
     interior_folder: str = ""
+    # Чем нарисован вид изнутри. Первые очереди отдали в jpeg,
+    # четвёртую — в png: тот же разнобой, что и у самих карт
+    interior_ext: str = "jpeg"
 
     def allows(self, service: Service) -> bool:
         return service in self.services
@@ -179,6 +224,11 @@ class Location:
         поэтому невидимо расширяем — по ширине больше, чем по высоте:
         соседние дома стоят рядом по горизонтали, и разъехаться вверх
         безопаснее, чем вбок.
+
+        Запас этот — мерка, а не лекарство: слишком узкую дверь он не
+        спасёт, и чинить такую надо в разметке. Ловят её на подходе, а не
+        на телефоне, — `scripts/doors.py --check` и
+        tests/test_travel.py::test_every_door_is_big_enough_for_a_finger.
         """
         box = self.bounds
         return Rect(
@@ -221,6 +271,7 @@ class Location:
         return art.interior(
             self.interior or f"{self.code}_interior",
             self.interior_folder or art.INTERIORS,
+            self.interior_ext,
         )
 
 
@@ -264,8 +315,9 @@ STEP = 10
 
 # Дорога между районами, которые ничем не связаны. Такого на карте нет —
 # связность стережёт тест, — но считать бесконечность в секундах нечем,
-# а город и по диагонали проходится за шесть шагов
-FAR_AWAY = 6
+# а город и по диагонали проходится за семь шагов: четыре района в
+# ширину, пять в высоту
+FAR_AWAY = 7
 
 
 def _walk_from(start: str) -> dict[str, int]:
@@ -290,6 +342,17 @@ def _walk_from(start: str) -> dict[str, int]:
 _DISTANCES: dict[str, dict[str, int]] | None = None
 
 
+def road_seconds(walk: int, times: int) -> int:
+    """Дорога за рулём: та же дорога, делённая на машину.
+
+    Правило живёт в `bot.game.cars` — здесь только вход, чтобы карта не
+    знала о машинах больше, чем нужно для одного деления.
+    """
+    from bot.game.cars import road_seconds as by_car
+
+    return by_car(walk, times)
+
+
 def district_hops(source: str, target: str) -> int:
     """Сколько шагов между районами. Ноль — это один и тот же район."""
     global _DISTANCES
@@ -298,12 +361,18 @@ def district_hops(source: str, target: str) -> int:
     return _DISTANCES.get(source, {}).get(target, FAR_AWAY)
 
 
-def travel_seconds(source: str, target: str, limping: bool = False) -> int:
+def travel_seconds(
+    source: str, target: str, limping: bool = False, times: int = 1
+) -> int:
     """Сколько идти от одного места до другого. Ноль — уже на месте.
 
     `limping` — боец травмирован. Со сломанной ногой дорога вдвое
     длиннее, и это единственное, что травма делает с городом: ходить
     она не запрещает, только замедляет.
+
+    `times` — машина под бойцом: во сколько раз она делит дорогу.
+    Считается последней, после травмы: с переломом за рулём всё равно
+    быстрее, чем с переломом пешком.
     """
     if source == target:
         return 0
@@ -311,7 +380,9 @@ def travel_seconds(source: str, target: str, limping: bool = False) -> int:
     if here is None or there is None:  # pragma: no cover - дом не с карты
         return STEP
     seconds = STEP * (district_hops(here.district, there.district) + 1)
-    return seconds * LIMP_TIMES if limping else seconds
+    if limping:
+        seconds *= LIMP_TIMES
+    return road_seconds(seconds, times)
 
 
 # ---------- сама карта ----------
@@ -360,40 +431,85 @@ ARENA = "fight_tournament_stadium"
 HOUSES = "residential_district"
 MAFIA = "mafia_mansion"
 
+# Третья очередь: ряд поверх прежнего верхнего. Суффикс `_v3` — часть
+# имени объекта в бакете, а не версия в нашем коде: выгрузили их так, и
+# убрать его из адреса нельзя
+ADMIN = "city_administration_v3"
+JEWEL = "hr_jewelry_district_v3"
+CAMPUS = "university_campus_v3"
+PRISON = "prison_taxi_park_v3"
+
+# Четвёртая очередь: пятый столбец вдоль всего восточного края. Имена
+# без суффиксов — так их и выгрузили
+WASH = "car_wash_courthouse"
+USED_CARS = "used_cars_gas_station"
+DOJO = "martial_arts_barbershop"
+BEAUTY = "beauty_restaurant"
+POWER = "power_station"
+
 # Вторую очередь нарисовали в png, первую — в jpeg
 PNG = "png"
 
-# Город — сетка четыре на четыре, и это не украшение, а правило: по
-# сетке считается дорога. Каждый район связан со всеми своими соседями
-# по стороне, связи взаимные, а диагоналей нет — ходят по улицам.
+# Город — сетка четыре в ширину и пять в высоту, и это не украшение, а
+# правило: по сетке считается дорога. Каждый район связан со всеми своими
+# соседями по стороне, связи взаимные, а диагоналей нет — ходят по улицам.
 #
-#            ⬅️ запад                          восток ➡️
-#   север ⬆️  Деловой  Северный Вал  Стадион    Армейская часть
-#             Старый   Центр         Торговый   Кадетский городок
-#             Автошкола Участок      Деловой    Жилой квартал
-#   юг    ⬇️  Автосалон Учебный      Арена      Особняк мафии
+#            ⬅️ запад                                      восток ➡️
+#   север ⬆️  Админист. Ювелирный    Кампус     Тюрьма      Мойка и суд
+#             Деловой  Северный Вал  Стадион    Армейская   Авторынок
+#             Старый   Центр         Торговый   Кадетский   Школа и барбер
+#             Автошкола Участок      Деловой    Жилой       Салон и ресторан
+#   юг    ⬇️  Автосалон Учебный      Арена      Особняк     Электростанция
+#
+# Пятый столбец — четвёртая очередь: по карте справа от каждого района
+# восточного края, сверху вниз. Сетка от этого стала пять на пять.
 #
 # Сетку стережёт tests/test_travel.py: он раскладывает районы по
 # координатам от центра и проверяет, что каждая связь ведёт туда, куда
 # показывает, и что обратная ей есть.
 DISTRICTS: tuple[District, ...] = (
+    # ---------- северный ряд ----------
+    District(ADMIN, "Администрация города", {
+        DOWN: "bank_market_post",
+        RIGHT: JEWEL,
+    }, PNG),
+    District(JEWEL, "HR и ювелирный", {
+        DOWN: "northern_wall_premium",
+        LEFT: ADMIN,
+        RIGHT: CAMPUS,
+    }, PNG),
+    District(CAMPUS, "Университетский кампус", {
+        DOWN: "stadium_bar",
+        LEFT: JEWEL,
+        RIGHT: PRISON,
+    }, PNG),
+    District(PRISON, "Тюрьма и таксопарк", {
+        DOWN: BARRACKS,
+        LEFT: CAMPUS,
+        RIGHT: WASH,
+    }, PNG),
     # ---------- верхний ряд ----------
     District("bank_market_post", "Деловой квартал", {
+        UP: ADMIN,
         DOWN: "pawnshop_casino",
         RIGHT: "northern_wall_premium",
     }),
     District("northern_wall_premium", "Северный Вал", {
+        UP: JEWEL,
         DOWN: "main_hub",
         LEFT: "bank_market_post",
         RIGHT: "stadium_bar",
     }),
     District("stadium_bar", "Стадион", {
+        UP: CAMPUS,
         DOWN: "clothes_pharmacy",
         LEFT: "northern_wall_premium",
         RIGHT: BARRACKS,
     }),
     District(BARRACKS, "Армейская часть", {
+        UP: PRISON,
         LEFT: "stadium_bar",
+        RIGHT: USED_CARS,
         DOWN: CADETS,
     }, PNG),
     # ---------- ряд центра ----------
@@ -417,6 +533,7 @@ DISTRICTS: tuple[District, ...] = (
     District(CADETS, "Кадетский городок", {
         UP: BARRACKS,
         LEFT: "clothes_pharmacy",
+        RIGHT: DOJO,
         DOWN: HOUSES,
     }, PNG),
     # ---------- ряд участка ----------
@@ -440,6 +557,7 @@ DISTRICTS: tuple[District, ...] = (
     District(HOUSES, "Жилой квартал", {
         UP: CADETS,
         LEFT: GYM,
+        RIGHT: BEAUTY,
         DOWN: MAFIA,
     }, PNG),
     # ---------- нижний ряд ----------
@@ -460,6 +578,31 @@ DISTRICTS: tuple[District, ...] = (
     District(MAFIA, "Особняк мафии", {
         UP: HOUSES,
         LEFT: ARENA,
+        RIGHT: POWER,
+    }, PNG),
+    # ---------- восточный столбец ----------
+    District(WASH, "Автомойка и суд", {
+        LEFT: PRISON,
+        DOWN: USED_CARS,
+    }, PNG),
+    District(USED_CARS, "Авторынок и АЗС", {
+        UP: WASH,
+        LEFT: BARRACKS,
+        DOWN: DOJO,
+    }, PNG),
+    District(DOJO, "Школа боевых искусств и барбершоп", {
+        UP: USED_CARS,
+        LEFT: CADETS,
+        DOWN: BEAUTY,
+    }, PNG),
+    District(BEAUTY, "Салон красоты и ресторан", {
+        UP: DOJO,
+        LEFT: HOUSES,
+        DOWN: POWER,
+    }, PNG),
+    District(POWER, "Электростанция", {
+        UP: BEAUTY,
+        LEFT: MAFIA,
     }, PNG),
 )
 
@@ -541,7 +684,10 @@ LOCATIONS: tuple[Location, ...] = (
             (0.467588, 0.264354), (0.603613, 0.273923),
             (0.597237, 0.329545), (0.467588, 0.324163),
         ),
-        services=(Service.RAID, Service.WORK),
+        # Игорный зал первым: дверь открывает первую услугу дома, а в
+        # казино человек идёт играть. Рейд остаётся кнопкой в шапке —
+        # тем же приёмом, которым в доме открывают работу
+        services=(Service.CASINO, Service.RAID, Service.WORK),
         genitive="казино",
         interior="underground_casino_interior",
     ),
@@ -567,7 +713,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.455898, 0.261364), (0.557917, 0.266148),
             (0.557917, 0.338517), (0.449522, 0.333134),
         ),
-        services=(Service.FAN,),
+        services=(Service.FAN, Service.WORK),
         genitive="фанатского магазина",
     ),
     Location(
@@ -595,7 +741,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.442083, 0.235646), (0.613177, 0.240431),
             (0.611052, 0.325359), (0.446334, 0.321172),
         ),
-        services=(Service.BANK,),
+        services=(Service.BANK, Service.WORK),
         genitive="банка",
     ),
     Location(
@@ -619,8 +765,11 @@ LOCATIONS: tuple[Location, ...] = (
             (0.740701, 0.579545), (0.825717, 0.606459),
             (0.819341, 0.649522), (0.738576, 0.626794),
         ),
-        services=(Service.WORK,),
-        soon="награды и подарки",
+        # Почта сперва, работа следом: дверь на карте открывает тот экран,
+        # что стоит в списке первым, а на почту ходят за посылками. Своё
+        # место почтальона при этом никуда не делось — кнопка «Работа»
+        # встаёт в шапку того дома, где боец работает
+        services=(Service.POST, Service.WORK),
         genitive="почты",
     ),
     # ---------- Стадион и бар ----------
@@ -633,7 +782,10 @@ LOCATIONS: tuple[Location, ...] = (
             (0.436769, 0.269139), (0.63762, 0.279306),
             (0.634431, 0.346292), (0.436769, 0.333134),
         ),
-        soon="элитный рейд",
+        # Второй рейд города: стычка с фанатским сектором. Рейд тот же
+        # сервис, что и в казино, — а какой именно рейд собирают, решает
+        # дом: талон казино на стадионе не спрашивают
+        services=(Service.RAID,),
         genitive="стадиона",
     ),
     Location(
@@ -642,15 +794,16 @@ LOCATIONS: tuple[Location, ...] = (
         district="stadium_bar",
         # центральная дверь под вывеской «БАР»
         entrance=(
-            (0.488842, 0.670455), (0.5983, 0.678828),
-            (0.534538, 0.725478), (0.485654, 0.716507),
+            (0.473964, 0.667464), (0.546227, 0.679426),
+            (0.543039, 0.726675), (0.473964, 0.715311),
         ),
-        # Бар пока только нанимает: за стойкой работают, а угощения и
-        # задания за ней появятся позже. Поэтому у дома есть и услуга, и
-        # строка «скоро» — экран работы её и покажет тому, кто тут не
-        # работает
-        services=(Service.WORK,),
-        soon="задания и угощения",
+        # За стойкой бармен: он раздаёт задания новичкам, и дверь на
+        # карте открывает его, а не смену. Работа в баре никуда не
+        # делась — кнопка «Работа» встаёт в шапку того дома, где боец
+        # работает. Угощения за стойкой появятся позже, и «скоро» об
+        # этом так и говорит
+        services=(Service.TAVERN, Service.WORK),
+        soon="угощения за стойкой",
         genitive="бара",
     ),
 
@@ -677,6 +830,10 @@ LOCATIONS: tuple[Location, ...] = (
             (0.412327, 0.241029), (0.5983, 0.244019),
             (0.5983, 0.308612), (0.41339, 0.305024),
         ),
+        # Гараж участка стоит в самом участке, и свой экран ему не
+        # нужен: он рисуется на экране дежурной части. Услуга тут затем,
+        # чтобы ручка машин признавала это место своим
+        services=(Service.POLICE, Service.WORK, Service.CARS),
         soon="дежурная часть и розыск",
         genitive="полицейского участка",
         interior_folder=art.NEW_INTERIORS,
@@ -689,7 +846,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.339001, 0.669258), (0.579171, 0.708732),
             (0.580234, 0.757775), (0.340064, 0.720694),
         ),
-        services=(Service.HEAL,),
+        services=(Service.HEAL, Service.WORK),
         genitive="больницы",
         interior_folder=art.NEW_INTERIORS,
     ),
@@ -701,7 +858,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.302869, 0.226077), (0.431456, 0.212919),
             (0.42508, 0.271531), (0.30712, 0.285287),
         ),
-        soon="права и первая машина",
+        services=(Service.SCHOOL, Service.WORK),
         genitive="автошколы",
         interior_folder=art.NEW_INTERIORS,
     ),
@@ -713,7 +870,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.548353, 0.568182), (0.679065, 0.588517),
             (0.676939, 0.650718), (0.548353, 0.62799),
         ),
-        services=(Service.INSURANCE,),
+        services=(Service.INSURANCE, Service.WORK),
         genitive="страховой",
         interior_folder=art.NEW_INTERIORS,
     ),
@@ -731,14 +888,17 @@ LOCATIONS: tuple[Location, ...] = (
     ),
     Location(
         "office_building",
-        "HR-агентство",
+        "Бизнес-центр",
         district=GYM,
         entrance=(
             (0.592986, 0.678828), (0.712009, 0.66866),
             (0.714134, 0.723684), (0.591923, 0.736842),
         ),
-        services=(Service.HIRE,),
-        genitive="агентства",
+        # В центре сидят разработчики: три ступени и один диплом на
+        # всех. Переговорные и конторы всё ещё впереди
+        services=(Service.WORK,),
+        soon="конторы и переговорные",
+        genitive="бизнес-центра",
         interior_folder=art.NEW_INTERIORS,
     ),
     Location(
@@ -749,6 +909,11 @@ LOCATIONS: tuple[Location, ...] = (
             (0.418704, 0.217105), (0.561105, 0.221292),
             (0.556854, 0.276914), (0.419766, 0.268541),
         ),
+        # Рейд на склад секретного оружия идёт тут, а не на полигоне:
+        # оружие хранит часть, её и берут штурмом. Дверь открывает
+        # работу — она тут каждый день, — а рейд открывается кнопкой в
+        # шапке, как игорный зал в казино
+        services=(Service.WORK, Service.RAID),
         soon="служба и звания",
         genitive="части",
         interior_folder=art.NEW_INTERIORS,
@@ -758,10 +923,14 @@ LOCATIONS: tuple[Location, ...] = (
         "Крытый полигон",
         district=BARRACKS,
         entrance=(
-            (0.378321, 0.858852), (0.5356, 0.87201),
-            (0.5356, 0.915072), (0.377258, 0.898923),
+            (0.427205, 0.494019), (0.524973, 0.501196),
+            (0.524973, 0.535287), (0.427205, 0.526316),
         ),
-        soon="стрельба и спарринги",
+        # Сюда ходят на занятия кадеты. Своих курсов у полигона нет —
+        # записывают в корпусе. Рейд на секретное оружие отсюда уехал в
+        # армейскую часть: склад у части, её и берут штурмом
+        services=(Service.STUDY,),
+        soon="стрельба в тире",
         genitive="полигона",
         interior_folder=art.NEW_INTERIORS,
     ),
@@ -773,7 +942,9 @@ LOCATIONS: tuple[Location, ...] = (
             (0.454835, 0.226675), (0.582359, 0.226077),
             (0.582359, 0.279306), (0.453773, 0.278708),
         ),
-        soon="школа для новичков",
+        # Записывают здесь, а строят на полигоне: за партой учат уставу,
+        # всему остальному — на плацу
+        services=(Service.STUDY,),
         genitive="корпуса",
         interior_folder=art.NEW_INTERIORS,
     ),
@@ -785,6 +956,9 @@ LOCATIONS: tuple[Location, ...] = (
             (0.432519, 0.67823), (0.561105, 0.680622),
             (0.55898, 0.721292), (0.42933, 0.721292),
         ),
+        # Комната студенту, пока он учится. Отдых и восстановление всё
+        # ещё обещаны: койка пока не лечит
+        services=(Service.DORM,),
         soon="отдых и восстановление",
         genitive="общежития",
         interior_folder=art.NEW_INTERIORS,
@@ -799,7 +973,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.431456, 0.248804), (0.536663, 0.243421),
             (0.536663, 0.302033), (0.432519, 0.307416),
         ),
-        soon="путь в полицию",
+        services=(Service.STUDY,),
         genitive="полицейской академии",
         interior_folder=art.NEW_INTERIORS,
     ),
@@ -811,15 +985,16 @@ LOCATIONS: tuple[Location, ...] = (
             (0.4644, 0.646531), (0.61424, 0.654306),
             (0.612115, 0.703947), (0.463337, 0.694378),
         ),
-        soon="ремесло лекаря",
+        services=(Service.STUDY,),
         genitive="колледжа",
         interior_folder=art.NEW_INTERIORS,
     ),
 
     # На карте жилого квартала нарисованы четыре дома, и дверь у каждого
     # своя. Домов четыре, а вид изнутри один на всех: внутри они
-    # одинаковые, и заводить четыре одинаковые картинки незачем. Работать
-    # они тоже будут одинаково — когда своё жильё вообще появится.
+    # одинаковые, и заводить четыре одинаковые картинки незачем. Сдают в
+    # них тоже одинаково, а вот планировка разная: в первых трёх по
+    # четыре этажа, в четвёртом три (`bot.game.estate`).
     Location(
         "residential_apartment",
         "Жилой дом №1",
@@ -829,7 +1004,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.332625, 0.242225), (0.418704, 0.227871),
             (0.418704, 0.274522), (0.331562, 0.288278),
         ),
-        soon="своё жильё",
+        services=(Service.ESTATE,),
         genitive="жилого дома",
         interior_folder=art.NEW_INTERIORS,
     ),
@@ -842,7 +1017,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.723698, 0.276914), (0.807651, 0.293062),
             (0.802338, 0.339115), (0.724761, 0.322368),
         ),
-        soon="своё жильё",
+        services=(Service.ESTATE,),
         genitive="жилого дома",
         interior="residential_apartment_interior",
         interior_folder=art.NEW_INTERIORS,
@@ -856,7 +1031,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.11796, 0.551435), (0.215728, 0.532297),
             (0.215728, 0.589115), (0.11796, 0.608852),
         ),
-        soon="своё жильё",
+        services=(Service.ESTATE,),
         genitive="жилого дома",
         interior="residential_apartment_interior",
         interior_folder=art.NEW_INTERIORS,
@@ -870,7 +1045,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.785335, 0.57177), (0.873539, 0.601675),
             (0.872476, 0.656699), (0.785335, 0.626794),
         ),
-        soon="своё жильё",
+        services=(Service.ESTATE,),
         genitive="жилого дома",
         interior="residential_apartment_interior",
         interior_folder=art.NEW_INTERIORS,
@@ -884,6 +1059,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.477152, 0.272129), (0.561105, 0.276316),
             (0.562168, 0.33134), (0.476089, 0.325359),
         ),
+        services=(Service.MAFIA,),
         soon="дела, о которых не пишут",
         genitive="особняка",
         interior_folder=art.NEW_INTERIORS,
@@ -896,7 +1072,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.430393, 0.360646), (0.57492, 0.363636),
             (0.572795, 0.420455), (0.431456, 0.413876),
         ),
-        soon="турниры на выбывание",
+        services=(Service.ARENA,),
         genitive="арены",
         interior_folder=art.NEW_INTERIORS,
     ),
@@ -908,9 +1084,251 @@ LOCATIONS: tuple[Location, ...] = (
             (0.345377, 0.354067), (0.454835, 0.354067),
             (0.45271, 0.409091), (0.34644, 0.409091),
         ),
-        soon="машины и гаражи",
+        # Машины впереди работы: в салон ходят за машиной, а на смену —
+        # по кнопке в шапке, как и во всех прочих домах
+        services=(Service.CARS, Service.WORK),
         genitive="автосалона",
         interior_folder=art.NEW_INTERIORS,
+    ),
+
+    # ---------- третья очередь: северный ряд ----------
+    #
+    # Виды изнутри этим шести домам ещё не рисовали. Картинка всё равно
+    # ищется по коду, и пока её нет, экран просто обходится без рамки —
+    # так же, как обходился бы при недоехавшем файле. Появятся файлы под
+    # своими именами — и дома подхватят их сами, править тут нечего.
+    Location(
+        "city_administration",
+        "Администрация города",
+        district=ADMIN,
+        entrance=(
+            (0.427205, 0.383373), (0.5356, 0.379785),
+            (0.533475, 0.474282), (0.426142, 0.478469),
+        ),
+        # Выборы впереди работы: в администрацию ходят за кандидатурой,
+        # а на смену — по кнопке в шапке, как и во всех прочих домах
+        services=(Service.VOTE, Service.WORK),
+        genitive="администрации",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "hr_agency",
+        "HR-агентство",
+        district=JEWEL,
+        entrance=(
+            (0.435707, 0.252392), (0.545165, 0.241029),
+            (0.543039, 0.299641), (0.436769, 0.309809),
+        ),
+        services=(Service.HIRE,),
+        genitive="агентства",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "jewelry_store",
+        "Ювелирный магазин",
+        district=JEWEL,
+        entrance=(
+            (0.523911, 0.642344), (0.718385, 0.661483),
+            (0.715197, 0.75), (0.522848, 0.726675),
+        ),
+        services=(Service.JEWEL,),
+        genitive="ювелирного",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "university",
+        "Университет",
+        district=CAMPUS,
+        entrance=(
+            (0.436769, 0.276914), (0.687566, 0.312799),
+            (0.685441, 0.339713), (0.435707, 0.30323),
+        ),
+        # Четыре специальности на один дом: приёмная одна, а курсы разные
+        services=(Service.STUDY,),
+        genitive="университета",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "prison",
+        "Тюрьма",
+        district=PRISON,
+        entrance=(
+            (0.446334, 0.395933), (0.587673, 0.395933),
+            (0.585547, 0.454545), (0.447396, 0.453349),
+        ),
+        services=(Service.PRISON,),
+        genitive="тюрьмы",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    # Дверь у таксопарка своя, пешеходная, в левом корпусе: ремонтные
+    # боксы — не вход, и целиться в них незачем. Проём узкий, двадцать
+    # два пикселя исходника, и держится он на общем запасе под палец
+    Location(
+        "taxi_depot",
+        "Таксопарк",
+        district=PRISON,
+        entrance=(
+            (0.299681, 0.611244), (0.407014, 0.588517),
+            (0.403826, 0.625), (0.297556, 0.647129),
+        ),
+        # Гараж впереди работы: смену водитель начинает здесь же, но
+        # ходят в парк за машиной — на смену встают кнопкой в шапке
+        services=(Service.CARS, Service.WORK),
+        genitive="таксопарка",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    # ---------- восточный столбец: нарисован, но ещё не обжит ----------
+    #
+    # Девять домов без услуг. Город снова вырос картинками вперёд правил,
+    # и это нормально до тех пор, пока у каждого сказано, чего в нём
+    # ждать: пустой дом без обещания — недоделка, с обещанием — этап.
+    #
+    # Двери этих домов сняты не по четырём углам проёма, как у прежних, а
+    # построены прямоугольником вокруг присланной точки входа. Поэтому
+    # подсветка у них стоит на двери примерно, а не в притык: уточнять её
+    # — по самой картинке (`docs/doors.md`).
+    Location(
+        "martial_arts_school",
+        "Школа боевых искусств",
+        district=DOJO,
+        entrance=(
+            (0.41339, 0.269737), (0.497343, 0.264354),
+            (0.497343, 0.311603), (0.415515, 0.316388),
+        ),
+        # Приёмы за дела в бою: школа учит любому приёму клуба и
+        # берёт за него не кредитами, а работой — тем самым
+        # действием, в котором приём и состоит
+        services=(Service.DOJO,),
+        genitive="школы боевых искусств",
+        interior_ext="png",
+    ),
+    Location(
+        "barbershop",
+        "Барбершоп",
+        district=DOJO,
+        entrance=(
+            (0.567481, 0.606459), (0.65356, 0.619019),
+            (0.65356, 0.686603), (0.567481, 0.672249),
+        ),
+        # Мужские образы и место барбера. Полка стоит первой, потому
+        # что дверь на карте открывает тот экран, что в списке первый
+        services=(Service.LOOKS, Service.WORK),
+        genitive="барбершопа",
+        interior_ext="png",
+    ),
+    Location(
+        "beauty_salon",
+        "Салон красоты",
+        district=BEAUTY,
+        entrance=(
+            (0.447396, 0.242823), (0.545165, 0.236842),
+            (0.544102, 0.297249), (0.449522, 0.306818),
+        ),
+        # Женские образы и место мастера — тот же экран, что в
+        # барбершопе, только полка своя
+        services=(Service.LOOKS, Service.WORK),
+        genitive="салона красоты",
+        interior_ext="png",
+    ),
+    Location(
+        "restaurant",
+        "Ресторан",
+        district=BEAUTY,
+        entrance=(
+            (0.571732, 0.657895), (0.649309, 0.664474),
+            (0.648247, 0.741029), (0.57067, 0.733852),
+        ),
+        # Официант уже нанимается, а поужинать пока нельзя
+        services=(Service.WORK,),
+        soon="ужин и столик",
+        genitive="ресторана",
+        interior_ext="png",
+    ),
+    Location(
+        "used_car_market",
+        "Авторынок",
+        district=USED_CARS,
+        entrance=(
+            (0.361318, 0.159689), (0.433581, 0.154306),
+            (0.431456, 0.188995), (0.361318, 0.19378),
+        ),
+        # Рынок и место дилера в нём. Торгуют машинами из рук в руки,
+        # как вещами в комиссионке, — рынок стоит первым, потому что
+        # дверь на карте открывает тот экран, что в списке первый
+        services=(Service.USED_CARS, Service.WORK),
+        genitive="авторынка",
+        interior="used_car_market_office_interior",
+        interior_ext="png",
+    ),
+    Location(
+        "gas_station",
+        "АЗС",
+        district=USED_CARS,
+        entrance=(
+            (0.750266, 0.572368), (0.821467, 0.583732),
+            (0.817216, 0.627392), (0.749203, 0.615431),
+        ),
+        # Три колонки на весь город: машину ставят в свободную,
+        # платят за проценты и ждут. Заряд тратит дорога, а наливают
+        # его только здесь
+        services=(Service.CHARGE,),
+        genitive="заправки",
+        interior="gas_station_driveway_interior",
+        interior_ext="png",
+    ),
+    Location(
+        "car_wash",
+        "Автомойка",
+        district=WASH,
+        entrance=(
+            (0.345377, 0.194378), (0.545165, 0.183612),
+            (0.543039, 0.256579), (0.345377, 0.267943),
+        ),
+        # Мойку своей машины ещё обещают, а номера перебивают уже
+        # сейчас: с этого в городе и начинается всякая автомойка
+        services=(Service.WASH, Service.WORK),
+        soon="мойка своей машины",
+        genitive="автомойки",
+        interior="car_wash_left_interior",
+        interior_ext="png",
+    ),
+    Location(
+        "courthouse",
+        "Суд",
+        district=WASH,
+        entrance=(
+            (0.594049, 0.617823), (0.680128, 0.632177),
+            (0.678002, 0.691388), (0.594049, 0.67823),
+        ),
+        # Суд уже судит: дела об угоне идут сюда. Тяжбы и обжалование
+        # срока по-прежнему обещаны — это другое дело
+        services=(Service.COURT, Service.WORK),
+        soon="тяжбы и обжалование срока",
+        genitive="суда",
+        interior_ext="png",
+    ),
+    Location(
+        # Код совпадает с кодом района — как у особняка, салона и арены:
+        # район и дом живут в разных справочниках
+        "power_station",
+        "Электростанция",
+        district=POWER,
+        # Дверь — проходная, и она пока единственная. Станция закрыта:
+        # внутрь ходят через проходную, а двор, диспетчерская и машинный
+        # зал нарисованы, но входа в них нет вовсе. Их разметка лежит в
+        # docs/doors.md и ждёт, когда станцию откроют
+        entrance=(
+            (0.447396, 0.755981), (0.655685, 0.745215),
+            (0.652497, 0.795455), (0.450584, 0.806818),
+        ),
+        # Станция открылась: за проходной идёт «Чёрный пуск» — рейд на
+        # три часа по шестидесяти четырём комнатам. Внутри у него своя
+        # карта и свои правила, и город о них не знает: дверь ведёт в
+        # лобби рейда, а не в обычный дом
+        services=(Service.BLACKOUT,),
+        genitive="электростанции",
+        interior="power_station_gate_interior",
+        interior_ext="png",
     ),
 )
 
@@ -933,6 +1351,7 @@ SHOP_SERVICES: tuple[Service, ...] = (
     Service.POTIONS,
     Service.PREMIUM,
     Service.FAN,
+    Service.JEWEL,
 )
 
 
@@ -942,11 +1361,14 @@ def service_for(code: str) -> Service:
     По коду, а не по слоту: склянки слота не имеют вовсе, а на прилавке
     стоят наравне с вещами.
     """
-    from bot.game.equipment import FAN_SHELF, Slot, get_item
+    from bot.game.equipment import FAN_SHELF, JEWEL_SHELF, Slot, get_item
     from bot.game.potions import get_potion
 
-    if get_potion(code) is not None:
-        return Service.POTIONS
+    found = get_potion(code)
+    if found is not None:
+        # Пропуска не пьют, а предъявляют на входе в рейд: их место у
+        # оружейника, рядом со снаряжением, а не на аптечной полке
+        return Service.WEAPONS if found.is_pass else Service.POTIONS
     item = get_item(code)
     if item is None:
         return Service.CLOTHES  # чего нет в каталоге, то не купят нигде
@@ -956,6 +1378,8 @@ def service_for(code: str) -> Service:
     # биту можно только там, хотя слот у неё оружейный
     if item.shelf == FAN_SHELF:
         return Service.FAN
+    if item.shelf == JEWEL_SHELF:
+        return Service.JEWEL
     return (
         Service.WEAPONS
         if item.slot in (Slot.WEAPON, Slot.OFFHAND)

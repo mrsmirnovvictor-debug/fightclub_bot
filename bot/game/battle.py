@@ -4,6 +4,15 @@
 на следующем ходу соперник меняется. Кому пары не досталось (например, живых
 с одной стороны больше), тот ход пропускает и остаётся при своём.
 
+**Королевская битва — тот же бой без сторон.** Все записываются в одну
+кучу, и соперник у каждого на каждом раунде новый: круг сдвигается, и за
+бой через тебя проходят все, кто ещё стоит. Побеждает последний живой, а
+если раунды кончились раньше — тот, кто дошёл с большим запасом.
+
+**Собирающий отвечает на четыре вопроса:** чем дерутся, сколько зовут
+бойцов, какого они уровня и сколько ждать состав. Числа и слова для
+этих ответов лежат здесь же: страница их только рисует.
+
 Сам размен ударами считает тот же движок, что и дуэли, — здесь только
 раскладка бойцов по парам и подсчёт, кто ещё стоит на ногах.
 """
@@ -13,16 +22,68 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from bot.game.combat import Fighter
+from bot.game.combat import NO_GONG, Fighter
 
-# Больше этого числа раундов бой не идёт: дальше судья считает по здоровью
-MAX_BATTLE_ROUNDS = 25
+# Длина разгона усталости в бою на многих. Потолком раундов это число
+# быть перестало: бой идёт до победы, как и дуэль.
+#
+# Гонг на двадцать пятом раунде обрывал бой примерно на середине — по
+# замеру без него бои того же состава длятся в среднем тридцать девять
+# раундов, — и отдавал победу тому, у кого в этот миг выше доля
+# здоровья. А это всегда тот, у кого запас больше. Про ту же ошибку в
+# дуэлях сказано прямо в `judge_decision`: «у танка здоровья изначально
+# вдвое против ассасина — по остатку он выигрывал бы судейские
+# решения, ни разу толком не попав». В групповом бою она и жила: пара
+# «ассасин и трикстер» против «ассасина и танка» на шестом уровне
+# брала с гонгом 53%, а до победы берёт 76%.
+#
+# Разгон усталости на этом числе не кончается — множитель растёт тем же
+# шагом и дальше, — поэтому бой без гонга кончается сам: за пять тысяч
+# прогонов ни один не ушёл дальше семьдесят третьего раунда
+BATTLE_FATIGUE_ROUNDS = 25
 
-# Сколько бойцов может собрать сторона и сколько всего — в мясорубку
+# Сколько бойцов может собрать сторона и сколько всего — в мясорубку.
+# Мерка у них одна: собирающий говорит, сколько человек он зовёт, и
+# разводить два потолка значило бы объяснять, почему в одном бою десять
+# можно, а в другом восемь
 MIN_TEAM_SIZE = 2
-MAX_TEAM_SIZE = 5
-MIN_ROYALE = 3
-MAX_ROYALE = 8
+MAX_TEAM_SIZE = 10
+MIN_ROYALE = 2
+MAX_ROYALE = 10
+
+# Каких соперников зовут. Три слова вместо пары чисел: «от 7 до 11» —
+# это ответ на вопрос, которого не задавали, а «моего уровня» и «плюс-
+# минус два» — то, как про это думают
+LEVEL_ANY = "any"
+LEVEL_NEAR = "near"
+LEVEL_SAME = "same"
+NEAR_SPREAD = 2
+
+LEVEL_CHOICES: tuple[tuple[str, str, str], ...] = (
+    (LEVEL_ANY, "Любой", "Зовут всех, кто дойдёт."),
+    (LEVEL_NEAR, f"±{NEAR_SPREAD} уровня", "Соперники вровень, с запасом."),
+    (LEVEL_SAME, "Только мой", "Ровня в ровню, без поблажек."),
+)
+
+# Сколько ждут состав. Три срока: добежать, собраться и позвать своих
+WAIT_MINUTES: tuple[int, ...] = (3, 5, 10)
+DEFAULT_WAIT = 5
+
+
+def level_range(choice: str, level: int) -> tuple[int, int]:
+    """Рамки уровней по выбранному слову. Чужое слово — рамок нет."""
+    from bot.game.economy import MAX_LEVEL
+
+    if choice == LEVEL_SAME:
+        return level, level
+    if choice == LEVEL_NEAR:
+        return max(1, level - NEAR_SPREAD), level + NEAR_SPREAD
+    return 1, max(MAX_LEVEL, level)
+
+
+def wait_seconds(minutes: int) -> int:
+    """Сколько секунд ждать состав. Чужой срок — средний из трёх."""
+    return (minutes if minutes in WAIT_MINUTES else DEFAULT_WAIT) * 60
 
 
 class BattleKind(str, Enum):
@@ -51,8 +112,25 @@ def team_name(team: int) -> str:
     return TEAM_NAMES.get(team, f"боец {team}")
 
 
+def in_fight(fighter: Fighter) -> bool:
+    """Дерётся ли он ещё: жив и не ушёл из-за стола.
+
+    Молчание в бою на многих до этого не значило ничего: `missed_turns`
+    росли, `gave_up` становился истиной, и никто на него не смотрел —
+    бой держал гонг. Гонга больше нет, а пустое действие урона не
+    наносит, поэтому брошенный всеми бой без этой проверки не кончился
+    бы никогда и сыпал бы в чат раунд за раундом по таймеру.
+
+    Наказание то же, что в дуэли (`MAX_MISSED_TURNS`): пропустивший
+    три хода подряд выходит из боя, а его сторона дерётся дальше
+    вчетвером против пятерых. Своё здоровье он сохраняет — он не
+    побит, он ушёл.
+    """
+    return fighter.alive and not fighter.gave_up
+
+
 def alive_ids(fighters: dict[int, Fighter]) -> list[int]:
-    return [user_id for user_id, fighter in fighters.items() if fighter.alive]
+    return [user_id for user_id, fighter in fighters.items() if in_fight(fighter)]
 
 
 def pair_up(
@@ -66,7 +144,7 @@ def pair_up(
     Возвращает пары и тех, кому соперника не хватило. Со сменой раунда
     соперники сдвигаются, поэтому за бой каждый успевает подраться с разными.
     """
-    alive = [user_id for user_id in fighters if fighters[user_id].alive]
+    alive = [user_id for user_id in fighters if in_fight(fighters[user_id])]
     if kind is BattleKind.TEAM:
         return _pair_teams(alive, teams, round_number)
     return _pair_everyone(alive, round_number)
@@ -131,8 +209,16 @@ def judge(
     teams: dict[int, int],
     kind: BattleKind,
     round_number: int,
+    gong: int = NO_GONG,
 ) -> BattleOutcome:
-    """Продолжается ли бой, а если нет — кто победил."""
+    """Продолжается ли бой, а если нет — кто победил.
+
+    `gong` — раунд, после которого бой доигрывать не дают и считает
+    судья. `NO_GONG` (ноль) — судьи нет, дерутся до победы: так идут и
+    дуэли, и теперь бои на многих. Гонг остаётся для одного случая:
+    бой надо закрыть прямо сейчас, потому что пары больше не
+    складываются.
+    """
     alive = alive_ids(fighters)
 
     if kind is BattleKind.TEAM:
@@ -144,7 +230,7 @@ def judge(
             return BattleOutcome(finished=True, winners=tuple(red), winning_team=RED)
         if not red:
             return BattleOutcome(finished=True, winners=tuple(blue), winning_team=BLUE)
-        if round_number >= MAX_BATTLE_ROUNDS:
+        if gong and round_number >= gong:
             return _judge_teams(fighters, red, blue)
         return BattleOutcome()
 
@@ -152,7 +238,7 @@ def judge(
         return BattleOutcome(finished=True, draw=True)
     if len(alive) == 1:
         return BattleOutcome(finished=True, winners=(alive[0],))
-    if round_number >= MAX_BATTLE_ROUNDS:
+    if gong and round_number >= gong:
         return _judge_royale(fighters, alive)
     return BattleOutcome()
 

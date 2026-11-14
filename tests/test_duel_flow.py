@@ -23,6 +23,7 @@ from bot.game.economy import (
     MICRO_UPS_PER_LEVEL,
     RATING_START,
     UP_CREDITS,
+    exp_at_up,
     exp_to_next_level,
     win_exp,
 )
@@ -71,7 +72,17 @@ class FakeBot:
     async def pin_chat_message(self, chat_id, message_id, **kwargs):
         self.pinned.append((chat_id, message_id))
 
-    async def unpin_chat_message(self, chat_id, message_id=None, **kwargs):
+    # Подпись повторяет настоящую из aiogram 3, включая порядок: там на
+    # втором месте `business_connection_id`, а не `message_id`. Пока
+    # двойник принимал номер сообщения вторым позиционным, он
+    # подтверждал вызов, который Telegram отвергал
+    async def unpin_chat_message(
+        self, chat_id, business_connection_id=None, message_id=None, **kwargs
+    ):
+        assert business_connection_id is None, (
+            "номер сообщения уехал в business_connection_id: "
+            "снятие закрепа зовут по именам"
+        )
         self.unpinned.append((chat_id, message_id))
 
     async def edit_message_text(self, text, chat_id=None, message_id=None, **kwargs):
@@ -616,18 +627,36 @@ async def test_only_the_winner_gets_exp_and_the_ring_pays_no_credits(bot, db):
     assert winner.rating - RATING_START == RATING_START - loser.rating
 
 
-async def test_exp_depends_on_damage_dealt(bot, db):
-    """Крепкий соперник приносит больше опыта, чем хлипкий."""
+async def test_exp_depends_on_how_tough_the_opponent_was(bot, db):
+    """Прибавку за урон в дуэли даёт запас здоровья соперника, а не удар.
+
+    Победа означает, что боец снял с соперника все его ХП, поэтому
+    отношение упирается в сами ХП: пять процентов сверху достаются тому,
+    чей соперник был крепче, и ничего — тому, кто бил слабейшего. Сколько
+    раз при этом махнули рукой, значения не имеет.
+    """
     await db.save_player(make_player(1, "Тайлер", "warrior"))
     fighter = Fighter.from_player(await db.get_player(1))
-    fighter.damage_dealt = 40
-    weak = win_exp(fighter.damage_dealt, 1, 1)
-    fighter.damage_dealt = 120
-    strong = win_exp(fighter.damage_dealt, 1, 1)
-    assert strong > weak
+    mine = fighter.max_hp
 
-    # и уровень соперника тоже влияет
-    assert win_exp(60, 1, 5) > win_exp(60, 1, 1) > win_exp(60, 5, 1)
+    # Соперник слабее — ровно ставка, даже если урона насыпали вдвое
+    assert win_exp(mine * 2, 1, 1, mine + mine // 2, 2) == win_exp(
+        mine, 1, 1, mine + mine // 2, 2
+    )
+    # Соперник крепче — прибавка, но не больше пяти процентов
+    tough = win_exp(mine * 2, 1, 1, mine + mine * 2, 2)
+    assert tough > win_exp(mine, 1, 1, mine + mine, 2)
+
+
+async def test_the_rate_follows_the_older_of_the_two(bot, db):
+    """Ставка берётся по старшему, но не ниже своей и не выше плюс двух."""
+    # Соперник старше — платят по его ставке, пока дотягиваемся
+    assert win_exp(60, 1, 3, 200, 2) > win_exp(60, 1, 1, 200, 2)
+    # Дальше двух ступеней ставка не растёт
+    assert win_exp(60, 1, 14, 200, 2) == win_exp(60, 1, 3, 200, 2)
+    # А над младшим платят по своей, а не по его: наказывать за вызов
+    # слабого не за что, но и приплачивать не за что тоже
+    assert win_exp(60, 5, 1, 200, 2) == win_exp(60, 5, 5, 200, 2)
 
 
 async def test_a_draw_leaves_the_rating_where_it_was(bot, db):
@@ -657,13 +686,21 @@ async def test_a_draw_leaves_the_rating_where_it_was(bot, db):
 
 
 async def test_repeat_fights_pay_less(bot, db):
-    """Второй бой той же пары за сутки приносит половину, третий — пятую часть."""
+    """Повторные бои той же пары за сутки: 100%, 80%, 60% и дальше 50%.
+
+    Прежде со второго боя срезали вдвое, а с третьего отдавали пятую
+    часть — то есть качаться вдвоём было нельзя вовсе. Теперь спуск
+    плавный, и дно у него на половине: фарм одного соперника невыгоден,
+    но и обычный вечер с одним спарринг-партнёром не обнуляется.
+    """
+    from bot.game.economy import REPEAT_SHARES
+
     service = make_service(bot, db)
     await db.save_player(make_player(1, "Тайлер", "warrior"))
     await db.save_player(make_player(2, "Марла", "warrior"))
 
     gains = []
-    for _ in range(3):
+    for _ in range(len(REPEAT_SHARES) + 1):
         await heal_everyone(db, 1, 2)  # между боями бойцы успевают отлежаться
         before = await db.get_player(1)
         session = await service.start_duel(
@@ -678,10 +715,13 @@ async def test_repeat_fights_pay_less(bot, db):
         after = await db.get_player(1)
         gains.append(after.total_exp - before.total_exp)
 
-    assert (await db.get_player(1)).wins == 3
-    assert gains[0] > gains[1] > gains[2]
-    assert gains[1] == pytest.approx(gains[0] * 0.5, abs=2)
-    assert gains[2] == pytest.approx(gains[0] * 0.2, abs=2)
+    assert (await db.get_player(1)).wins == len(gains)
+    # Ставка между боями не меняется — значит, доли видны прямо в опыте
+    full = gains[0]
+    for index, share in enumerate(REPEAT_SHARES):
+        assert gains[index] == pytest.approx(full * share, abs=2), index
+    # Пятый бой стоит столько же, сколько четвёртый: ниже дна не падают
+    assert gains[-1] == gains[len(REPEAT_SHARES) - 1]
 
 
 async def test_rewards_block_is_shown_in_the_thread(bot, db):
@@ -1117,7 +1157,11 @@ async def test_the_ring_sends_the_winner_to_the_card_and_not_to_a_command(bot, d
     from bot.game.narrator import upgrade_hint
 
     service = make_service(bot, db)
-    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    # До первого апа боец не дотягивает одного опыта: любая победа его
+    # даст, и в итогах появится строка про очко
+    almost = make_player(1, "Тайлер", "warrior")
+    almost.exp = exp_at_up(1, 1) - 1
+    await db.save_player(almost)
     await db.save_player(make_player(2, "Марла", "rogue"))
 
     was = (links.bot_username, links.miniapp_name, links.main_app)
@@ -1153,8 +1197,6 @@ async def three_turns(service, session) -> None:
 
 async def test_after_three_turns_the_judge_sends_them_to_the_corners(bot, db):
     """Раунд — три удара, дальше гонг и минута отдыха."""
-    from bot.game.combat import MATCH_ROUNDS
-
     service = make_service(bot, db, round_break=60)
     await db.save_player(make_player(1, "Тайлер", "tank"))
     await db.save_player(make_player(2, "Марла", "tank"))
@@ -1165,7 +1207,10 @@ async def test_after_three_turns_the_judge_sends_them_to_the_corners(bot, db):
     await three_turns(service, session)
 
     gong = bot.log[-1]
-    assert f"Раунд 1 из {MATCH_ROUNDS} окончен" in gong
+    # Без «из скольких»: потолка у боя нет, и «Раунд 7 из 6» читалось бы
+    # как ошибка, а «из бесконечности» — как шутка
+    assert "Раунд 1 окончен" in gong
+    assert " из " not in gong.split("окончен")[0]
     assert "Отдых минута" in gong and "на раунд 2" in gong
     # следующий удар не начался: бойцы в углах
     assert session.round_number == 3
@@ -1210,8 +1255,13 @@ async def test_a_knockout_in_the_third_turn_skips_the_break(bot, db):
     await service.shutdown()
 
 
-async def test_a_fight_that_goes_the_distance_is_decided_by_damage(bot, db):
-    """Шесть раундов без нокаута — побеждает тот, кто больше нанёс."""
+async def test_a_duel_does_not_stop_at_the_old_gong(bot, db):
+    """Дуэль идёт до победы: на бывшем финальном гонге она ещё идёт.
+
+    Раньше бой обрывался на шестом раунде (на кулаках) или девятом (с
+    оружием), и выигрывал тот, кто успел больше нанести, — а не тот, кто
+    довёл дело до конца. Теперь судьи нет.
+    """
     from bot.game.combat import MAX_TURNS
 
     service = make_service(bot, db)
@@ -1220,54 +1270,84 @@ async def test_a_fight_that_goes_the_distance_is_decided_by_damage(bot, db):
     session = await service.start_duel(
         CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
     )
-    # первый бьёт, второй только закрывается: нокаута не выйдет, урон будет
-    session.fighters[1].hp = session.fighters[2].hp = 5000
-    for _ in range(MAX_TURNS):
-        if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
-            break
-        # бьём в живот, а закрывается соперник по голове: удар доходит
+    # Запас здоровья такой, что нокаута на этом отрезке не случится
+    session.fighters[1].hp = session.fighters[2].hp = 100_000
+    for _ in range(MAX_TURNS + 6):
+        assert service.duel_in_chat(CHAT_ID, THREAD_ID) is not None, (
+            f"бой кончился на {session.round_number}-м ходу"
+        )
         await service.handle_choice(session.id, 1, "attack", "belly")
         await service.handle_choice(session.id, 1, "block", "legs")
         await service.handle_choice(session.id, 2, "block", "head")
         await service._resolve(session)
 
-    assert session.round_number == MAX_TURNS
-    verdict = next(text for text in bot.log if "Финальный гонг" in text)
-    assert "6 раундов позади" in verdict
-    assert "По нанесённому урону побеждает" in verdict
-    assert session.fighters[1].damage_dealt > session.fighters[2].damage_dealt
-    assert (await db.get_player(1)).wins == 1
+    assert session.round_number > MAX_TURNS, "бой встал на бывшем гонге"
+    assert not session.finished
+    assert not any("Финальный гонг" in text for text in bot.log)
     await service.shutdown()
 
 
-async def test_a_fight_with_weapons_gets_more_rounds(bot, db):
-    """С оружием бой длиннее: на восемнадцатом ходу он ещё идёт."""
-    from bot.game.combat import LONG_TURNS, MAX_TURNS
-    from bot.game.modes import FightMode
+async def test_fatigue_ends_even_the_longest_duel(bot, db):
+    """Бой без судьи всё равно конечен: его заканчивает усталость.
 
+    Разгон усталости на бывшем потолке не останавливается, а растёт тем
+    же шагом. Сколько бы ни было брони и запаса, множитель однажды их
+    перерастёт — и чем дольше бойцы не могут друг друга достать, тем
+    быстрее это кончится. Иначе «до победы» значило бы «никогда».
+    """
     service = make_service(bot, db)
     await db.save_player(make_player(1, "Тайлер", "tank"))
     await db.save_player(make_player(2, "Марла", "tank"))
     session = await service.start_duel(
-        CHAT_ID,
-        THREAD_ID,
-        await db.get_player(1),
-        await db.get_player(2),
-        mode=FightMode.ARMED,
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
     )
-    session.fighters[1].hp = session.fighters[2].hp = 50000
-    for _ in range(LONG_TURNS):
+    session.fighters[1].hp = session.fighters[2].hp = 5_000
+
+    # Потолок у проверки свой — иначе сломанная усталость повесила бы
+    # весь прогон вместо того, чтобы его провалить
+    for _ in range(600):
         if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
             break
         await service.handle_choice(session.id, 1, "attack", "belly")
         await service.handle_choice(session.id, 1, "block", "legs")
-        await service.handle_choice(session.id, 2, "block", "head")
+        await service.handle_choice(session.id, 2, "attack", "head")
+        await service.handle_choice(session.id, 2, "block", "legs")
         await service._resolve(session)
+    else:  # pragma: no cover - усталость перестала расти
+        raise AssertionError(
+            f"бой не кончился за 600 ходов, здоровье "
+            f"{session.fighters[1].hp} и {session.fighters[2].hp}"
+        )
 
-    # кулачный бой на этом ходу уже закончился бы решением судьи
-    assert session.round_number == LONG_TURNS > MAX_TURNS
-    assert "9 раундов позади" in next(t for t in bot.log if "Финальный гонг" in t)
+    assert session.finished
+    # И кончился он нокаутом, а не решением судьи
+    assert not any("Финальный гонг" in text for text in bot.log)
+    assert min(session.fighters[1].hp, session.fighters[2].hp) <= 0
     await service.shutdown()
+
+
+async def test_the_weapons_duel_heats_up_slower_than_the_fists(bot, db):
+    """Разгон усталости у боя с оружием длиннее — он и остался длиннее.
+
+    Потолком это число быть перестало, но смыслом — нет: снаряжению и
+    приёмам нужно время, чтобы себя показать, и на том же ходу бой с
+    оружием бьёт легче кулачного.
+    """
+    from bot.game.combat import LONG_TURNS, MAX_TURNS, fatigue_multiplier
+    from bot.game.modes import FightMode
+
+    assert FightMode.ARMED.turns == LONG_TURNS > MAX_TURNS == FightMode.FIST.turns
+    # На одном и том же ходу кулачный тяжелее: ему отпущено меньше
+    for turn in (10, 20, 40):
+        assert (
+            fatigue_multiplier(turn, MAX_TURNS)
+            > fatigue_multiplier(turn, LONG_TURNS)
+        ), turn
+    # И после бывшего потолка разгон не встаёт
+    assert (
+        fatigue_multiplier(LONG_TURNS * 4, LONG_TURNS)
+        > fatigue_multiplier(LONG_TURNS, LONG_TURNS)
+    )
 
 
 async def test_two_boxing_rounds_fit_one_minute_of_chat_budget(bot, db):
@@ -1374,3 +1454,134 @@ def test_the_bar_changes_colour_with_the_damage():
     assert color_bar(0, 100) == "⬛" * BOARD_BAR
     # живой боец не остаётся с пустой полоской, сколько бы ни пропустил
     assert color_bar(1, 1000) == "🟥" + "⬛" * (BOARD_BAR - 1)
+
+
+async def test_a_broken_ending_still_ends_the_duel(bot, db, monkeypatch):
+    """Итоги не посчитались — бой всё равно кончен, и бойцы на воле.
+
+    Развязка трогает деньги, травмы, износ вещей и турнирную сетку.
+    Сорвётся одно — остальное всё равно случится: висящий бой хуже
+    любой ошибки в нём, из него не выйти и по городу не пройти.
+    """
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    await db.save_player(make_player(2, "Марла", "rogue"))
+    called: list[str] = []
+
+    async def whistle(session, result):
+        called.append("сетка")
+
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2),
+        on_finish=whistle,
+    )
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("касса сломалась")
+
+    monkeypatch.setattr(service, "_apply_results", boom)
+    for _ in range(40):
+        if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
+            break
+        await play_round(service, session)
+    else:  # pragma: no cover
+        pytest.fail("бой не закончился за 40 раундов")
+
+    assert not service.is_busy(1) and not service.is_busy(2)
+    assert session.finished and session.summary
+    # и хозяина боя — турнирную сетку — всё равно позвали: её круг
+    # поедет дальше, даже если наград не досталось никому
+    assert called == ["сетка"]
+    for user_id in (1, 2):
+        assert service.result_of_user(user_id) is session
+    await service.shutdown()
+
+
+async def test_a_finished_duel_lands_in_the_elo_journal(bot, db):
+    """Бой записывается в журнал ELO — обеим сторонам и одним мигом.
+
+    По этому журналу считается недельный рейтинг
+    (`bot.ladder_service`), и без записи бой в него не попадёт вовсе.
+    Миг фиксации у обеих сторон один: бой, начавшийся в одной неделе и
+    кончившийся в другой, должен попасть в одну, а не разойтись.
+    """
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    await db.save_player(make_player(2, "Марла", "rogue"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+
+    for _ in range(40):
+        if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
+            break
+        await play_round(service, session)
+    else:  # pragma: no cover
+        pytest.fail("бой не закончился за 40 раундов")
+
+    mine = await db.rating_log_of(1)
+    yours = await db.rating_log_of(2)
+    assert len(mine) == len(yours) == 1, "бой не попал в журнал"
+    assert mine[0]["kind"] == yours[0]["kind"] == "duel"
+    assert mine[0]["fight"] == yours[0]["fight"], "ключ боя у сторон разный"
+    assert mine[0]["at"] == yours[0]["at"], "стороны зафиксированы разным мигом"
+
+    # Исход у сторон противоположный, а ничья — у обоих ничья
+    outcomes = {mine[0]["outcome"], yours[0]["outcome"]}
+    assert outcomes in ({"win", "loss"}, {"draw"}), outcomes
+
+    # Записанный рейтинг — тот же, что в карточке бойца: по журналу его
+    # потом восстанавливают на любой прошедший миг
+    assert mine[0]["rating"] == (await db.get_player(1)).rating
+    assert yours[0]["rating"] == (await db.get_player(2)).rating
+    # И разница в журнале — та, что и правда случилась
+    assert mine[0]["rating"] - mine[0]["delta"] == RATING_START
+    assert yours[0]["rating"] - yours[0]["delta"] == RATING_START
+
+
+async def test_a_duel_counts_for_the_week_wherever_it_was_called(bot, db):
+    """Дуэль из ветки группы идёт в недельный зачёт наравне с карточкой.
+
+    Так решил заказчик: для игрока ринг в ветке — тот же клуб, хотя
+    место бойца сервер в этом случае не проверяет вовсе. Разводить их
+    значило бы, что половина боёв в рейтинг не идёт без видимой причины.
+    """
+    from bot.ladder_service import my_week
+
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    await db.save_player(make_player(2, "Марла", "rogue"))
+
+    # Бой из ветки: у него есть чат. Бой из мини-аппа идёт без чата —
+    # в журнале они не различаются, и это нарочно
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    for _ in range(40):
+        if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
+            break
+        await play_round(service, session)
+
+    assert await my_week(db, 1) == 1
+    assert await my_week(db, 2) == 1
+
+
+async def test_the_fighter_payload_names_the_class_by_code_not_by_title():
+    """Рядом с названием класса едет его код.
+
+    Название локализовано: по нему нельзя выбрать ни комплект образов
+    для сцены боя, ни что-либо ещё. Переведут надпись — и выбор молча
+    развалится, причём не ошибкой, а неверной картинкой. Для показа
+    остаётся `fclass`, для выбора — `class_code`.
+    """
+    from bot.game.classes import FIGHTER_CLASSES
+    from bot.webapp.fight import fighter_payload
+
+    for code, fclass in FIGHTER_CLASSES.items():
+        fighter = Fighter(
+            user_id=1, name="Боец", fclass=fclass, stats=fclass.base_stats
+        )
+        body = fighter_payload(fighter, ready=False, you=True)
+        assert body["class_code"] == code, code
+        assert body["fclass"] == fclass.title, "название тоже на месте"
+        assert body["class_code"] != body["fclass"], code

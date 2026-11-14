@@ -45,13 +45,13 @@ async def client(db):
 
 
 async def test_the_map_shows_the_city_and_where_you_stand(client, db):
-    """Карта приходит целиком: шесть районов, дома и зоны нажатия."""
+    """Карта приходит целиком: все районы, дома и зоны нажатия."""
     await db.save_player(make_player())
 
     body = await (await client.get("/api/map", headers=headers())).json()
 
     assert body["here"] == FIGHT_CLUB
-    assert len(body["districts"]) == 16
+    assert len(body["districts"]) == 25
     centre = next(one for one in body["districts"] if one["code"] == "main_hub")
     assert centre["here"] is True
     assert centre["image"].endswith("locations/main_hub.jpeg")
@@ -61,7 +61,7 @@ async def test_the_map_shows_the_city_and_where_you_stand(client, db):
 
 
 async def test_houses_without_a_trade_say_so(client, db):
-    """Стадион на карте есть, но услуги за ним пока нет."""
+    """Дом с услугой и обещанием сверх неё: особняк и автосалон."""
     await db.save_player(make_player())
 
     body = await (await client.get("/api/map", headers=headers())).json()
@@ -71,18 +71,41 @@ async def test_houses_without_a_trade_say_so(client, db):
         for place in district["places"]
     }
 
-    assert len(houses) == 33
-    assert houses["stadium"]["works"] is False
-    assert houses["stadium"]["soon"] and houses["stadium"]["services"] == []
-    # Бар уже нанимает, но обещано сверх работы и другое: у дома есть и
-    # услуга, и строка «скоро»
+    assert len(houses) == 48
+    # В особняке уже заводят кланы, но обещано и другое: дом с услугой
+    # и со строкой «скоро» разом
+    assert houses["mafia_mansion"]["works"] is True
+    assert (
+        houses["mafia_mansion"]["soon"]
+        and houses["mafia_mansion"]["services"] == ["mafia"]
+    )
+    # А в автосалоне теперь торгуют машинами, и обещать больше нечего:
+    # витрина впереди работы, строки «скоро» у дома не осталось
+    assert houses["car_dealership"]["works"] is True
+    assert not houses["car_dealership"]["soon"]
+    assert houses["car_dealership"]["services"] == ["cars", "work"]
+    # Таксопарк тоже открылся: в нём гараж на три машины
+    assert houses["taxi_depot"]["works"] is True
+    assert not houses["taxi_depot"]["soon"]
+    assert houses["taxi_depot"]["services"] == ["cars", "work"]
+    # Тюрьма открылась: свой срок и список сидящих
+    assert houses["prison"]["works"] is True
+    assert houses["prison"]["services"] == ["prison"]
+    # А стадион уже открыт: за ним второй рейд города
+    assert houses["stadium"]["works"] is True
+    assert houses["stadium"]["services"] == ["raid"]
+    # За баром две услуги — задания бармена и работа за стойкой, — но
+    # обещано сверх них и третье: у дома есть и услуги, и строка «скоро»
     assert houses["bar"]["works"] is True
-    assert houses["bar"]["services"] == ["work"] and houses["bar"]["soon"]
-    # А банк уже открыт: за ним счёт, карта и банкомат
+    assert houses["bar"]["services"] == ["tavern", "work"]
+    assert houses["bar"]["soon"]
+    # А банк уже открыт: за ним счёт, карта и банкомат — и три места
+    # работы под диплом. Банк стоит первым: дверь на карте открывает
+    # тот экран, что в списке первый
     assert houses["bank"]["works"] is True
-    assert houses["bank"]["services"] == ["bank"]
+    assert houses["bank"]["services"] == ["bank", "work"]
     assert houses["workshop"]["services"] == ["repair"]
-    assert houses["northern_wall_shop"]["services"] == ["fan"]
+    assert houses["northern_wall_shop"]["services"] == ["fan", "work"]
 
 
 # ---------- вид изнутри ----------
@@ -95,7 +118,22 @@ RENAMED = {
     "weapon_shop": "weapons_shop_interior",
     "clothes_shop": "clothing_shop_interior",
     "casino": "underground_casino_interior",
+    # Четвёртая очередь: у четырёх домов картинку назвали по входу, а не
+    # по дому — мойку сняли в левом боксе, авторынок в офисе, АЗС на
+    # въезде, станцию на проходной
+    "car_wash": "car_wash_left_interior",
+    "used_car_market": "used_car_market_office_interior",
+    "gas_station": "gas_station_driveway_interior",
+    "power_station": "power_station_gate_interior",
 }
+
+
+# Четвёртую очередь отдали в png, прежние — в jpeg
+PNG_INSIDE = frozenset({
+    "martial_arts_school", "barbershop", "beauty_salon", "restaurant",
+    "used_car_market", "gas_station", "car_wash", "courthouse",
+    "power_station",
+})
 
 
 # Четыре дома жилого квартала внутри одинаковые, и вид изнутри у них
@@ -107,14 +145,27 @@ TWINS = {
 }
 
 
+# Дома третьей очереди: вид изнутри им ещё не рисовали. Адрес у них всё
+# равно считается — по коду, как у всех, — и появится файл под этим
+# именем, дом подхватит его сам. Пока файла нет, экран обходится без
+# рамки: страница снимает её, когда картинка не доехала.
+#
+# Четвёртая очередь сюда не попала: восточный столбец приехал с
+# нарисованными интерьерами сразу, хотя услуг за домами ещё нет.
+UNDRAWN = frozenset({
+    "city_administration", "hr_agency", "jewelry_store",
+    "university", "prison", "taxi_depot",
+})
+
+
 def test_every_house_has_a_view_from_within():
-    """Все тридцать три дома, и ни одного без картинки."""
+    """Все сорок восемь домов, и ни одного без адреса картинки."""
     from bot.game.locations import LOCATIONS
 
-    assert len(LOCATIONS) == 33
+    assert len(LOCATIONS) == 48
     seen = {place.indoors for place in LOCATIONS}
     # Своя картинка у каждого дома, кроме жилых близнецов: они делят одну
-    assert len(seen) == 33 - len(TWINS)
+    assert len(seen) == 48 - len(TWINS)
     for place in LOCATIONS:
         if place.code in TWINS:
             continue
@@ -123,7 +174,27 @@ def test_every_house_has_a_view_from_within():
         # очередь — в другую. Имя файла при этом всё так же считается от
         # кода дома, и это здесь главное
         folder = "/interiors" if place.interior_folder else "/locations/interiors"
-        assert place.indoors.endswith(f"{folder}/{name}.jpeg")
+        ext = "png" if place.code in PNG_INSIDE else "jpeg"
+        assert place.indoors.endswith(f"{folder}/{name}.{ext}")
+
+
+def test_the_newest_houses_are_waiting_for_their_view():
+    """У шести домов картинки ещё нет, и это записано здесь.
+
+    Адрес у них считается по общему правилу, так что нарисуют файл под
+    этим именем — дом подхватит его сам, править будет нечего. А пока
+    экран обходится без рамки: страница снимает её, когда картинка не
+    доехала. Список нужен, чтобы «у каждого дома есть вид изнутри» не
+    читалось обещанием там, где вида пока нет.
+    """
+    from bot.game.locations import LOCATIONS, get_location
+
+    drawn = {place.code for place in LOCATIONS} - UNDRAWN
+    assert len(drawn) == 42, "список недорисованных разошёлся с городом"
+    for code in UNDRAWN:
+        place = get_location(code)
+        assert place is not None, code
+        assert place.indoors.endswith(f"/interiors/{code}_interior.jpeg")
 
 
 def test_the_four_identical_houses_share_one_view():
@@ -270,7 +341,11 @@ async def test_weapons_are_sold_by_the_gunsmith_and_shirts_by_the_tailor(client,
     """Прилавок зависит от того, в чьей лавке боец стоит."""
     await db.save_player(make_player(location="weapon_shop"))
     gunsmith = await (await client.get("/api/shop", headers=headers())).json()
-    assert [row["slot"] for row in gunsmith["sections"]] == ["weapon", "offhand"]
+    # Третья полка — билеты на рейды: их не пьют, а предъявляют на
+    # входе, и место им у оружейника, а не в аптеке
+    assert [row["slot"] for row in gunsmith["sections"]] == [
+        "weapon", "offhand", "tickets"
+    ]
 
     await db.save_player(make_player(location="clothes_shop"))
     tailor = await (await client.get("/api/shop", headers=headers())).json()
@@ -314,10 +389,11 @@ async def test_the_fan_shop_sells_its_own_line(client, db):
     assert body["service"] == "fan"
     codes = {row["code"] for section in body["sections"] for row in section["items"]}
     assert codes == {item.code for item in FAN_ITEMS}
-    # одевает целиком: и бита, и кроссовки одной команды
-    assert {"weapon", "boots"} <= {row["slot"] for row in body["sections"]}
-    # перчаток в этой линии нет — пустой полки на экране тоже
-    assert "gloves" not in {row["slot"] for row in body["sections"]}
+    # одевает целиком: и бита, и кроссовки, и перчатки одной команды.
+    # Перчатки приехали последними — до них слот у линии пустовал
+    assert {"weapon", "boots", "gloves"} <= {row["slot"] for row in body["sections"]}
+    # Пустых полок на экране нет: пак закрыл все слоты
+    assert all(section["items"] for section in body["sections"])
 
 
 async def test_the_fan_line_is_not_sold_anywhere_else(client, db):
@@ -359,6 +435,55 @@ async def test_the_fan_line_is_bought_and_handed_in_at_its_own_counter(client, d
     )
     assert refused.status == 409
     assert "Северный Вал" in (await refused.json())["error"]
+
+
+# ---------- ювелирный магазин ----------
+
+
+async def test_the_jeweller_sells_rings_and_necklaces(client, db):
+    """У ювелира две полки своего товара, и клубной витрины там нет."""
+    from bot.game.equipment import JEWEL_ITEMS
+
+    await db.save_player(make_player(location="jewelry_store"))
+
+    body = await (await client.get("/api/shop", headers=headers())).json()
+
+    assert body["service"] == "jewel"
+    codes = {row["code"] for section in body["sections"] for row in section["items"]}
+    assert codes == {item.code for item in JEWEL_ITEMS}
+    assert [row["slot"] for row in body["sections"]] == ["necklace", "ring_right"]
+
+
+async def test_a_ring_is_bought_and_handed_in_at_the_jeweller(client, db):
+    """Купить кольцо можно у ювелира, и сдать его — туда же."""
+    player = make_player(location="clothes_shop")
+    player.level, player.credits = 9, 1000
+    await db.save_player(player)
+
+    refused = await client.post(
+        "/api/buy", json={"code": "ring_luck"}, headers=headers()
+    )
+    assert refused.status == 409
+    assert "Ювелирный магазин" in (await refused.json())["error"]
+
+    at_shop = make_player(location="jewelry_store")
+    at_shop.level, at_shop.credits = 9, 1000
+    await db.save_player(at_shop)
+    bought = await client.post(
+        "/api/buy", json={"code": "ring_luck"}, headers=headers()
+    )
+    assert bought.status == 200
+    owned = (await db.get_player(42)).gear
+    assert [one.code for one in owned] == ["ring_luck"]
+
+    away = make_player(location="clothes_shop")
+    away.level, away.credits = 9, 1000
+    await db.save_player(away)
+    back = await client.post(
+        "/api/handin", json={"item_id": owned[0].id}, headers=headers()
+    )
+    assert back.status == 409
+    assert "Ювелирный магазин" in (await back.json())["error"]
 
 
 # ---------- мастерская ----------

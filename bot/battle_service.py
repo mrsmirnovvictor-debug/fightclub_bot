@@ -14,6 +14,7 @@ import itertools
 import logging
 import random
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup
@@ -21,8 +22,8 @@ from aiogram.types import InlineKeyboardMarkup
 from bot.config import Config
 from bot.database import Database
 from bot.game.battle import (
+    BATTLE_FATIGUE_ROUNDS,
     BLUE,
-    MAX_BATTLE_ROUNDS,
     MAX_ROYALE,
     MAX_TEAM_SIZE,
     MIN_ROYALE,
@@ -30,6 +31,7 @@ from bot.game.battle import (
     RED,
     BattleKind,
     BattleOutcome,
+    in_fight,
     judge,
     pair_up,
     team_name,
@@ -37,17 +39,19 @@ from bot.game.battle import (
 from bot.game.classes import Zone, block_combo, block_title
 from bot.game.injuries import Injury
 from bot.game.combat import (
+    NO_GONG,
     Action,
     Fighter,
     group_aftermath,
+    heal_line,
     resolve_round,
     spread_heal,
 )
 from bot.game.economy import (
-    pro_exp,
     rating_delta,
     win_exp,
 )
+from bot.game.health import now_ts
 from bot.game.modes import FightMode
 from bot.game.narrator import (
     echo_lines,
@@ -65,6 +69,7 @@ from bot.game.narrator import (
 )
 from bot.game.fightlog import turn_payload
 from bot.injury_service import record_injuries
+from bot.dojo_service import count_deeds
 from bot.inventory_service import wear_after_fight
 from bot.keyboards import LobbyCB, lobby_keyboard
 from bot.messaging import Announcer
@@ -122,6 +127,9 @@ class Lobby:
     min_level: int
     max_level: int
     opener_id: int
+    # Сколько секунд ждут состав. Срок у каждого сбора свой: его
+    # выбирает тот, кто собирает, — ему и решать, ждать ли своих
+    wait: int = 0
     chat_title: str = ""
     members: dict[int, int] = field(default_factory=dict)  # боец → сторона
     names: dict[int, str] = field(default_factory=dict)
@@ -165,6 +173,11 @@ class BattleSession:
     """Идущий бой: бойцы, стороны, пары этого раунда."""
 
     id: int
+    # Ключ боя для журнала ELO: один на бой и на всех, кто в нём был.
+    # Случайный, а не номер боя: номера раздаёт счётчик в памяти и после
+    # каждого перезапуска начинает с единицы, а ключ должен быть разным
+    # всегда — на нём держится обещание «бой учитывается один раз»
+    fight_key: str = field(default_factory=lambda: uuid4().hex, kw_only=True)
     chat_id: int | None
     thread_id: int | None
     kind: BattleKind
@@ -262,6 +275,7 @@ class BattleService:
         mode: FightMode = FightMode.ARMED,
         levels: tuple[int, int] | None = None,
         chat_title: str = "",
+        wait: int = 0,
     ) -> Lobby:
         if chat_id is not None and (chat_id, thread_id) in self._by_chat:
             raise BattleError("В этой ветке уже собирают бой или дерутся.")
@@ -294,6 +308,9 @@ class BattleService:
             max_level=high,
             opener_id=opener.user_id,
             chat_title=chat_title,
+            # Срок сбора выбирают при созыве; из чата его не называют —
+            # там он общий для клуба, как был
+            wait=wait or self.config.lobby_timeout,
         )
         lobby.members[opener.user_id] = RED
         lobby.names[opener.user_id] = opener.nickname
@@ -305,7 +322,7 @@ class BattleService:
         message = await self.voice.send(
             chat_id,
             thread_id,
-            lobby_card(lobby, self.config.lobby_timeout),
+            lobby_card(lobby, lobby.wait),
             reply_markup=lobby_keyboard(lobby),
         )
         lobby.message_id = message.message_id if message else None
@@ -316,13 +333,13 @@ class BattleService:
         if kind is BattleKind.TEAM:
             if not MIN_TEAM_SIZE <= size <= MAX_TEAM_SIZE:
                 raise BattleError(
-                    f"Команда — от {MIN_TEAM_SIZE} до {MAX_TEAM_SIZE} бойцов. "
+                    f"Сторона — от {MIN_TEAM_SIZE} до {MAX_TEAM_SIZE} бойцов. "
                     "Например: /battle 3"
                 )
         elif not MIN_ROYALE <= size <= MAX_ROYALE:
             raise BattleError(
-                f"В королевскую битву зовут от {MIN_ROYALE} до {MAX_ROYALE} бойцов. "
-                "Например: /royale 6"
+                f"В королевскую битву зовут от {MIN_ROYALE} до {MAX_ROYALE} "
+                "бойцов. Например: /royale 6"
             )
         return size
 
@@ -375,13 +392,13 @@ class BattleService:
         await self.voice.edit(
             lobby.chat_id,
             lobby.message_id,
-            lobby_card(lobby, self.config.lobby_timeout),
+            lobby_card(lobby, lobby.wait),
             reply_markup=lobby_keyboard(lobby),
         )
 
     async def _lobby_timer(self, lobby: Lobby) -> None:
         try:
-            await asyncio.sleep(self.config.lobby_timeout)
+            await asyncio.sleep(lobby.wait)
         except asyncio.CancelledError:  # pragma: no cover - обычная отмена
             return
         if lobby.id not in self._lobbies:
@@ -465,8 +482,11 @@ class BattleService:
             session.fighters, session.teams, session.kind, session.round_number
         )
         if not session.pairs:  # pragma: no cover - судья закрывает бой раньше
+            # Пары не складываются — доигрывать нечем, и это тот
+            # единственный случай, когда судью зовут с гонгом
             await self._finish(session, judge(
-                session.fighters, session.teams, session.kind, MAX_BATTLE_ROUNDS
+                session.fighters, session.teams, session.kind,
+                session.round_number, gong=session.round_number,
             ))
             return
 
@@ -614,10 +634,7 @@ class BattleService:
             if other_id != user_id and sides.get(other_id) == mine
         ]
         healed = spread_heal(ability, fighter, allies)
-        line = f"{ability.icon} {ability.title}: +{gained} ❤️"
-        if healed:
-            line += f", и ещё {len(healed)} бойцам отряда"
-        return line
+        return heal_line(ability, gained, len(healed))
 
     async def _play_round(self, session: BattleSession) -> None:
         standing = {
@@ -628,6 +645,12 @@ class BattleService:
         said: list[list[str]] = []
         for first_id, second_id in session.pairs:
             first, second = session.fighters[first_id], session.fighters[second_id]
+            # Пару могло разнять до её размена: «Массовый удар» из
+            # соседней пары достаёт всех чужих, и павший от него в этом
+            # же раунде уже не бьёт. Без этой проверки мёртвый успевал
+            # закрыться блоком и ответить критом
+            if not (first.alive and second.alive):
+                continue
             result = resolve_round(
                 first,
                 self._action_of(session, first_id),
@@ -636,10 +659,16 @@ class BattleService:
                 session.round_number,
                 self.rng,
                 # Групповой бой длиннее дуэли, и усталость растянута на него:
-                # иначе к двадцатому раунду обычный удар выбивал бы втрое
-                limit=MAX_BATTLE_ROUNDS,
+                # иначе к двадцатому раунду обычный удар выбивал бы втрое.
+                # Разгон на этом числе не кончается, и бой кончается сам
+                limit=BATTLE_FATIGUE_ROUNDS,
+                # Судьи у пары нет: исход боя объявляет `judge` по всем
+                # сторонам, а не размен по своим двоим
+                gong=NO_GONG,
             )
             results.append(result)
+            # Боевые дела этого размена — в ведомость школы
+            await count_deeds(self.db, session.fighters)
             session.hurt.update(result.injuries)
             spoken = strike_lines(result, session.fighters, self.rng)
             # Вторая половина приёмов десятой ступени: она летит мимо пары,
@@ -653,10 +682,12 @@ class BattleService:
             said.append(spoken)
             session.rounds.append(turn_payload(result, spoken))
 
+        # Выбыл — это и побитый, и ушедший из-за стола: про обоих надо
+        # сказать один раз, и обоих больше не ставят в пары
         fallen = [
             user_id
             for user_id in standing
-            if not session.fighters[user_id].alive
+            if not in_fight(session.fighters[user_id])
             and user_id not in session.announced_out
         ]
         session.announced_out.update(fallen)
@@ -691,7 +722,28 @@ class BattleService:
         session.prompt_message_id = None
 
     async def _finish(self, session: BattleSession, outcome: BattleOutcome) -> None:
+        """Закрыть бой: раздать итоги и отпустить бойцов.
+
+        Итог может и не посчитаться — травмы, деньги, запись в
+        историю, — но бой всё равно кончается, и бойцы всё равно
+        выходят. Висящий бой хуже любой ошибки в нём: из него не выйти,
+        по городу не пройти, и чинится это только перезапуском бота.
+        """
         self._cancel_timer(session)
+        try:
+            await self._wrap_up(session, outcome)
+        except Exception:
+            logger.exception("Развязка боя %s сорвалась", session.id)
+        finally:
+            self._forget_battle(session)
+            session.finished = True
+            if not session.summary:
+                session.summary = ["Бой кончен, но итог посчитать не вышло."]
+            for user_id in session.fighters:
+                self._results[user_id] = session
+
+    async def _wrap_up(self, session: BattleSession, outcome: BattleOutcome) -> None:
+        """Сама развязка: погасить панель, раздать итоги, сказать вслух."""
         # Обычно панель уже погашена итогом раунда. Осталась висеть — гасим
         # здесь, чтобы под законченным боем не остались живые кнопки.
         if session.prompt_message_id is not None:
@@ -703,10 +755,7 @@ class BattleService:
         if rewards:
             text += "\n\n" + rewards
         await self.voice.send(session.chat_id, session.thread_id, text)
-        session.finished = True
         session.summary = [plain(line) for line in text.split("\n")]
-        for user_id in session.fighters:
-            self._results[user_id] = session
         await self.db.add_battle(session, outcome)
 
     async def _apply_results(
@@ -727,8 +776,18 @@ class BattleService:
         levels = {
             user_id: session.fighters[user_id].level for user_id in session.fighters
         }
+        # Отряд считается целиком: ставка — по старшему бойцу на ринге,
+        # прибавка за урон — по среднему запасу здоровья всех, кто вышел.
+        # Полные ХП, а не те, с которыми пришли: иначе побитый отряд стоил
+        # бы дешевле целого, и выгоднее было бы ждать, пока все подлечатся
+        top_level = max(levels.values(), default=1)
+        hp_total = sum(one.max_hp for one in session.fighters.values())
+        on_ring = len(session.fighters)
         rows: list[tuple[Player, ProgressReport, Fighter, bool]] = []
         broken: list[tuple[Player, list]] = []
+        # Миг фиксации итога — один на весь бой, а не по бойцу: иначе
+        # бой, кончившийся на границе недели, разошёлся бы по двум
+        stamped = now_ts()
 
         for user_id, player in players.items():
             fighter = session.fighters[user_id]
@@ -738,7 +797,15 @@ class BattleService:
 
             if won:
                 player.wins += 1
-                exp = win_exp(fighter.damage_dealt, levels[user_id], rival_level)
+                exp = win_exp(
+                    fighter.damage_dealt,
+                    levels[user_id],
+                    top_level,
+                    hp_total,
+                    on_ring,
+                    group=True,
+                    exp_share=player.exp_share(),
+                )
             elif outcome.draw:
                 player.draws += 1
                 exp = 0
@@ -763,12 +830,23 @@ class BattleService:
             if ruined:
                 broken.append((player, ruined))
             player.set_hp(fighter.hp)
-            # Подписка множит уже урезанное: полтора от того, что боец
-            # действительно заработал в этом бою
-            report = player.grant_exp(pro_exp(exp, player.is_pro()))
+            report = player.grant_exp(exp)
             report.rating_delta = delta
+            was = player.rating
             player.apply_rating(delta)
             await self.db.save_player(player)
+            # Журнал ELO: групповой бой идёт в недельный рейтинг наравне
+            # с дуэлью — это такой же бой между живыми игроками. Запись
+            # после сохранения бойца: см. ту же развязку в дуэли
+            await self.db.log_rating(
+                user_id,
+                "battle",
+                session.fight_key,
+                "draw" if outcome.draw else ("win" if won else "loss"),
+                player.rating - was,
+                player.rating,
+                stamped,
+            )
             rows.append((player, report, fighter, won))
 
         return battle_rewards_report(rows, broken=broken)

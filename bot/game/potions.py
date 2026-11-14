@@ -5,6 +5,12 @@
 * восстановление — доливает здоровье прямо сейчас, но не выше потолка;
 * временный эффект — держит прибавку два часа и сам сходит на нет.
 
+**Склянки лечат по прайсу больницы.** Перевязка и полное выздоровление
+стоят там же и дают то же: сто единиц за двадцать пять кредитов и
+полный запас за полтинник. Аптека продаёт не другое лечение, а то же
+самое навынос — и брать за дорогу с собой дороже или дешевле значило бы
+сказать, что здоровье в склянке другое.
+
 Эффект хранится сроком, а не тикающим счётчиком: в базе лежит момент, до
 которого он живёт. Так он переживает перезапуск бота и не требует фоновых
 задач — ровно как отдых между боями.
@@ -16,19 +22,34 @@ from dataclasses import dataclass
 from enum import Enum
 
 from bot.game.art import potion as potion_art
+from bot.game.art import raid_ticket
 from bot.game.classes import ALL_STATS, Stats
 from bot.game.health import now_ts
+from bot.game.hospital import FULL_PRICE, PATCH_HEAL, PATCH_PRICE
 
 # Сколько держится временный эффект
 EFFECT_SECONDS = 2 * 60 * 60
 
 # Код обычного рейд-пасса. Премиальный — отдельная задача.
 RAID_PASS = "raid_pass"
+# Пропуск на стычку с фанатами. Пропуск под каждый рейд свой: талон
+# казино на стадионе не спрашивают, и наоборот
+STADIUM_PASS = "stadium_pass"
+# Пропуск на военный полигон. Дороже билета на матч на полсотни: за
+# базой и приз другой — кибероружие, которого нет ни в одной лавке
+BASE_PASS = "base_pass"
 
 # Ярлык раздела на витрине: эликсиры лежат отдельно от того, что надевают
 SECTION_CODE = "misc"
 SECTION_TITLE = "Прочее"
 SECTION_EMOJI = "🧪"
+
+# Пропуска стоят своей полкой у оружейника: их не пьют, а предъявляют
+# на входе. В аптеке они и были-то по недоразумению — лежат в той же
+# стопке, что склянки, вот и попали на тот же прилавок
+PASS_CODE = "tickets"
+PASS_TITLE = "Билеты"
+PASS_EMOJI = "🎟"
 
 
 class PotionKind(str, Enum):
@@ -50,10 +71,14 @@ class Potion:
     kind: PotionKind
     note: str = ""
     image: str = ""
-    heal: int = 0  # сколько здоровья долить сразу
+    # Сколько здоровья долить сразу. Ноль у лечебной склянки — сколько
+    # угодно, до потолка: та же мерка, что у полного выздоровления в
+    # больнице (`bot.game.hospital`)
+    heal: int = 0
     strength: int = 0
     agility: int = 0
     intuition: int = 0
+    endurance: int = 0
     hp: int = 0  # прибавка к запасу здоровья на время действия
     seconds: int = 0
     level_required: int = 1
@@ -72,11 +97,17 @@ class Potion:
         return self.image or potion_art(self.code)
 
     @property
+    def full(self) -> bool:
+        """Доливает ли склянка до потолка, сколько бы ни не хватало."""
+        return self.kind is PotionKind.HEAL and not self.heal
+
+    @property
     def bonus(self) -> Stats:
         return Stats(
             strength=self.strength,
             agility=self.agility,
             intuition=self.intuition,
+            endurance=self.endurance,
         )
 
     @property
@@ -87,6 +118,21 @@ class Potion:
     def is_pass(self) -> bool:
         """Пропуск, а не склянка: его нельзя выпить."""
         return self.kind is PotionKind.PASS
+
+    @property
+    def shape(self) -> str:
+        """Какой клеткой рисуется: квадрат или билет.
+
+        Пропуска перерисовали билетами: 1200 на 600, прозрачный фон,
+        название рейда и отрывная часть. В квадратной клетке от такого
+        билета оставалась бы середина — ни названия, ни корешка, — и
+        три пропуска выглядели бы одинаковой мутью.
+
+        Форма живёт тут, а не на странице: там, где лежит и картинка.
+        Иначе перерисованный товар пришлось бы заводить в двух местах,
+        и одно из них однажды забыли бы.
+        """
+        return "ticket" if self.is_pass else "square"
 
     def describe_wear(self) -> str:
         """«0/1» — столько износа на пропуске, пока он лежит в рюкзаке.
@@ -102,7 +148,9 @@ class Potion:
         if self.is_pass:
             return "Пропуск в подвал"
         parts = []
-        if self.heal:
+        if self.full:
+            parts.append("❤️ до полного")
+        elif self.heal:
             parts.append(f"❤️ +{self.heal} сразу")
         for stat in ALL_STATS:
             value = self.bonus.get(stat)
@@ -137,19 +185,20 @@ POTIONS: tuple[Potion, ...] = (
         "Эликсир восстановления",
         "🧪",
         PotionKind.HEAL,
-        note="Мутная склянка из-под чего-то крепкого. Ставит на ноги.",
-        heal=30,
-        price=30,
+        note=(
+            f"Перевязка навынос: {PATCH_HEAL} единиц здоровья, не вставая "
+            "в очередь."
+        ),
+        heal=PATCH_HEAL,
+        price=PATCH_PRICE,
     ),
     Potion(
         "heal_big",
         "Большой эликсир восстановления",
         "⚗️",
         PotionKind.HEAL,
-        note="Та же дрянь, только бутылка вдвое больше.",
-        heal=60,
-        level_required=3,
-        price=55,
+        note="Полное выздоровление в бутылке: сколько бы ни не хватало.",
+        price=FULL_PRICE,
     ),
     # ---------- временные: держат прибавку два часа ----------
     Potion(
@@ -166,7 +215,7 @@ POTIONS: tuple[Potion, ...] = (
     ),
     Potion(
         "boost_agility",
-        "Эликсир ловкости",
+        "Эликсир проворства",
         "🤸",
         PotionKind.BOOST,
         note="Два часа ноги сами уводят из-под удара.",
@@ -203,14 +252,43 @@ POTIONS: tuple[Potion, ...] = (
     # ---------- пропуска: их не пьют ----------
     Potion(
         RAID_PASS,
-        "Рейд-пасс",
+        "Билет в казино",
         "🎟",
         PotionKind.PASS,
         note=(
-            "Мятый талон с печатью казино Vegas City. Необходим для запуска "
-            "и участия в рейде «Ограбление Босса Казино»."
+            "Билет позволит вам участвовать в рейде «Ограбление Босса "
+            "Казино»."
         ),
+        image=raid_ticket("casino-boss"),
         price=10,
+        max_wear=1,
+    ),
+    Potion(
+        STADIUM_PASS,
+        "Билет на матч",
+        "🎫",
+        PotionKind.PASS,
+        note=(
+            "Билет позволит вам участвовать в рейде «Стычка с футбольными "
+            "фанатами»."
+        ),
+        # Пропуска перерисовали все разом и выгрузили своей папкой:
+        # имя файла там по рейду, а не по коду вещи
+        image=raid_ticket("football-fans"),
+        price=30,
+        max_wear=1,
+    ),
+    Potion(
+        BASE_PASS,
+        "Билет в военную часть",
+        "🪪",
+        PotionKind.PASS,
+        note=(
+            "Билет позволит вам участвовать в рейде «Захват военной "
+            "части»."
+        ),
+        image=raid_ticket("military-base"),
+        price=40,
         max_wear=1,
     ),
 )
@@ -265,10 +343,15 @@ def effects_hp(effects: list[ActiveEffect], now: int | None = None) -> int:
 
 
 __all__ = [
+    "BASE_PASS",
     "BY_CODE",
     "EFFECT_SECONDS",
     "POTIONS",
     "RAID_PASS",
+    "STADIUM_PASS",
+    "PASS_CODE",
+    "PASS_EMOJI",
+    "PASS_TITLE",
     "SECTION_CODE",
     "SECTION_EMOJI",
     "SECTION_TITLE",

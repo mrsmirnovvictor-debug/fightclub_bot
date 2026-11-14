@@ -22,7 +22,7 @@ from bot.game.economy import (
     POINTS_PER_UP,
     RATING_START,
     UP_CREDITS,
-    exp_per_up,
+    exp_at_up,
     exp_to_next_level,
     ups_earned,
 )
@@ -34,6 +34,9 @@ from bot.game.bank import (
     YEAR_SECONDS,
     price_for,
 )
+from bot.game.clans import Standing
+from bot.game.driving import School
+from bot.game.estate import Lease
 from bot.game.insurance import Policy
 from bot.game.health import (
     HealthState,
@@ -53,7 +56,15 @@ from bot.game.potions import (
 )
 from bot.game.locations import FIGHT_CLUB
 from bot.game.looks import MALE
-from bot.game.pro import PRO_BADGE
+from bot.game.pro import (
+    PREMIUM_TIER,
+    PRO_TIER,
+    cars_of,
+    discount_of_tier,
+    exp_share,
+    holds_policy,
+    tier_of,
+)
 from bot.game.stats import derive
 from bot.game.world import DEFAULT_BIRTHPLACE, DEFAULT_CITY
 
@@ -74,6 +85,27 @@ class ProgressReport:
     @property
     def is_empty(self) -> bool:
         return not (self.exp or self.credits or self.rating_delta)
+
+
+@dataclass(frozen=True)
+class CardMove:
+    """Строка выписки по карте: час, сумма со знаком и за что.
+
+    Сумма со знаком нарочно: выписка читается столбиком, и минус в ней —
+    не оформление, а смысл. `balance` — остаток на счету после операции:
+    он лежит рядом с суммой, чтобы выписку можно было сверить глазами, а
+    не пересчитывать с начала времён.
+    """
+
+    at: int
+    amount: int
+    kind: str
+    note: str  # заголовок строки: где это было — «Ювелирный магазин»
+    balance: int
+    # Комментарий: что именно случилось — «Покупка Кольцо силы». Заголовок
+    # отвечает «где», комментарий «за что»; без второго выписка через
+    # неделю читается как список домов, в которые боец заходил
+    about: str = ""
 
 
 @dataclass
@@ -118,8 +150,12 @@ class Player:
     location: str = FIGHT_CLUB
     travel_to: str | None = None
     arrives_at: int = 0  # unix-время прибытия; 0 — никуда не идёт
-    # До какого момента жива подписка PRO (unix-время); 0 — подписки нет
+    # До какого момента жива каждая подписка (unix-время); 0 — её нет.
+    # Сроки раздельные намеренно: боец мог продлить PRO на месяц, а
+    # потом взять PREMIUM, и оплаченный месяц PRO обязан дожить свой
+    # срок, а не исчезнуть под старшей ступенью
     pro_until: int = 0
+    premium_until: int = 0
     birthplace: str | None = None  # группа, где боец начал драться
     created_at: str | None = None  # когда персонаж появился на свет
     # Инвентарь: и надетое, и лежащее в рюкзаке. Подгружается из базы.
@@ -133,6 +169,23 @@ class Player:
     # Страховой полис. Просроченный остаётся здесь же: документ не
     # исчезает, у него кончается срок
     policy: Policy | None = None
+    # Автошкола: курс, попытка экзамена и права. Пустая запись — в школу
+    # боец не ходил. Пустая, а не `None`: у школы пять чисел и ни одного
+    # обязательного, и «не записан» — это те же нули, что и «не сдавал»
+    school: School = field(default_factory=School)
+    # В каком клане боец и каким чином. None — он сам по себе. Читается
+    # вместе с бойцом, потому что знак мафии стоит у ника везде, где ник
+    # показывают, — а карточка собирается без второго похода в базу
+    clan: Standing | None = None
+    # Выписка, которую ещё не записали в базу. Платит боец здесь, а до
+    # базы строка едет вместе с ним: `save_player` сливает их и чистит
+    # список. Так всякое списание картой попадает в выписку одинаково —
+    # из какой бы лавки за ним ни пришли
+    card_moves: list[CardMove] = field(default_factory=list)
+    # Снятая квартира. None — боец живёт где придётся. Читается вместе с
+    # бойцом: срок у сейфа и кладовой должен быть известен в ту же
+    # минуту, в какую боец входит в дом, — и без второго похода в базу
+    flat: Lease | None = None
     # До какого часа абонемент в зал. 0 — его не было. Лежит на бойце, а
     # не в службе зала, потому что это второй документ: его показывают в
     # карточке, а она собирается без похода в базу
@@ -141,6 +194,10 @@ class Player:
     # второй кошелёк бойца, наравне с `credits`: там наличные, тут счёт
     account_number: str = ""
     account_balance: int = 0
+    # Когда счёт открыт: кредит дают тому, кого банк знает хотя бы
+    # неделю. Ноль — счёт открыт до этого правила, и такой банк знает
+    # давно
+    account_at: int = 0
     # Карта банка: когда выпущена и до какого часа оплачено обслуживание.
     # Срока окончания у карты нет — она бессрочна, — есть оплаченный год
     card_at: int = 0
@@ -154,11 +211,42 @@ class Player:
     # — можно ли встать на смену ещё раз сегодня
     job_code: str = ""
     job_since: int = 0
+    # Опыт работы: секунды, отложенные с прошлых мест. Текущее место сюда
+    # ещё не вошло — его досчитывают от `job_since` на лету, иначе опыт
+    # пришлось бы подкручивать каждую минуту
+    job_experience: int = 0
     job_week: int = 0  # начало оплачиваемой недели: понедельник, 9:00 МСК
     job_minutes: int = 0
+    # Жалованье, назначенное мэром. Ноль — оклад у места твёрдый и берут
+    # его из справочника: вилка есть только у начальственных кресел
+    job_salary: int = 0
+    # Долг по судебному штрафу. Пока он есть, счёт заблокирован: картой
+    # не платят, наличные со счёта не снимают, а всё, что на счёт
+    # приходит, уходит в долг (`bot.court_service`)
+    account_debt: int = 0
     shift_until: int = 0  # 0 — смена не идёт
     shift_day: str = ""  # какие это сутки по Москве, в виде «2026-09-30»
     shift_minutes: int = 0
+    # Учёба. Курс один на бойца, как и работа: пусто — не учится.
+    # `study_lessons` — сколько занятий отстоял, `study_day` — в какие
+    # сутки было последнее (занятие одно в сутки), `study_exam_at` —
+    # когда последний раз пробовал экзамен (отсюда и пересдача)
+    study_code: str = ""
+    study_since: int = 0
+    study_lessons: int = 0
+    study_day: str = ""
+    study_exam_at: int = 0
+    study_tries: int = 0
+    lesson_until: int = 0  # 0 — занятие не идёт
+    # Сданные курсы: коды дипломов. Диплом не отбирают и не продлевают,
+    # поэтому ничего, кроме кода, у него нет — всё прочее знает курс
+    diplomas: list[str] = field(default_factory=list)
+    # За рулём. Пусто — боец идёт пешком; `car_until` — до какого часа
+    # машина его, ноль у купленной. Сами машины лежат в таблице `cars`, а
+    # здесь та, что под ним сейчас: о ней спрашивают дорога и карточка,
+    # то есть все и всегда
+    car: str = ""
+    car_until: int = 0
     # Что слетело в последнем действии: вещь сняли, и с ней ушло то, что на
     # ней держалось. Живёт до конца запроса — рассказать об этом игроку.
     dropped_gear: list[OwnedItem] = field(default_factory=list)
@@ -266,28 +354,105 @@ class Player:
     # ---------- подписка ----------
 
     def is_pro(self, now: int | None = None) -> bool:
+        """Есть ли у бойца подписка — любая.
+
+        Имя осталось прежним нарочно: по нему спрашивают услуги, которые
+        держат обе ступени — аналитика, абонемент, значок. То, что
+        ступени различает, спрашивает `tier`: полис, число машин, скидку
+        и множитель опыта.
+        """
+        return self.tier_rank(now) > 0
+
+    def is_premium(self, now: int | None = None) -> bool:
+        moment = now_ts() if now is None else now
+        return self.premium_until > moment
+
+    def is_pro_exactly(self, now: int | None = None) -> bool:
+        """Жива ли именно PRO — без оглядки на то, есть ли PREMIUM."""
         moment = now_ts() if now is None else now
         return self.pro_until > moment
+
+    def tier_rank(self, now: int | None = None) -> int:
+        """Номер старшей живой ступени. 0 — подписки нет вовсе.
+
+        Держать обе разом можно, и тогда работает старшая: ступень — это
+        уровень обслуживания, а не сумма услуг.
+        """
+        moment = now_ts() if now is None else now
+        if self.premium_until > moment:
+            return PREMIUM_TIER.rank
+        if self.pro_until > moment:
+            return PRO_TIER.rank
+        return 0
+
+    def tier(self, now: int | None = None):
+        """Старшая живая ступень. None — подписки нет."""
+        return tier_of(self.tier_rank(now))
+
+    def subscription_until(self, now: int | None = None) -> int:
+        """Докуда жива старшая ступень. 0 — подписки нет."""
+        moment = now_ts() if now is None else now
+        if self.premium_until > moment:
+            return self.premium_until
+        if self.pro_until > moment:
+            return self.pro_until
+        return 0
 
     def pro_left(self, now: int | None = None) -> int:
         """Сколько секунд подписке осталось. 0 — её нет."""
         moment = now_ts() if now is None else now
-        return max(0, self.pro_until - moment)
+        return max(0, self.subscription_until(moment) - moment)
+
+    def exp_share(self, now: int | None = None) -> float:
+        """Во сколько раз подписка множит опыт за бой."""
+        return exp_share(self.tier_rank(now))
+
+    def cars_allowed(self, now: int | None = None) -> int:
+        """Сколько машин боец держит на руках."""
+        return cars_of(self.tier_rank(now))
+
+    def tier_discount(self, now: int | None = None) -> int:
+        """Скидка в городе, которую даёт подписка этого бойца."""
+        return discount_of_tier(self.tier_rank(now))
+
+    def tier_holds_policy(self, now: int | None = None) -> bool:
+        """Держит ли подписка этого бойца страховой полис."""
+        return holds_policy(self.tier_rank(now))
+
+    def policy_cover_until(self, now: int | None = None) -> int:
+        """Докуда подписка держит полис. 0 — не держит вовсе.
+
+        Полис держит только PREMIUM. У бойца с PRO его нет, и это не
+        забывчивость: полис — то, чем старшая ступень отличается от
+        младшей, а не то, что идёт к любой подписке.
+        """
+        moment = now_ts() if now is None else now
+        if not self.tier_holds_policy(moment):
+            return 0
+        return self.subscription_until(moment)
 
     def extend_pro(self, seconds: int, now: int | None = None) -> int:
-        """Продлить подписку. Живая продлевается с конца, мёртвая — с сейчас."""
+        """Продлить PRO. Живая продлевается с конца, мёртвая — с сейчас."""
         moment = now_ts() if now is None else now
         self.pro_until = max(self.pro_until, moment) + max(0, seconds)
         return self.pro_until
 
+    def extend_premium(self, seconds: int, now: int | None = None) -> int:
+        """Продлить PREMIUM. Живая продлевается с конца, мёртвая — с сейчас."""
+        moment = now_ts() if now is None else now
+        self.premium_until = max(self.premium_until, moment) + max(0, seconds)
+        return self.premium_until
+
     @property
     def badge(self) -> str:
-        """Значок у имени. Пусто — подписки нет."""
-        return PRO_BADGE if self.is_pro() else ""
+        """Значок у имени: кристалл у PRO, корона у PREMIUM. Пусто — нет подписки."""
+        one = self.tier()
+        return one.badge if one else ""
 
     def titled(self) -> str:
         """Имя со значком: то, как бойца называют в текстах."""
-        return f"{self.nickname} {PRO_BADGE}" if self.is_pro() else self.nickname
+        mark = self.badge
+        return f"{self.nickname} {mark}" if mark else self.nickname
 
     # ---------- эликсиры ----------
 
@@ -403,7 +568,7 @@ class Player:
 
     @property
     def max_hp(self) -> int:
-        return derive(self.fclass, self.stats, self.level, self.extra_hp).max_hp
+        return derive(self.fclass, self.stats, self.extra_hp).max_hp
 
     def current_hp(self, now: int | None = None) -> int:
         """Здоровье с учётом восстановления, прошедшего с последнего боя."""
@@ -422,6 +587,25 @@ class Player:
     def limping(self) -> bool:
         """Есть ли травма. По городу такой боец идёт вдвое дольше."""
         return self.injury is not None and self.injury.is_active()
+
+    def driving(self, now: int | None = None) -> str:
+        """Код машины под бойцом. Пусто — идёт пешком.
+
+        Срок аренды кончился — значит, боец уже пешком, и сметать для
+        этого ничего не надо: час возврата написан в самой строке.
+        Купленная машина срока не имеет вовсе.
+        """
+        if not self.car:
+            return ""
+        if self.car_until and self.car_until <= (now_ts() if now is None else now):
+            return ""
+        return self.car
+
+    def car_times(self, now: int | None = None) -> int:
+        """Во сколько раз короче дорога за рулём. Пешком — в один."""
+        from bot.game.cars import times_of
+
+        return times_of(self.driving(now))
 
     @property
     def crippled(self) -> bool:
@@ -482,11 +666,16 @@ class Player:
 
     @property
     def exp_to_next_up(self) -> int:
-        """Сколько опыта осталось до ближайшего апа (0 на потолке уровня)."""
+        """Сколько опыта осталось до ближайшего апа (0 на потолке уровня).
+
+        Порог четвёртого апа — цена всего уровня, а не четыре шага по
+        четверти: шаги внутри уровня разной длины, и у последнего своя
+        цена. Считать его шагами значило бы показывать «до апа: 0», пока
+        до уровня ещё остаётся опыт.
+        """
         if self.at_max_level:
             return 0
-        step = exp_per_up(self.level)
-        target = min(self.exp_needed, step * (self.micro_ups + 1))
+        target = exp_at_up(self.level, self.micro_ups + 1)
         return max(0, target - self.exp)
 
     @property
@@ -608,6 +797,43 @@ class Player:
     def shift_left(self, now: int) -> int:
         return max(0, self.shift_until - now)
 
+    # ---------- опыт работы ----------
+
+    def experience(self, now: int) -> int:
+        """Сколько всего боец проработал, в секундах.
+
+        Отложенное с прошлых мест плюс то, что идёт на нынешнем. Опыт
+        копится по всем местам разом: город смотрит, сколько боец вообще
+        работал, а не кем именно он работал.
+        """
+        here = max(0, now - self.job_since) if self.works and self.job_since else 0
+        return self.job_experience + here
+
+    def experience_months(self, now: int) -> int:
+        from bot.game.work import months_of
+
+        return months_of(self.experience(now))
+
+    # ---------- учёба ----------
+
+    def on_lesson(self, now: int) -> bool:
+        """Идёт ли занятие прямо сейчас.
+
+        Пока идёт, боец заперт в учебном доме — ровно как на смене:
+        учёба это про отсидеть два часа, а не про отметиться.
+        """
+        return self.lesson_until > now
+
+    def lesson_left(self, now: int) -> int:
+        return max(0, self.lesson_until - now)
+
+    @property
+    def studies(self) -> bool:
+        return bool(self.study_code)
+
+    def has_diploma(self, code: str) -> bool:
+        return code in self.diplomas
+
     # ---------- два кошелька ----------
 
     @property
@@ -625,8 +851,24 @@ class Player:
         Поэтому `now` в ноль означает «нет», а не «да». Вопрос этот
         задают перед списанием, и ошибка в пользу карты сняла бы деньги
         не с того кошелька.
+
+        Судебный долг запирает её так же, как неоплаченный год: счёт
+        заблокирован до погашения, и платить им нельзя (`account_debt`).
         """
+        if self.account_debt > 0:
+            return False
         return self.has_card and 0 < now < self.card_paid_until
+
+    @property
+    def account_blocked(self) -> bool:
+        """Заблокирован ли счёт судебным долгом."""
+        return self.account_debt > 0
+
+    def repay_debt(self, amount: int) -> int:
+        """Погасить долг этими деньгами. Отдаёт, сколько ушло в долг."""
+        paid = min(max(0, amount), self.account_debt)
+        self.account_debt -= paid
+        return paid
 
     def settle_card(self, now: int) -> int:
         """Списать со счёта год обслуживания, если он подошёл.
@@ -643,8 +885,11 @@ class Player:
             return 0
         if self.account_balance < CARD_YEAR_PRICE:
             return 0
+        from bot.game.bank import FEE
+
         self.account_balance -= CARD_YEAR_PRICE
         self.card_paid_until = now + YEAR_SECONDS
+        self.note_card(-CARD_YEAR_PRICE, FEE, "Обслуживание карты за год", now)
         return CARD_YEAR_PRICE
 
     def purse_for(self, now: int, service=None) -> str:
@@ -682,24 +927,58 @@ class Player:
         return f"{where} {self.purse_money(purse)} 💰"
 
     def price_here(self, price: int, now: int, service=None) -> int:
-        """Цена для этого бойца: со скидкой карты, если платит картой."""
-        return price_for(price, self.purse_for(now, service), service)
+        """Цена для этого бойца: со скидкой карты, если платит картой.
+
+        Размер скидки решает ступень подписки, а право на неё — карта:
+        наличными боец платит полную цену, какая бы подписка у него ни
+        была.
+        """
+        return price_for(
+            price, self.purse_for(now, service), service, self.tier_rank(now)
+        )
 
     def can_afford(self, price: int, now: int = 0, service=None) -> bool:
         return self.purse_money(self.purse_for(now, service)) >= price
 
-    def pay(self, price: int, now: int = 0, service=None) -> str:
+    def note_card(
+        self, amount: int, kind: str, note: str, now: int = 0, about: str = ""
+    ) -> CardMove:
+        """Записать движение по счёту — в выписку, а не в базу.
+
+        Базы у бойца нет, и ходить за ней из каждой лавки незачем:
+        строка едет с ним и ложится на полку в `save_player`.
+        """
+        move = CardMove(
+            at=now or now_ts(),
+            amount=amount,
+            kind=kind,
+            note=note,
+            balance=self.account_balance,
+            about=about,
+        )
+        self.card_moves.append(move)
+        return move
+
+    def pay(self, price: int, now: int = 0, service=None, about: str = "") -> str:
         """Снять цену с того кошелька, которым боец здесь платит.
 
         Цену сюда передают уже посчитанную: скидку считают там, где её
         показывают, — иначе на витрине стояло бы одно число, а с кошелька
         уходило другое.
+
+        Заплатили картой — операция попадает в выписку. Заголовком в ней
+        встаёт сам дом, а `about` — то, за что платили: «Покупка Кольцо
+        силы», «Создание клана», «Лечение травмы». Дом боец вспомнит и
+        так, а вот за что он там оставил полторы сотни — нет.
         """
+        from bot.game.bank import PAY, place_note
+
         purse = self.purse_for(now, service)
         if self.purse_money(purse) < price:
             raise ValueError("Недостаточно кредитов")
         if purse == CARD:
             self.account_balance -= price
+            self.note_card(-price, PAY, place_note(service), now, about)
         else:
             self.credits -= price
         return purse

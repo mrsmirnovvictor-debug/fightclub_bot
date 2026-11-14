@@ -50,6 +50,9 @@ from bot.game.gym import (
 from bot.game.health import now_ts
 from bot.game.locations import Service
 from bot.models import Player
+# Квесты слушают город: службы зовут `notice` и больше о них
+# ничего не знают
+from bot.quest_service import notice
 from bot.travel_service import require
 
 logger = logging.getLogger(__name__)
@@ -147,7 +150,7 @@ async def cover_pass(db: Database, player: Player, now: int | None = None) -> st
     """
     moment = now_ts() if now is None else now
     was = await db.gym_pass_of(player.user_id)
-    until = cover_by_pro(was, player.pro_until, moment)
+    until = cover_by_pro(was, player.subscription_until(moment), moment)
     if not until:
         return ""
     await db.set_gym_pass(player.user_id, until)
@@ -190,7 +193,7 @@ async def buy_pass(
     # Продлевается с конца, а не с сегодняшнего дня: купивший второй месяц
     # заранее получает два месяца, а не один
     start = was if has_pass(was, moment) else moment
-    player.pay(price, moment, Service.TRAIN)
+    player.pay(price, moment, Service.TRAIN, about="Абонемент в зал")
     await db.save_player(player)
     until = start + ticket.days * 24 * 60 * 60
     await db.set_gym_pass(player.user_id, until)
@@ -285,7 +288,7 @@ async def join(db: Database, player: Player, now: int | None = None) -> Visit:
 
     # Платим после записи: не записались — не списали
     if price:
-        player.pay(price, moment, Service.TRAIN)
+        player.pay(price, moment, Service.TRAIN, about="Тренировка")
         await db.save_player(player)
     logger.info(
         "Боец %s встал на тренировку %s в слоте %s за %s",
@@ -348,6 +351,9 @@ async def _close_visit(
         visit.stat.value,
         points,
     )
+    # Отработанное занятие — событие для бармена: он даёт на это свой
+    # абонемент
+    await notice(db, player, "train")
     training = training_for(visit.stat)
     name = training.title if training else "Тренировка"
     return f"{name} отработана: +1 очко в {visit.stat.dative}."

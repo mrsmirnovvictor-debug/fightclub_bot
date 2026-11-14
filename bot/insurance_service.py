@@ -81,7 +81,7 @@ async def buy_policy(
     policy = extended(was, moment)
     renewed = was is not None and was.is_active(moment)
 
-    player.pay(price, moment, Service.INSURANCE)
+    player.pay(price, moment, Service.INSURANCE, about="Страховой полис")
     await db.save_player(player)
     await db.set_policy(player.user_id, policy)
     player.policy = policy
@@ -157,7 +157,9 @@ async def settle(
         )
 
     renewed = policy.renewed(moment)
-    player.pay(price, moment, Service.INSURANCE)
+    player.pay(
+        price, moment, Service.INSURANCE, about="Продление полиса"
+    )
     await db.save_player(player)
     await db.set_policy(player.user_id, renewed)
     player.policy = renewed
@@ -176,7 +178,7 @@ async def cover_by_pro(
     раньше этого правила, и тех, кому её продлили мимо магазина.
     """
     moment = now_ts() if now is None else now
-    cover = pro_cover(player.policy, player.pro_until, moment)
+    cover = pro_cover(player.policy, player.policy_cover_until(moment), moment)
     if cover is None:
         return ""
 

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 from bot.content.daily import (
     gift_picture,
+    gift_wide,
     month_days,
     next_milestone,
     reward_for,
@@ -134,6 +135,10 @@ def ladder_view(state: VisitState) -> list[dict]:
                 # Вещь в клетке показываем ею самой, а не значком: картинка
                 # говорит про подарок больше, чем 🧪 на все склянки разом
                 "image": gift_picture(reward),
+                # Билет вдвое шире своей высоты: клетка квадратная, и
+                # обрезкой по краям у него срезало и название рейда, и
+                # отрывную часть
+                "wide": gift_wide(reward),
                 "note": reward.note,
                 "credits": reward.credits,
                 "potion": reward.potion,

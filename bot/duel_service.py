@@ -9,6 +9,7 @@ import logging
 import math
 import random
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup
@@ -18,10 +19,12 @@ from bot.config import Config
 from bot.database import Database
 from bot.game.classes import Zone, block_combo, block_title
 from bot.game.equipment import BARE_HANDS_ICON
+from bot.game.health import now_ts
 from bot.game.modes import FightMode
 from bot.game.scout import SCOUT_FIGHTS, Habits, read_habits
 from bot.game.combat import (
     MAX_MISSED_TURNS,
+    NO_GONG,
     TURNS_PER_ROUND,
     Action,
     Fighter,
@@ -38,7 +41,6 @@ from bot.game.economy import (
     REPEAT_WINDOW_HOURS,
     apply_share,
     consolation_exp,
-    pro_exp,
     rating_delta,
     repeat_share,
     win_exp,
@@ -62,10 +64,15 @@ from bot.game.narrator import (
     strike_lines,
 )
 from bot.injury_service import record_injuries
+from bot.dojo_service import count_deeds
 from bot.inventory_service import wear_after_fight
 from bot.keyboards import challenge_keyboard, fight_keyboard, standoff_keyboard
 from bot.messaging import Announcer
 from bot.models import Player, ProgressReport
+# Квесты слушают город: службы зовут `notice` и больше о них
+# ничего не знают
+from bot.game.quests import ring_mark
+from bot.quest_service import notice
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +148,11 @@ class Choice:
 @dataclass
 class DuelSession:
     id: int
+    # Ключ боя для журнала ELO: один на бой и на обе его стороны.
+    # Случайный, а не номер боя: номера раздаёт счётчик в памяти и после
+    # каждого перезапуска начинает с единицы, а ключ должен быть разным
+    # всегда — на нём держится обещание «бой учитывается один раз»
+    fight_key: str = field(default_factory=lambda: uuid4().hex, kw_only=True)
     chat_id: int | None
     thread_id: int | None
     fighters: dict[int, Fighter]
@@ -770,7 +782,16 @@ class DuelService:
             session.round_number,
             self.rng,
             limit=session.mode.turns,
+            # Судьи у дуэли нет: дерутся до победы. Прежде бой обрывался
+            # гонгом на шестом раунде (на кулаках) или девятом (с
+            # оружием), и выигрывал тот, кто успел больше нанести, —
+            # а не тот, кто довёл дело до конца
+            gong=NO_GONG,
         )
+
+        # Боевые дела этого раунда — в ведомость школы: одной строкой
+        # и из каждого боя, потому что школа не делит бои на зачётные
+        await count_deeds(self.db, session.fighters)
 
         # Слова судьи собираются один раз: и в ветку, и в мини-апп, и в лог
         # уходит ровно то, что он сказал. Позвать разбор дважды — значит
@@ -806,7 +827,6 @@ class DuelService:
             corner_break(
                 *(session.fighters[uid] for uid in session.order),
                 round_number=finished,
-                total=session.mode.rounds,
                 seconds=rest,
             ),
         )
@@ -828,6 +848,14 @@ class DuelService:
         await self._start_round(session)
 
     async def _finish(self, session: DuelSession, result: RoundResult) -> None:
+        """Закрыть бой: раздать итоги, сказать вслух, записать в историю.
+
+        Каждый шаг развязки отгорожен от остальных. Деньги, травмы,
+        сетка турнира, запись в базу — сорвётся одно, остальное всё
+        равно случится, и бойцы всё равно выйдут из боя с итогом на
+        руках. Висящий бой хуже любой ошибки в нём: из него не выйти,
+        по городу не пройти, и чинится это только перезапуском бота.
+        """
         self._cancel_timer(session)
         # Обычно панель уже погашена итогом раунда. Осталась висеть — гасим
         # здесь, чтобы под законченным боем не остались живые кнопки.
@@ -835,14 +863,30 @@ class DuelService:
             await self._close_panel(session, "🔒 Бой окончен.")
         self._forget(session)
 
-        rewards = await self._apply_results(session, result)
+        rewards = ""
+        try:
+            rewards = await self._apply_results(session, result)
+        except Exception:
+            logger.exception("Итоги боя %s не посчитались", session.id)
         text = finish_report(result, session.fighters, self.rng)
         if rewards:
             text += "\n\n" + rewards
         await self._send(session.chat_id, session.thread_id, text)
         self._remember_result(session, text)
         if session.on_finish is not None:
-            await session.on_finish(session, result)
+            try:
+                await session.on_finish(session, result)
+            except Exception:
+                # Чаще всего это турнирная сетка: её круг доедет
+                # следующим взглядом, а бой кончать нужно сейчас
+                logger.exception("Хозяин боя %s не принял итог", session.id)
+        try:
+            await self._record(session, result)
+        except Exception:
+            logger.exception("Бой %s не записался в историю", session.id)
+
+    async def _record(self, session: DuelSession, result: RoundResult) -> None:
+        """Положить бой в историю: по нему потом читают привычки бойца."""
         await self.db.add_duel(
             chat_id=session.chat_id,
             thread_id=session.thread_id,
@@ -887,6 +931,11 @@ class DuelService:
 
         rows: list[tuple[Player, ProgressReport]] = []
         broken: list[tuple[Player, list]] = []
+        # Миг фиксации итога — один на весь бой, а не по бойцу. От него
+        # зависит, в какую неделю рейтинга бой попадёт, и бой, начавшийся
+        # в одной неделе и кончившийся в другой, должен попасть в одну:
+        # две стороны одного боя в разных неделях разошлись бы навсегда
+        stamped = now_ts()
         for user_id, player in players.items():
             fighter = session.fighters[user_id]
             opponent = session.opponent_of(user_id)
@@ -894,7 +943,18 @@ class DuelService:
             opponent_level = levels[opponent.user_id]
             won = result.winner_id == user_id
 
-            full_exp = win_exp(fighter.damage_dealt, my_level, opponent_level)
+            # Ставка берётся по старшему из двоих, прибавка за урон — по
+            # полным ХП обоих, повторный бой урезает её тут же, а подписка
+            # множит уже урезанное: округление в формуле одно и последнее
+            full_exp = win_exp(
+                fighter.damage_dealt,
+                my_level,
+                opponent_level,
+                fighter.max_hp + session.fighters[opponent.user_id].max_hp,
+                2,
+                previous_fights=previous_fights,
+                exp_share=player.exp_share(),
+            )
             if won:
                 player.wins += 1
                 exp = full_exp
@@ -909,7 +969,9 @@ class DuelService:
             drawn = result.winner_id is None
             delta = rating_delta(None if drawn else won, my_level, opponent_level)
             if share < 1.0:
-                exp = apply_share(exp, share)
+                # Опыт повтор уже урезал внутри формулы — второй раз его
+                # здесь применять нельзя. Рейтингу урезание всё ещё нужно:
+                # в его расчёт повторные бои не входят
                 delta = int(math.copysign(apply_share(abs(delta), share), delta))
 
             if player.birthplace is None and session.chat_title:
@@ -928,12 +990,38 @@ class DuelService:
             if ruined:
                 broken.append((player, ruined))
             player.set_hp(fighter.hp)
-            # Подписка множит уже урезанное: полтора от того, что боец
-            # действительно заработал в этом бою
-            report = player.grant_exp(pro_exp(exp, player.is_pro()))
+            report = player.grant_exp(exp)
             report.rating_delta = delta
+            was = player.rating
             player.apply_rating(delta)
             await self.db.save_player(player)
+            # Журнал ELO — после сохранения бойца, а не до: по журналу
+            # потом восстанавливают рейтинг на любой прошедший миг, и
+            # запись, которой нет в `players`, сделала бы это
+            # восстановление неправдой. Обратный порядок потерял бы бой
+            # для недельного счётчика — это обидно, но честно
+            await self.db.log_rating(
+                user_id,
+                "duel",
+                session.fight_key,
+                # Ничья — это бой, но не победа и не поражение. По одной
+                # нулевой разнице её от ничего не отличить: рейтинг не
+                # двигает и проигрыш бойца, стоящего на нуле
+                "draw" if drawn else ("win" if won else "loss"),
+                # Разница настоящая, а не задуманная: рейтинг не уходит
+                # ниже нуля, и у бойца на дне формула считает одно, а
+                # случается другое
+                player.rating - was,
+                player.rating,
+                stamped,
+            )
+            # Ринг — событие для бармена: с него начинается город. В
+            # отметке стоит исход, потому что за победу он доплачивает,
+            # а зачёт даёт первый завершённый бой — поздняя победа
+            # зачтённое поражение не заменяет. Только кулаки и только
+            # дуэль: задание про то, чтобы выйти один на один
+            if session.mode is FightMode.FIST:
+                await notice(self.db, player, ring_mark(None if drawn else won))
             rows.append((player, report))
 
         return rewards_report(

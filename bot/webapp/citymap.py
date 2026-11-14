@@ -19,13 +19,16 @@ from bot.game.locations import (
 from bot.models import Player
 
 
-def place_row(place: Location, here: str, limping: bool = False) -> dict:
+def place_row(
+    place: Location, here: str, limping: bool = False, times: int = 1
+) -> dict:
     """Дом на карте: вход, чем занят и сколько до него идти.
 
     Секунды считает сервер, хотя правило простое. Стоит повторить его на
     клиенте — и однажды они разойдутся: человек согласится на десять
-    секунд, а прождёт двадцать. Тем более с травмой: она удваивает
-    дорогу, и знает об этом только сервер.
+    секунд, а прождёт двадцать. Тем более с травмой и машиной: одна
+    удваивает дорогу, вторая делит её на себя, и знает об этом только
+    сервер.
     """
     return {
         "code": place.code,
@@ -40,11 +43,13 @@ def place_row(place: Location, here: str, limping: bool = False) -> dict:
         "soon": place.soon,
         "works": place.works,
         "here": place.code == here,
-        "walk": travel_seconds(here, place.code, limping),
+        "walk": travel_seconds(here, place.code, limping, times),
     }
 
 
-def district_row(district, here: str, limping: bool = False) -> dict:
+def district_row(
+    district, here: str, limping: bool = False, times: int = 1
+) -> dict:
     return {
         "code": district.code,
         "title": district.title,
@@ -53,23 +58,41 @@ def district_row(district, here: str, limping: bool = False) -> dict:
         # Куда ведут стрелки. Города целиком не видно — это единственное,
         # что связывает шесть картинок в один город
         "around": dict(district.around),
-        "places": [place_row(place, here, limping) for place in district.places],
+        "places": [
+            place_row(place, here, limping, times)
+            for place in district.places
+        ],
     }
 
 
 def build_map(
-    player: Player, now: int | None = None, raid: dict | None = None
+    player: Player,
+    now: int | None = None,
+    raids: dict | None = None,
+    turf: dict | None = None,
+    crowd: dict | None = None,
+    cars: list | None = None,
 ) -> dict:
     """Город целиком: где боец, куда идёт и что где стоит.
 
-    `raid` — плашка под вывеской казино: её считает сервер, потому что
-    для неё нужна база (свой рейд в этом окне уже пройден или ещё нет).
+    `raids` — плашки под вывесками рейдовых домов, по дому на запись: их
+    считает сервер, потому что для них нужна база (свой рейд в этом окне
+    уже пройден или ещё нет). Домов два, и расписания у них свои, поэтому
+    и плашек две: одна сказала бы под стадионом часы казино.
+
+    `turf` — война за территории: флажок с владельцем под каждой точкой
+    и плашка под ногами у того, кто до точки дошёл. Захват берут на
+    месте, и карта — единственный экран, с которого это видно.
     """
     here = player.where(now)
     place = get_location(here)
     left = player.road_left(now)
     going = get_location(player.travel_to) if left else None
     limping = player.limping
+    # Машина под бойцом делит дорогу: от двух раз у хэтчбека до
+    # десяти у гиперкара. Карта обязана показывать то время, которое
+    # человек и прождёт
+    times = player.car_times(now)
     return {
         "here": here,
         "here_title": place.title if place else "—",
@@ -83,15 +106,29 @@ def build_map(
             # насколько она пройдена, — а заряд батарейки считается
             # именно от этого. Заново открыв карту в пути, клиент
             # начала дороги уже не помнит
-            "seconds": travel_seconds(here, going.code, limping) if going else 0,
+            "seconds": travel_seconds(here, going.code, limping, times)
+            if going
+            else 0,
             "text": f"В пути до {going.whither} — {format_duration(left)}"
             if going
             else "",
         },
-        # Отсчёт рейда: пусто — плашки на карте нет
-        "raid": raid or {"state": "", "text": "", "seconds_left": 0},
+        # Отсчёты рейдов по домам: пусто — плашки под этим домом нет
+        "raids": raids or {},
+        # Война за территории: `spots` — флажки по домам, `here` —
+        # плашка с кнопкой сбора, если боец стоит на точке
+        "turf": turf or {"spots": {}, "here": None},
+        # Сколько народу в этом доме и сколько в нём драк. Счётчик в
+        # углу карты — единственное место, откуда видно, что рядом кто-то
+        # есть: внутрь дома за этим не заходят
+        "crowd": crowd or {"total": 0, "online": 0, "fights": 0},
+        # Машины, брошенные у этого здания. Стоят они на улице, и видит
+        # их всякий, кто сюда пришёл: счётчик в углу карты — там же,
+        # где и люди
+        "cars": cars or [],
         "districts": [
-            district_row(district, here, limping) for district in DISTRICTS
+            district_row(district, here, limping, times)
+            for district in DISTRICTS
         ],
     }
 

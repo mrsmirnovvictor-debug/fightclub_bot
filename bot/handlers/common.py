@@ -25,7 +25,6 @@ from bot.game.stats import derive
 from bot.game.links import links
 from bot.game.narrator import esc, health_line
 from bot.game.potions import spell_duration
-from bot.game.pro import PRO_BADGE
 from bot.models import Player
 
 PRIVATE_HINT = (
@@ -52,13 +51,12 @@ def stats_block(stats: Stats, indent: str = "") -> str:
 def combat_block(
     fclass: FighterClass,
     stats: Stats,
-    level: int = 1,
     equipment: Equipment | None = None,
     extra_hp: int = 0,
 ) -> str:
     """extra_hp — запас сверх вещей: то, что дал выпитый эликсир."""
     equipment = equipment or Equipment()
-    d = derive(fclass, stats, level, equipment.hp_bonus + extra_hp)
+    d = derive(fclass, stats, equipment.hp_bonus + extra_hp)
     weapon = equipment.weapon_damage
     hit = f"{d.damage_min}–{d.damage_max}"
     if weapon[1]:
@@ -101,8 +99,8 @@ def progress_line(player: Player) -> str:
     ups_left = MICRO_UPS_PER_LEVEL - player.micro_ups
     return (
         f"📈 Опыт: <b>{player.exp}/{player.exp_needed}</b> · "
-        f"до апа: <b>{player.exp_to_next_up}</b> "
-        f"(апов до уровня: {ups_left})"
+        f"до апгрейда: <b>{player.exp_to_next_up}</b> "
+        f"(апгрейдов до уровня: {ups_left})"
     )
 
 
@@ -132,10 +130,14 @@ def profile_text(player: Player, own: bool = True) -> str:
     ]
     if own:
         lines.append(f"💰 Кредиты: <b>{player.credits}</b>")
-    if own and player.is_pro():
+    tier = player.tier() if own else None
+    if tier is not None:
+        # Множитель пишем числом ступени, а не «×1.5»: ступеней две, и
+        # строка должна говорить про ту, которая у бойца на руках
+        share = f"{tier.exp_share:g}"
         lines.append(
-            f"{PRO_BADGE} Подписка PRO: осталось "
-            f"<b>{spell_duration(player.pro_left())}</b> · опыт ×1.5"
+            f"{tier.badge} {tier.title}: осталось "
+            f"<b>{spell_duration(player.pro_left())}</b> · опыт ×{share}"
         )
     effects = effects_line(player)
     if effects:
@@ -145,7 +147,7 @@ def profile_text(player: Player, own: bool = True) -> str:
         stats_block(player.stats),
         "",
         combat_block(
-            fclass, player.stats, player.level, player.equipment, player.effect_hp
+            fclass, player.stats, player.equipment, player.effect_hp
         ),
         "",
         f"🥊 Боёв: <b>{player.fights}</b> · "

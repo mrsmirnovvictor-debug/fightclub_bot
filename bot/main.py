@@ -20,6 +20,8 @@ from aiogram.types import (
 )
 
 from bot.config import Config, load_config
+from bot import chores
+from bot.ladder_service import settle_due
 from bot.database import Database
 from bot.battle_service import BattleService
 from bot.duel_service import DuelService
@@ -29,12 +31,6 @@ from bot.tournament_service import TournamentService
 from bot.game.links import links
 from bot.handlers import build_router
 from bot.news_service import publish_pending
-from bot.seed import (
-    fix_promo_overrun,
-    grant_test_gear,
-    grant_test_pro,
-    grant_test_relic,
-)
 from bot.webapp import run_webapp
 
 logger = logging.getLogger(__name__)
@@ -122,6 +118,19 @@ async def run(config: Config | None = None) -> None:
     )
     db = Database(config.db_path)
     await db.connect()
+    # Разовые работы по данным: сброс точек и прочее, что делается один
+    # раз на живой базе. Молчат, когда делать нечего
+    for line in await chores.run(db):
+        logger.info("Разовая работа: %s", line)
+    # Недели рейтинга, кончившиеся пока бота не было. Часов, которые
+    # будили бы его в полдень воскресенья, в клубе нет: период закрывает
+    # тот, кто на него смотрит, — а при запуске смотрим мы сами, чтобы
+    # выплата не ждала первого, кто откроет экран рейтинга
+    try:
+        for line in await settle_due(db):
+            logger.info("Недельный рейтинг: %s", line)
+    except Exception:  # pragma: no cover - выплата не стоит запуска бота
+        logger.exception("Недельный рейтинг не досчитался при запуске")
     duels = DuelService(bot=bot, db=db, config=config)
     battles = BattleService(bot=bot, db=db, config=config)
     tournaments = TournamentService(bot=bot, db=db, config=config, duels=duels)
@@ -164,13 +173,6 @@ async def run(config: Config | None = None) -> None:
     await tournaments.resume()
     # Подвал открывается по расписанию — об этом объявляет сам бот
     raids.start_watching()
-    # Разовые выдачи и правки на время тестов — см. bot/seed.py
-    await grant_test_relic(db)
-    await grant_test_gear(db)
-    await fix_promo_overrun(db)
-    # Подписка выдаётся последней: правка сроков выше урезает набежавшее,
-    # и подарок не должен попасть ей под нож
-    await grant_test_pro(db)
     # Что нового в клубе — в ветку новостей, если её отметили командой /updates
     try:
         await publish_pending(bot, db)

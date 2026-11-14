@@ -15,6 +15,7 @@ from bot.abilities_service import AbilityError, ensure_starter
 from bot.daily_service import DailyError, check_in, claim, ladder_view
 from bot.abilities_service import learn as learn_ability
 from bot.database import Database
+from bot.game.art import LOADING
 from bot.battle_service import BattleError
 from bot.duel_service import DuelError
 from bot.raid_service import RaidError
@@ -30,16 +31,21 @@ from bot.inventory_service import (
     repair_item,
     unequip,
 )
-from bot.looks_service import LookError, choose_look, wardrobe
+from bot.looks_service import LookError, wardrobe, wear_look
 from bot.potions_service import PotionError, buy_potion, use_potion
-from bot.pro_service import ProError, claim_free_pro, promo_taken
+from bot.pro_service import (
+    ProError,
+    claim_free_pro,
+    promo_taken,
+    redeem_code,
+)
 from bot.store_service import StoreError, StoreService
 from bot.upgrade_service import UpgradeError, spend_points
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
 from bot.market_service import MarketError, buy_lot, sell_lot, withdraw_lot
 from bot.webapp.battle import build_battle
 from bot.webapp.fight import build_fight_log, build_fights, build_history
-from bot.webapp.raid import build_raid, gate_payload, plate_payload, raid_row
+from bot.webapp.raid import build_raid, gate_payload, plates_payload, raid_row
 from bot.webapp.hospital import build_hospital
 from bot.game.gym import MAX_UPGRADES, moscow_day, schedule_from
 from bot.webapp.gym import build_gym
@@ -57,15 +63,81 @@ from bot.gym_service import settle as gym_settle, upgrade
 from bot.gym_service import visit_of
 from bot.injury_service import InjuryError, heal_injury
 from bot.mods_service import ModError, apply_mod, buy_mod
+from bot.game.clock import week_key, week_opens
+from bot.game.quests import Goal as QuestGoal
 from bot.game.health import format_duration, now_ts
+from bot.game.raid import CELLAR_RAID, RaidKind, kind_at
 from bot.game.locations import (
     SHOP_SERVICES,
     Service,
     get_location,
     service_for,
-    where_to,
 )
 from bot.travel_service import Travel, TravelError, require
+from bot.clan_service import (
+    ClanError,
+    accept as clan_accept,
+    apply as clan_apply,
+    approve as clan_approve,
+    decline as clan_decline,
+    demote as clan_demote,
+    deposit as clan_deposit,
+    expel as clan_expel,
+    found as clan_found,
+    handover as clan_handover,
+    invite as clan_invite,
+    leave as clan_leave,
+    promote as clan_promote,
+    refuse as clan_refuse,
+    rename as clan_rename,
+    stash as clan_stash,
+    take as clan_take,
+    withdraw as clan_withdraw,
+    withdraw_vault as clan_cash,
+)
+from bot.estate_service import (
+    EstateError,
+    deposit as flat_deposit,
+    extend as flat_extend,
+    move_out as flat_move_out,
+    rent as flat_rent,
+    stash as flat_stash,
+    sweep as flat_sweep,
+    take as flat_take,
+    withdraw as flat_withdraw,
+)
+from bot.turf_service import TurfError, release as turf_release
+from bot.hire_service import (
+    HireError,
+    hire as hire_one,
+    post as post_one,
+)
+from bot.study_service import (
+    StudyError,
+    attend as study_attend,
+    enrol as study_enrol,
+    leave as study_leave,
+    pass_exam as study_pass,
+    start_exam as study_start_exam,
+)
+from bot.quest_service import (
+    QuestError,
+    answer as quest_answer,
+    hand as quest_hand,
+    journal as quest_journal,
+    notice,
+    notice_seen,
+    notice_visit,
+    take as quest_take,
+)
+from bot.post_service import (
+    PostError,
+    collect as parcel_collect,
+    refuse as parcel_refuse,
+    send as parcel_send,
+    sweep as parcel_sweep,
+)
+from bot.game.clans import Petition
 from bot.webapp.citymap import build_map
 from bot.bank_service import (
     BankError,
@@ -77,19 +149,90 @@ from bot.bank_service import (
     withdraw,
 )
 from bot.game.bank import CARD
-from bot.game.work import SHIFT_HOURS
-from bot.webapp.bank import build_bank
+from bot.game.work import SHIFT_HOURS, week_of
+from bot.webapp.bank import (
+    STATEMENT_DAYS,
+    build_bank,
+    statement_payload,
+)
 from bot.webapp.work import build_hr, build_work
-from bot.work_service import WorkError
+from bot.work_service import (
+    WorkError,
+    appoint,
+    bid_for_post,
+    candidates_for,
+    hire_at_house,
+    withdraw_bid,
+)
 from bot.work_service import apply as work_apply
 from bot.work_service import quit_job as work_quit
 from bot.work_service import quiz_payload
 from bot.work_service import settle as work_settle
 from bot.work_service import start_shift, vacancies
+from bot.duty_service import (
+    DutyError,
+    hand_back as duty_hand_back,
+    stash as office_stash,
+    take as duty_take,
+    take_stored as office_take,
+)
+from bot.driving_service import (
+    SchoolError,
+    answer as school_answer,
+    enroll as school_enroll,
+    start_exam as school_exam,
+    take_licence as school_licence,
+)
+from bot.webapp.clans import (
+    build_clan,
+    build_clan_page,
+    build_estate,
+    build_mansion,
+    invites_payload,
+)
+from bot.webapp.estate import build_house
+from bot.webapp.post import build_post
+from bot.webapp.bar import build_bar, chapters_payload
+from bot.game.study import EXAM_SIZE, PASS_MARK
+from bot.webapp.study import build_study, exam_payload
+from bot.webapp.turf import build_war, map_marks
+from bot.webapp.crowd import build_crowd, crowd_marks
+from bot.webapp.police import build_police_board
+from bot.webapp.elections import (
+    ballot_payload,
+    build_elections,
+    seats_payload,
+)
+from bot.election_service import (
+    ElectionError,
+    nominate as election_nominate,
+    state as election_state,
+    vote as election_vote,
+)
+from bot.court_service import CourtError, apply_pending
+from bot.police_service import (
+    PoliceError,
+    choose_split as police_split,
+    collect as police_collect,
+    file_report as police_report,
+    claim_car,
+    deliver as deliver_car,
+    file_theft,
+    fine_driver,
+    take_from_thief,
+    settle_week as police_settle,
+)
+from bot.ladder_service import live_week, my_week, settle_due
+from bot.robbery_service import RobberyError, RobberyService
+from bot.turf_war import TurfWar
+from bot.webapp.driving import build_police, build_school
+from bot.webapp.ladder import build_ladder, build_payout
 from bot.webapp.card import (
+    PAGE,
     build_market,
     build_card,
     build_club,
+    build_search,
     build_magic,
     build_shop,
     build_topup,
@@ -98,8 +241,13 @@ from bot.webapp.card import (
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
-# Файлы, из которых собирается метка версии страницы
-ASSETS = ("card.css", "card.js")
+# Файлы, из которых собирается метка версии страницы. Сцена боя живёт
+# отдельным файлом нарочно: карточка и без неё под двадцать тысяч
+# строк, а у сцены свой разбор событий и свои проверки
+ASSETS = ("card.css", "fightscene.js", "card.js")
+
+# Место в странице, куда встаёт адрес картинки экрана загрузки
+LOADING_SLOT = "{{loading}}"
 
 # Типизированные ключи приложения — так рекомендует aiohttp
 BOT_KEY: web.AppKey = web.AppKey("bot")
@@ -113,6 +261,9 @@ DUELS_KEY: web.AppKey = web.AppKey("duels")
 STORE_KEY: web.AppKey = web.AppKey("store")
 # Рейды: тот же сервис, что и в ветке группы — апп ему второй пульт
 RAIDS_KEY: web.AppKey = web.AppKey("raids")
+WAR_KEY: web.AppKey = web.AppKey("war")
+# Ограбления: драка начинается в доме и там же кончается
+ROB_KEY: web.AppKey = web.AppKey("robbery")
 # Групповые бои: состав собирают где угодно, а дерутся в карточке
 BATTLES_KEY: web.AppKey = web.AppKey("battles")
 # Столы на рынке: обмен идёт минуты и живёт в памяти, как и бои
@@ -185,11 +336,16 @@ def stamped_page(stamp: str) -> str:
     после выката человек открывает карточку и видит вчерашнюю вёрстку, а в
     логах сервера — только запрос к API. Метка в адресе делает файл новым, и
     вебвью идёт за ним заново.
+
+    Заодно подставляем адрес картинки экрана загрузки. Она единственная,
+    которая нужна странице до первого ответа сервера, — присылать её в
+    json поздно, а прописывать бакет в вёрстке нельзя: все адреса
+    картинок в игре живут в одном месте, `bot.game.art`.
     """
     html = (STATIC_DIR / "card.html").read_text(encoding="utf-8")
     for name in ASSETS:
         html = html.replace(f"static/{name}", f"static/{name}?v={stamp}")
-    return html
+    return html.replace(LOADING_SLOT, LOADING)
 
 
 async def index(request: web.Request) -> web.Response:
@@ -249,9 +405,28 @@ async def api_oops(request: web.Request) -> web.Response:
 
 
 async def _city(request: web.Request, player) -> dict:
-    """Карта вместе с отсчётом рейда: плашке нужна база, карте — нет."""
-    plate = await plate_payload(player, request.app.get(RAIDS_KEY))
-    return build_map(player, raid=plate)
+    """Карта вместе с плашками: рейдам и войне нужна база, карте — нет.
+
+    Война считается тем же ответом, что и экран территорий: два списка
+    одних и тех же точек однажды разошлись бы, и карта показала бы
+    одного владельца, а особняк другого.
+    """
+    plates = await plates_payload(player, request.app.get(RAIDS_KEY))
+    board = await build_war(
+        request.app[DB_KEY], player, request.app.get(WAR_KEY), now_ts()
+    )
+    from bot.car_service import here_rows
+
+    return build_map(
+        player,
+        raids=plates,
+        turf=map_marks(board),
+        crowd=await crowd_marks(
+            request.app[DB_KEY], player, request.app.get(ROB_KEY)
+        ),
+        # Машины у этого здания: счётчик в углу карты, рядом с людьми
+        cars=await here_rows(request.app[DB_KEY], player),
+    )
 
 
 async def api_map(request: web.Request) -> web.Response:
@@ -310,11 +485,37 @@ async def api_card(request: web.Request) -> web.Response:
         # спрашивают, и тратить чужие кредиты, открыв чужую карточку, —
         # именно та ошибка, от которой спасает это условие
         said = await settle(db, player)
+        # Приговор суда исполняется в тот миг, когда осуждённый
+        # появился в городе: выносят его и заочно, а ждать, пока он
+        # сам придёт в суд, город не станет
+        verdict = await apply_pending(db, player)
+        if verdict:
+            player = await db.get_player(player.user_id) or player
+            said = f"{said} {verdict}".strip()
     card = build_card(player, config.bot_token, viewer.user_id)
     if said:
         card["said"] = said
     if visit is not None:
         card["daily"] = daily_payload(visit)
+    # Приглашения в клан показывают всплывающим окном при входе в игру —
+    # значит, приезжают они с карточкой, и только своей: чужие
+    # приглашения не наше дело. Бойцу при клане их не шлют вовсе
+    if player.user_id == viewer.user_id and player.clan is None:
+        knocks = await db.petitions_of_user(player.user_id, Petition.INVITE)
+        clans = {
+            knock.clan_id: await db.clan_by_id(knock.clan_id) for knock in knocks
+        }
+        card["invites"] = invites_payload(
+            knocks,
+            {key: value for key, value in clans.items() if value is not None},
+            config.bot_token,
+        )
+    # Бюллетень приезжает с карточкой: город выбирает мэра, а не ходит
+    # за этим в окно, и первый запрос каждого — как раз этот
+    if player.user_id == viewer.user_id:
+        card["ballot"] = ballot_payload(
+            await election_state(db, player, now_ts())
+        )
     return web.json_response(card)
 
 
@@ -351,7 +552,22 @@ async def _at(request: web.Request, service: Service, own: bool = True):
     # Свести надо до того, как где-то спросят, чем боец платит
     if player.settle_card(now_ts()):
         await request.app[DB_KEY].save_player(player)
+    # Той же дверью списывается платёж по кредиту: будить бота в день
+    # платежа нечем, а приходить в город — это и есть прийти. Спрашиваем
+    # базу только у тех, у кого есть карта: кредит выдают на неё, и у
+    # большинства бойцов её нет вовсе
+    if player.has_card:
+        from bot.credit_service import settle as settle_loan
+
+        await settle_loan(request.app[DB_KEY], player, now_ts())
     require(player, service)
+    # Дверь, в которую вошли, — событие для бармена: часть его заданий в
+    # том и состоит, чтобы дойти и посмотреть. Службы о квестах не знают.
+    # Говорим и услугу, и дом: учат в пяти местах города, а спрашивает
+    # он про университет
+    await notice_visit(
+        request.app[DB_KEY], player, service, player.where(now_ts())
+    )
     return player
 
 
@@ -834,11 +1050,219 @@ async def api_pro(request: web.Request) -> web.Response:
     )
 
 
+async def api_promo(request: web.Request) -> web.Response:
+    """Применить промокод. Что он даёт и действует ли — решает сервер.
+
+    Отказ приходит тем же текстом, каким его увидит игрок: «такого кода
+    нет» и «уже применял» — разные вещи, и путать их не нужно. А вот
+    того, какие коды бывают, страница не знает и знать не должна: код
+    называют снаружи игры, и подобрать его перебором по прилавку нельзя.
+    """
+    body = await _payload(request)
+    try:
+        player = await _own_player(request)
+        code, grant = await redeem_code(
+            request.app[DB_KEY], player, str(body.get("code") or "")
+        )
+    except (InventoryError, ProError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    claimed = await promo_taken(request.app[DB_KEY], player.user_id)
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "magic": build_magic(player, promo_claimed=claimed),
+            "promo": {
+                "code": code.code,
+                "title": grant.offer.tier.title,
+                "term": code.term_text,
+                "days": code.days,
+                "renewed": grant.renewed,
+                "seconds_left": grant.seconds_left(),
+            },
+        }
+    )
+
+
+# Сколько бойцов отдаём поиску за раз. Двадцать — столько, сколько
+# просматривают глазами: длиннее список уже не выбирают, а листают
+SEARCH_LIMIT = 20
+
+
 async def api_club(request: web.Request) -> web.Response:
-    """Список клуба: все записанные бойцы с короткими карточками."""
+    """Список игроков: все записанные, пятьдесят бойцов за раз.
+
+    Номер страницы приходит со страницы, а смещение считает сервер: он
+    же держит и размер страницы. Мусор в номере — первая страница: это
+    не повод отвечать отказом на список клуба.
+
+    `level` режет список до одной ступени, `sort=name` ставит его по
+    алфавиту. Место при этом не рисуется вовсе: место даёт ELO по всему
+    клубу, и «пятый» в алфавитном или отфильтрованном списке означал бы
+    не то, что в нём написано. ELO в строке остаётся — оно свойство
+    бойца, а не порядка строк.
+    """
     viewer = await _viewer(request)
-    players = await request.app[DB_KEY].all_players()
-    return web.json_response(build_club(players, viewer.user_id))
+    db = request.app[DB_KEY]
+    level = max(0, _whole(request.query.get("level"), 0))
+    by_name = request.query.get("sort") == "name"
+    total = await db.count_players(level=level)
+    pages = max(1, -(-total // PAGE))
+    page = min(max(1, _whole(request.query.get("page"), 1)), pages)
+    offset = (page - 1) * PAGE
+    players = await db.rated_players(
+        offset=offset, limit=PAGE, level=level, by_name=by_name
+    )
+    config = request.app[CONFIG_KEY]
+    body = build_club(
+        players, viewer.user_id, config.bot_token,
+        offset=offset, total=total,
+        places=not by_name and not level,
+    )
+    body["level"] = level
+    body["sort"] = "name" if by_name else "rating"
+    body["levels"] = await db.level_spread()
+    return web.json_response(body)
+
+
+async def api_ladder(request: web.Request) -> web.Response:
+    """Рейтинг недели: кто провёл десять боёв и на каком стоит месте.
+
+    Всякий взгляд на рейтинг сперва досчитывает его до «сейчас»:
+    закрывает кончившиеся недели и доплачивает всё, за что ещё не
+    платили. Часов, которые будили бы бота в полдень воскресенья, в
+    клубе нет — и выплата поэтому не ждёт их, а догоняет сама. Сорвись
+    она — экран всё равно откроется: рейтинг показать важнее, чем
+    доплатить именно сейчас, и доплатит следующий взгляд.
+
+    Показывается идущая неделя и считается на ходу: пока она идёт, её
+    рейтинг меняется с каждым боем, и держать его в таблице значило бы
+    иметь второе, всегда немного устаревшее мнение о том же самом.
+    Прошлая неделя приходит отдельной строкой `last` — тем, что боец за
+    неё получил.
+
+    Места считаются по всему рейтингу и только потом от него
+    отрезается страница: страница, считающая места сама, написала бы на
+    второй единицу вместо пятьдесят первого.
+    """
+    viewer = await _viewer(request)
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    now = now_ts()
+    try:
+        await settle_due(db, now)
+    except Exception:  # pragma: no cover - выплата не стоит экрана
+        logger.exception("Недельный рейтинг не досчитался")
+
+    ranked = await live_week(db, now)
+    pages = max(1, -(-len(ranked) // PAGE))
+    page = min(max(1, _whole(request.query.get("page"), 1)), pages)
+    offset = (page - 1) * PAGE
+    shown = ranked[offset:offset + PAGE]
+    players = await db.players_in([one.user_id for _, one in shown])
+
+    body = build_ladder(
+        shown,
+        players,
+        viewer.user_id,
+        config.bot_token,
+        now=now,
+        mine=await my_week(db, viewer.user_id, now),
+        my_place=next(
+            (place for place, one in ranked if one.user_id == viewer.user_id), 0
+        ),
+        offset=offset,
+        total=len(ranked),
+        page_size=PAGE,
+    )
+    body["period"] = week_key(now)
+    # Чем кончилась прошлая неделя: награда приходит сама, и без этой
+    # строки игрок видел бы в кармане лишние кредиты без объяснения
+    body["last"] = build_payout(
+        await db.place_of(week_key(week_opens(now) - 1), viewer.user_id)
+    )
+    return web.json_response(body)
+
+
+# Каталоги, карточки которых бармен просит открыть. Для каждого — чья
+# это услуга, в каком доме её спрашивать и как проверить, что код
+# настоящий. Проверка обязательна: иначе задание закрывалось бы запросом
+# с выдуманным кодом, не показав игроку ни строчки
+SEEN_CATALOGS: dict[str, tuple[Service, str]] = {
+    # Приёмы: школа боевых искусств одна на город
+    "dojo": (Service.DOJO, ""),
+    # Машины: услуга открыта и в полицейском гараже, и в таксопарке, а
+    # каталог с ценами и условиями — только в салоне
+    "cars": (Service.CARS, "car_dealership"),
+}
+
+
+def _seen_has(catalog: str, code: str) -> bool:
+    """Есть ли такой код в этом каталоге."""
+    if catalog == "dojo":
+        from bot.content.abilities import ABILITIES
+
+        return any(one.code == code for one in ABILITIES)
+    if catalog == "cars":
+        from bot.game.cars import CARS
+
+        return any(one.code == code for one in CARS)
+    return False  # pragma: no cover - каталог без проверки не заводится
+
+
+async def api_seen(request: web.Request) -> web.Response:
+    """Боец открыл карточку из каталога — приёма или машины.
+
+    Это не посещение: войти в школу и прочитать условия изучения приёма
+    — разные дела, и у бармена задание про второе. Карточку рисует
+    страница из уже приехавшего каталога, поэтому сама она сказать
+    серверу «я её открыл» не может иначе как этим запросом.
+
+    Запрос поэтому проверяется как всякий другой: боец должен стоять в
+    нужном доме, а код — быть настоящим кодом из каталога. Без второго
+    задание закрывалось бы строкой, набранной наугад.
+    """
+    data = await _payload(request)
+    catalog = str(data.get("catalog") or "")
+    code = str(data.get("code") or "")
+    rule = SEEN_CATALOGS.get(catalog)
+    if rule is None:
+        return web.json_response({"error": "Такого каталога нет."}, status=400)
+    service, place = rule
+    player = await _at(request, service)
+    if place and player.where(now_ts()) != place:
+        return web.json_response(
+            {"error": "Этот каталог смотрят в другом месте."}, status=409
+        )
+    if not _seen_has(catalog, code):
+        return web.json_response({"error": "Такой карточки нет."}, status=404)
+    await notice_seen(request.app[DB_KEY], player, catalog)
+    return web.json_response({"seen": catalog, "code": code})
+
+
+async def api_players(request: web.Request) -> web.Response:
+    """Поиск бойца по прозвищу: часть ника — список совпавших.
+
+    Пустой запрос отдаёт пустой список, а не весь клуб: поиск, который
+    без слова показывает всех, — это уже не поиск, а картотека.
+    """
+    viewer = await _viewer(request)
+    found = await request.app[DB_KEY].search_players(
+        request.query.get("q", ""), limit=SEARCH_LIMIT
+    )
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        build_search(found, viewer.user_id, config.bot_token)
+    )
+
+
+def _whole(text: str | None, fallback: int = 0) -> int:
+    """Целое из строки запроса. Мусор — это `fallback`, а не отказ."""
+    try:
+        return int(str(text))
+    except (TypeError, ValueError):
+        return fallback
 
 
 # ---------- бои ----------
@@ -1127,6 +1551,31 @@ async def api_policy(request: web.Request) -> web.Response:
 # ---------- Vegas Банк ----------
 
 
+def _span(request: web.Request, moment: int) -> tuple[int, int, int]:
+    """Срок выписки из запроса: (дней, с, по) в секундах.
+
+    Три вида запроса: ничего — месяц по умолчанию; `days` — готовый
+    срок, ноль означает «всё время»; `since`/`until` — свой срок, и
+    тогда число дней уже ни при чём.
+    """
+    since = _query_int(request, "since")
+    until = _query_int(request, "until")
+    if since or until:
+        return 0, since, until
+    days = request.query.get("days")
+    if days is None:
+        return STATEMENT_DAYS, moment - STATEMENT_DAYS * 24 * 60 * 60, 0
+    span = max(0, _query_int(request, "days"))
+    return span, (moment - span * 24 * 60 * 60) if span else 0, 0
+
+
+def _query_int(request: web.Request, name: str) -> int:
+    try:
+        return int(request.query.get(name) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 async def _bank_state(request: web.Request, player, said: str = "") -> web.Response:
     """Ответ банка всегда один и тот же: банк целиком плюс карточка.
 
@@ -1134,7 +1583,27 @@ async def _bank_state(request: web.Request, player, said: str = "") -> web.Respo
     экране банка их два кошелька, и разойтись им нельзя ни на кредит.
     """
     config = request.app[CONFIG_KEY]
-    body = build_bank(player, now_ts(), said)
+    db = request.app[DB_KEY]
+    moment = now_ts()
+    # Выписка: за строками надо в базу, и сбор банка туда не ходит
+    days, since, until = _span(request, moment)
+    income, spent = await db.card_turnover(player.user_id, since, until)
+    body = build_bank(
+        player,
+        moment,
+        said,
+        deposits=await db.deposits_of(player.user_id),
+        loan=await db.loan_of(player.user_id),
+        statement=statement_payload(
+            await db.card_log(player.user_id, since, until),
+            days=days,
+            income=income,
+            spent=spent,
+            since=since if (days == 0 and since) else 0,
+            until=until,
+            now=moment,
+        ),
+    )
     body["card"] = build_card(player, config.bot_token, player.user_id)
     return web.json_response(body)
 
@@ -1143,6 +1612,42 @@ async def api_bank(request: web.Request) -> web.Response:
     """Банк: счёт, карта, банкомат и прайс скидок."""
     player = await _at(request, Service.BANK)
     return await _bank_state(request, player)
+
+
+async def _bank_credit(db, player, action: str, data: dict) -> str:
+    """Вклады и кредиты: открыть, снять, взять, погасить.
+
+    Отказ банка — такой же отказ, как «не хватает кредитов», и едет он
+    тем же путём: ловит его та же сеть, что и прочие банковские.
+    """
+    from bot.bank_service import BankError
+    from bot.credit_service import (
+        CreditError,
+        close_deposit,
+        open_deposit,
+        repay,
+        take_loan,
+    )
+
+    moment = now_ts()
+    try:
+        if action == "open_deposit":
+            return await open_deposit(
+                db, player, _int_field(data, "amount"),
+                int(data.get("months", 0) or 0), moment,
+            )
+        if action == "close_deposit":
+            return await close_deposit(
+                db, player, int(data.get("id", 0) or 0), moment
+            )
+        if action == "loan":
+            return await take_loan(
+                db, player, _int_field(data, "amount"),
+                int(data.get("months", 0) or 0), moment,
+            )
+        return await repay(db, player, moment)
+    except CreditError as error:
+        raise BankError(str(error)) from error
 
 
 async def api_bank_action(request: web.Request) -> web.Response:
@@ -1172,6 +1677,8 @@ async def api_bank_action(request: web.Request) -> web.Response:
                 db, player, str(data.get("number") or ""), _int_field(data, "amount")
             )
             said = f"Переведено {move.amount} 💰 бойцу {name}."
+        elif action in ("open_deposit", "close_deposit", "loan", "repay"):
+            said = await _bank_credit(db, player, action, data)
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
     except BankError as error:
@@ -1233,6 +1740,183 @@ async def _hr_state(request: web.Request, player, said: str = "") -> web.Respons
     body = build_hr(player, await vacancies(db, player))
     body["said"] = said
     body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+# ---------- автошкола и участок ----------
+
+
+async def _school_state(
+    request: web.Request, player, said: str = "", attempt: dict | None = None
+) -> web.Response:
+    config = request.app[CONFIG_KEY]
+    body = build_school(player)
+    body["said"] = said
+    # Чем кончился ответ: верен ли он и не кончился ли билет. Это
+    # единственное, что страница узнаёт про ответы, — верного варианта
+    # среди этого нет
+    body["attempt"] = attempt or {}
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_school(request: web.Request) -> web.Response:
+    """Автошкола: курс, обратный отсчёт учёбы и билет."""
+    player = await _at(request, Service.SCHOOL)
+    return await _school_state(request, player)
+
+
+async def api_school_action(request: web.Request) -> web.Response:
+    """Записаться на курс, сесть за билет или ответить на вопрос."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.SCHOOL)
+    attempt: dict | None = None
+    try:
+        if action == "enroll":
+            await school_enroll(db, player)
+            said = (
+                "Ты записан на курс. Три дня на правила — и приходи "
+                "на экзамен."
+            )
+        elif action == "exam":
+            await school_exam(db, player)
+            said = "Билет открыт. Пятнадцать минут пошли."
+        elif action == "answer":
+            done = await school_answer(db, player, int(data.get("option", -1)))
+            attempt = {
+                "right": done.right,
+                "done": done.done,
+                "passed": done.passed,
+                "wrong": done.wrong,
+                "step": done.step,
+            }
+            if done.done and done.passed:
+                said = (
+                    f"Экзамен сдан: ошибок {done.wrong}. "
+                    "За правами — в полицейский участок."
+                )
+            elif done.done:
+                said = "Две ошибки — экзамен не сдан. Приходи на пересдачу."
+            else:
+                said = ""
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except SchoolError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _school_state(request, fresh, said, attempt)
+
+
+async def _police_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    # Неделю участка сводит тот, кто пришёл смотреть: часов у клуба нет
+    await police_settle(db, now_ts())
+    body = build_police(player)
+    body.update(await build_police_board(db, player, now_ts()))
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_police(request: web.Request) -> web.Response:
+    """Участок: бланк прав, дежурная часть и свои дела."""
+    player = await _at(request, Service.POLICE)
+    return await _police_state(request, player)
+
+
+async def api_police_action(request: web.Request) -> web.Response:
+    """Дела участка: заявление о нападении и возврат своих денег."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.POLICE)
+    try:
+        if action == "report":
+            said = await police_report(db, player, _int_field(data, "case"))
+        elif action == "collect":
+            said = await police_collect(db, player)
+        elif action == "hire":
+            # В полицию берут в полиции: тест агентства заменила академия
+            place = await hire_at_house(db, player, str(data.get("job") or ""))
+            said = f"Ты принят: {place.title}. Форму получишь на месте."
+        elif action == "bid":
+            said = await _bid_said(db, player, str(data.get("job") or ""))
+        elif action == "unbid":
+            seat = await withdraw_bid(db, player, str(data.get("job") or ""))
+            said = f"Заявка отозвана: {seat.title}."
+        elif action == "fine":
+            said = await fine_driver(db, player, _int_field(data, "car"))
+        elif action == "deliver":
+            said = await deliver_car(db, player, _int_field(data, "car"))
+        elif action == "take":
+            said = await take_from_thief(db, player, _int_field(data, "car"))
+        elif action == "claim":
+            said = await claim_car(db, player, _int_field(data, "car"))
+        elif action == "file_theft":
+            said = await file_theft(db, player, _int_field(data, "car"))
+        elif action in ("park", "unpark"):
+            # Стоянка у участка: городская, безопасная и платная. Берут
+            # при постановке; забрать своё можно когда угодно и даром
+            from bot.car_service import CarError, pick_up
+            from bot.police_service import park_at_station
+
+            code = str(data.get("car") or "")
+            try:
+                said = (
+                    await park_at_station(db, player, code)
+                    if action == "park"
+                    else await pick_up(db, player, code)
+                )
+            except CarError as error:
+                return web.json_response({"error": str(error)}, status=409)
+        elif action == "take_kit":
+            said = await duty_take(db, player, str(data.get("item") or ""))
+        elif action == "hand_kit":
+            given = await duty_hand_back(db, player, str(data.get("item") or ""))
+            said = (
+                "Форма сдана на склад." if given
+                else "Сдавать нечего: на руках ничего нет."
+            )
+        elif action == "stash":
+            said = await office_stash(db, player, _int_field(data, "item_id"))
+        elif action == "unstash":
+            said = await office_take(db, player, _int_field(data, "stored"))
+        elif action == "split":
+            # Как делить бонусный пулл — решает начальник, заранее и
+            # один раз: в понедельник деньги уходят людям сами
+            said = await police_split(db, player, str(data.get("split") or ""))
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except (DutyError, PoliceError, WorkError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+    fresh = await db.get_player(player.user_id) or player
+    return await _police_state(request, fresh, said)
+
+
+async def api_licence(request: web.Request) -> web.Response:
+    """Получить права: бланк выдают в участке и один раз."""
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.POLICE)
+    try:
+        await school_licence(db, player)
+    except SchoolError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    config = request.app[CONFIG_KEY]
+    fresh = await db.get_player(player.user_id) or player
+    body = build_police(fresh)
+    body["said"] = "Права выданы. Бланк лежит в документах."
+    body["card"] = build_card(fresh, config.bot_token, fresh.user_id)
     return web.json_response(body)
 
 
@@ -1304,7 +1988,7 @@ async def api_hr_action(request: web.Request) -> web.Response:
 async def api_work(request: web.Request) -> web.Response:
     """Рабочее место: смена, часы за сутки и за неделю."""
     player, said = await _worker(request, Service.WORK)
-    body = build_work(player)
+    body = await build_work(request.app[DB_KEY], player)
     body["said"] = said
     return web.json_response(body)
 
@@ -1323,6 +2007,16 @@ async def api_work_action(request: web.Request) -> web.Response:
                 "Из дома не выйти, пока она не кончится."
             )
             del until
+        elif action == "hire":
+            # В банк, в больницу, в часть и в суд берут на месте: тест
+            # агентства тут заменил диплом
+            place = await hire_at_house(db, player, str(data.get("job") or ""))
+            said = f"Ты принят: {place.title}."
+        elif action == "bid":
+            said = await _bid_said(db, player, str(data.get("job") or ""))
+        elif action == "unbid":
+            seat = await withdraw_bid(db, player, str(data.get("job") or ""))
+            said = f"Заявка отозвана: {seat.title}."
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
     except WorkError as error:
@@ -1330,7 +2024,7 @@ async def api_work_action(request: web.Request) -> web.Response:
 
     fresh = await db.get_player(player.user_id) or player
     config = request.app[CONFIG_KEY]
-    body = build_work(fresh)
+    body = await build_work(db, fresh)
     body["said"] = said
     body["card"] = build_card(fresh, config.bot_token, fresh.user_id)
     return web.json_response(body)
@@ -1391,6 +2085,12 @@ async def api_trade_action(request: web.Request) -> web.Response:
     except TradeError as error:
         return web.json_response({"error": str(error)}, status=409)
 
+    # Непустая своя часть стола — событие для бармена: одно из его
+    # заданий ровно в том и состоит, чтобы занять стол и что-нибудь на
+    # него положить. Контрагент и сам обмен для этого не нужны
+    mine = trades.trade_of(player.user_id)
+    if mine is not None and not mine.side(player.user_id).empty:
+        await notice(request.app[DB_KEY], player, QuestGoal.TRADE.value)
     # Кредиты и вещи могли только что переехать: перечитываем бойца, чтобы
     # на столе и в рюкзаке было то же, что в базе
     fresh = await request.app[DB_KEY].get_player(player.user_id)
@@ -1400,23 +2100,53 @@ async def api_trade_action(request: web.Request) -> web.Response:
 # ---------- рейды ----------
 
 
+def _raid_kind(player, raids) -> RaidKind:
+    """Какой рейд собирают для этого бойца.
+
+    Сначала тот, в котором он уже стоит: записался в казино, ушёл гулять
+    — панель всё равно про казино. Иначе тот, что идёт в доме, где он
+    сейчас, а издалека — подвал: про него и рассказывает экран, пока
+    боец никуда не пришёл.
+    """
+    if raids is not None:
+        mine = (
+            raids.raid_of_user(player.user_id)
+            or raids.result_of_user(player.user_id)
+            or raids.lobby_of_user(player.user_id)
+        )
+        if mine is not None:
+            return mine.kind
+    return kind_at(player.where()) or CELLAR_RAID
+
+
 async def _raid_state(request: web.Request, player) -> dict:
-    """Состояние подвала плюс то, на каких условиях туда пустят."""
+    """Состояние рейда плюс то, на каких условиях туда пустят."""
     raids = request.app.get(RAIDS_KEY)
-    body = build_raid(player, raids, request.app[CONFIG_KEY].raid_lobby_timeout)
-    body["gate"] = await gate_payload(player, raids)
-    # Подвал открывается из казино. Состояние отдаём и издалека: по нему
-    # видно, идёт ли рейд, за которым боец записан
+    kind = _raid_kind(player, raids)
+    body = build_raid(
+        player, raids, request.app[CONFIG_KEY].raid_lobby_timeout, kind
+    )
+    body["gate"] = await gate_payload(player, raids, kind)
+    # Рейд открывается из своего дома. Состояние отдаём и издалека: по
+    # нему видно, идёт ли рейд, за который боец записан
     here = get_location(player.where())
     body["here"] = here is not None and here.allows(Service.RAID)
-    body["where"] = (where_to(Service.RAID) or here).title
+    body["where"] = (get_location(kind.house) or here).title
     return body
 
 
 async def api_raid(request: web.Request) -> web.Response:
-    """Состояние раздела «Рейд» целиком: сбор, идущая волна или итог."""
+    """Состояние раздела «Рейд» целиком: сбор, идущая волна или итог.
+
+    Условия участия приезжают этим же ответом, поэтому успешный запрос
+    экрана — это и есть знакомство с рейдом, о котором спрашивает
+    бармен. Нажатие на дом на карте им не считается: там ещё не видно
+    ни входа, ни наград.
+    """
     player = await _fighter(request)
-    return web.json_response(await _raid_state(request, player))
+    state = await _raid_state(request, player)
+    await notice_visit(request.app[DB_KEY], player, Service.RAID)
+    return web.json_response(state)
 
 
 async def api_raid_action(request: web.Request) -> web.Response:
@@ -1433,7 +2163,12 @@ async def api_raid_action(request: web.Request) -> web.Response:
         # покупают тут же, в один шаг с согласием
         buy = bool(data.get("buy"))
         if action == "open":
-            await raids.open_raid(None, None, player, buy=buy)
+            # Какой рейд собирают, решает дом: в казино спускаются к
+            # боссу, на стадионе встречают фанатский сектор
+            kind = kind_at(player.where())
+            if kind is None:  # pragma: no cover - ручку сторожит Service.RAID
+                raise RaidError("Здесь рейдов не бывает.")
+            await raids.open_raid(None, None, player, kind, buy=buy)
         elif action == "join":
             await raids.join(_int_field(data, "lobby_id"), player, buy=buy)
         elif action == "leave":
@@ -1492,7 +2227,8 @@ async def api_battle(request: web.Request) -> web.Response:
 
 async def api_battle_action(request: web.Request) -> web.Response:
     """Действие в групповом бою: собрать, записаться, выйти, ударить."""
-    from bot.game.battle import BattleKind
+    from bot.game.battle import BattleKind, level_range, wait_seconds
+    from bot.game.modes import FightMode
 
     # Отряд собирают там же, где дерутся один на один
     player = await _at(request, Service.FIGHT, own=False)
@@ -1504,9 +2240,16 @@ async def api_battle_action(request: web.Request) -> web.Response:
     action = str(data.get("action", ""))
     try:
         if action == "open":
+            # Четыре вопроса созывающему: чем дерутся, сколько их,
+            # какого уровня зовут и сколько ждут состав
             kind = BattleKind(str(data.get("kind") or BattleKind.TEAM.value))
+            mode = FightMode(str(data.get("mode") or FightMode.ARMED.value))
+            levels = level_range(str(data.get("levels") or ""), player.level)
             await battles.open_lobby(
-                None, None, player, kind, _int_field(data, "size")
+                None, None, player, kind, _int_field(data, "size"),
+                mode=mode,
+                levels=levels,
+                wait=wait_seconds(int(data.get("wait") or 0)),
             )
         elif action == "join":
             # Сторона важна только в командном бою: в мясорубке её нет
@@ -1615,12 +2358,12 @@ async def api_looks(request: web.Request) -> web.Response:
 
 
 async def api_look(request: web.Request) -> web.Response:
-    """Сменить образ. Платный купится, если кредитов хватает."""
+    """Сменить образ на свой. Торговли здесь нет — она в городе."""
     data = await _payload(request)
     try:
         player = await _own_player(request)
-        choice = await choose_look(
-            request.app[DB_KEY], player, str(data.get("code") or "")
+        choice = await wear_look(
+            request.app[DB_KEY], player, str(data.get("code") or ""), now_ts()
         )
     except (InventoryError, LookError) as error:
         return web.json_response({"error": str(error)}, status=409)
@@ -1639,6 +2382,60 @@ async def api_look(request: web.Request) -> web.Response:
             },
         }
     )
+
+
+async def _barber_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    from bot.webapp.looks import build_barber
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_barber(db, player, now_ts())
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_barber(request: web.Request) -> web.Response:
+    """Барбершоп и салон красоты: полка образов этого дома."""
+    player = await _at(request, Service.LOOKS)
+    return await _barber_state(request, player)
+
+
+async def api_barber_action(request: web.Request) -> web.Response:
+    """Купить образ в этом доме — и уйти с новым лицом."""
+    from bot.looks_service import buy_look
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.LOOKS)
+    try:
+        if action == "buy":
+            choice = await buy_look(
+                db,
+                player,
+                str(data.get("code") or ""),
+                player.where(now_ts()),
+                now_ts(),
+            )
+            said = (
+                f"«{choice.look.title}» теперь твой навсегда и уже на тебе. "
+                f"Осталось {choice.credits} 💰."
+            )
+        else:
+            return web.json_response(
+                {"error": "Непонятное действие."}, status=400
+            )
+    except LookError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _barber_state(request, fresh, said)
 
 
 async def api_topup(request: web.Request) -> web.Response:
@@ -1675,6 +2472,1500 @@ async def api_invoice(request: web.Request) -> web.Response:
             "link": link,
             "code": getattr(goods, "code", kind),
             "stars": goods.stars,
+        }
+    )
+
+
+# ---------- мафия: особняк и своя семья ----------
+
+
+async def _opened_clan(db, config, player, clan_id: int) -> dict:
+    """Открытый в особняке клан. Пусто — открыт список, а не клан.
+
+    Чужой клан открывается одним составом: имущество и заявки — дела
+    семьи, и в ответ они кладутся только своему. Прятать их на странице
+    было бы не прятать: что уехало в браузер, то уже видно.
+    """
+    if not clan_id:
+        return {}
+    roster = await db.roster_of(clan_id)
+    if roster is None:
+        return {}
+    standing = player.clan
+    mine = bool(standing and standing.clan.id == clan_id)
+    requests: list = []
+    invites: list = []
+    estate: dict = {}
+    if mine:
+        if standing is not None and standing.can_admin:
+            requests = await db.petitions_of_clan(clan_id, Petition.REQUEST)
+            invites = await db.petitions_of_clan(clan_id, Petition.INVITE)
+        # Гараж, лицензии и недельная цель — туда же, на «Имущество»:
+        # это дела дома семьи, и смотрят их там же, где сейф
+        week = week_of(now_ts())
+        attacks, paid = await db.clan_week(clan_id, week)
+        from bot.car_service import mine as my_cars, parked_at
+        from bot.game.cars import IN_CLAN
+
+        estate = build_estate(
+            player,
+            await db.clan_items(clan_id),
+            cars=await parked_at(db, IN_CLAN, clan_id, player),
+            keys=await my_cars(db, player),
+            licences=await _licences_of(db, player.user_id),
+            attacks=attacks,
+            paid=paid,
+        )
+    return build_clan_page(
+        player, roster, requests, invites, estate, config.bot_token
+    )
+
+
+async def _clan_bonus(db, player) -> dict:
+    """Бонусный пулл семьи этого бойца. Пусто — он сам по себе."""
+    from bot.game.turf import owner_of_clan
+    from bot.webapp.bonus import build_bonus
+
+    if player.clan is None:
+        return {}
+    return await build_bonus(db, owner_of_clan(player.clan.clan.id), now_ts())
+
+
+async def _licences_of(db, user_id: int) -> dict:
+    """Лицензии бойца — для страницы семьи. Срока у них нет."""
+    from bot.game.robbery import ATTACKS_PER_LICENCE, LICENCE_PRICE
+
+    left, bought = await db.licences(user_id)
+    return {
+        "left": left,
+        "bought": bought,
+        "pack": ATTACKS_PER_LICENCE,
+        "price": LICENCE_PRICE,
+    }
+
+
+async def _mansion_state(
+    request: web.Request, player, said: str = "", clan_id: int = 0
+) -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    clans = await db.all_clans()
+    knocks = await db.petitions_of_user(player.user_id, Petition.REQUEST)
+    body = build_mansion(
+        player,
+        clans,
+        knocks,
+        config.bot_token,
+        opened=await _opened_clan(db, config, player, clan_id),
+    )
+    # Тот же счёт недели, что и во вкладке семьи: особняк — дом семьи,
+    # и смотреть на общее дело приходят сюда же
+    body["bonus"] = await _clan_bonus(db, player)
+    body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_mansion(request: web.Request) -> web.Response:
+    """Особняк мафии: список кланов, а по `clan` — и открытый клан."""
+    player = await _at(request, Service.MAFIA)
+    return await _mansion_state(
+        request, player, clan_id=_query_int(request, "clan")
+    )
+
+
+async def api_mansion_action(request: web.Request) -> web.Response:
+    """Дела особняка: завести клан, постучаться, уйти, сейф и хранилище.
+
+    Сейф и полки — тоже дела особняка: общий карман лежит в доме семьи, и
+    дойти до него надо ногами. Чины и заявки решают из карточки, и они
+    остались на `/api/clan`.
+    """
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.MAFIA)
+    try:
+        if action == "found":
+            clan = await clan_found(
+                db,
+                player,
+                str(data.get("name") or ""),
+                str(data.get("sign") or ""),
+            )
+            said = f"Клан «{clan.name}» заведён. Ты — Дон."
+        elif action == "rename":
+            said = await clan_rename(db, player, str(data.get("name") or ""))
+        elif action == "apply":
+            said = await clan_apply(db, player, int(data.get("clan", 0)))
+        elif action == "withdraw":
+            said = await clan_withdraw(db, player, int(data.get("clan", 0)))
+        elif action == "leave":
+            said = await clan_leave(db, player)
+        elif action == "deposit":
+            said = await clan_deposit(db, player, int(data.get("amount", 0)))
+        elif action == "cash":
+            said = await clan_cash(db, player, int(data.get("amount", 0)))
+        elif action == "stash":
+            said = await clan_stash(db, player, int(data.get("item", 0)))
+        elif action == "take":
+            said = await clan_take(db, player, int(data.get("item", 0)))
+        elif action in ("park", "unpark"):
+            said = await _clan_parking(db, player, action, data)
+        elif action == "licence":
+            # Лицензию на ограбление берут здесь и только свои: это
+            # дело семьи, хоть платит за неё боец из своего кармана
+            service = request.app.get(ROB_KEY)
+            if service is None:  # pragma: no cover - служба заводится сама
+                raise ClanError("Сейчас не до этого.")
+            count = int(data.get("count", 1) or 1)
+            left = await service.buy(player, count)
+            said = (
+                f"Лицензий выписано: {count}. Нападений на руках: {left}."
+            )
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except RobberyError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except ClanError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+    fresh = await db.get_player(player.user_id) or player
+    # Какой клан был открыт, тот и остаётся: страница присылает его сама,
+    # а ушедший из семьи возвращается к списку
+    opened = int(data.get("open", 0) or 0)
+    if action == "leave":
+        opened = 0
+    return await _mansion_state(request, fresh, said, clan_id=opened)
+
+
+async def _family(db, player) -> tuple:
+    """Состав семьи, заявки и приглашения — то, из чего собран «Состав».
+
+    Заявки и приглашения спрашиваем только у старших: мафиози эти списки
+    не решает, и тащить из базы чужие ники ради него незачем.
+    """
+    if player.clan is None:
+        return None, [], []
+    clan_id = player.clan.clan.id
+    roster = await db.roster_of(clan_id)
+    if not player.clan.can_admin:
+        return roster, [], []
+    return (
+        roster,
+        await db.petitions_of_clan(clan_id, Petition.REQUEST),
+        await db.petitions_of_clan(clan_id, Petition.INVITE),
+    )
+
+
+async def _clan_state(request: web.Request, player, said: str = "") -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = build_clan(player, *await _family(db, player), config.bot_token)
+    # Бонусный пулл семьи: общий счёт недели видит каждый свой
+    body["bonus"] = await _clan_bonus(db, player)
+    body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_clan(request: web.Request) -> web.Response:
+    """Вкладка «Клан»: кто в семье, кто стучится и кого позвали.
+
+    Места здесь нет нарочно: вкладка у бойца с собой, и бежать ради
+    заявки через весь город в особняк незачем.
+    """
+    player = await _own_player(request)
+    return await _clan_state(request, player)
+
+
+async def api_clan_action(request: web.Request) -> web.Response:
+    """Дела семьи: заявки, приглашения, чины и передача дел."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _own_player(request)
+    try:
+        if action == "approve":
+            said = await clan_approve(db, player, int(data.get("user", 0)))
+        elif action == "decline":
+            said = await clan_decline(db, player, int(data.get("user", 0)))
+        elif action == "invite":
+            said = await clan_invite(db, player, str(data.get("nickname") or ""))
+        elif action == "expel":
+            said = await clan_expel(db, player, int(data.get("user", 0)))
+        elif action == "promote":
+            said = await clan_promote(db, player, int(data.get("user", 0)))
+        elif action == "demote":
+            said = await clan_demote(db, player, int(data.get("user", 0)))
+        elif action == "handover":
+            said = await clan_handover(
+                db, player, int(data.get("user", 0)), str(data.get("keep") or "capo")
+            )
+        elif action == "accept":
+            said = await clan_accept(db, player, int(data.get("clan", 0)))
+        elif action == "refuse":
+            said = await clan_refuse(db, player, int(data.get("clan", 0)))
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except ClanError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+    fresh = await db.get_player(player.user_id) or player
+    return await _clan_state(request, fresh, said)
+
+
+# ---------- жильё: квартира, сейф и кладовая ----------
+
+
+async def _house_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    house = player.where(now_ts())
+    # Просрочку сводим на входе: неделя прошла — квартира освобождается, и
+    # в списке она должна стоять свободной уже сейчас, а не через заход
+    await flat_sweep(db, player, now_ts())
+    items = (
+        await db.flat_items(player.flat.id) if player.flat is not None else []
+    )
+    from bot.car_service import mine as my_cars, parked_at
+    from bot.game.cars import IN_FLAT
+
+    lease = player.flat
+    parking = (
+        await parked_at(db, IN_FLAT, lease.id, player)
+        if lease is not None and lease.house == house
+        else []
+    )
+    body = build_house(
+        player, house, await db.leases_in(house), items,
+        parking=parking, keys=await my_cars(db, player),
+    )
+    body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_house_flats(request: web.Request) -> web.Response:
+    """Жилой дом: подъезд, своя квартира, сейф и кладовая."""
+    player = await _at(request, Service.ESTATE)
+    return await _house_state(request, player)
+
+
+async def _clan_parking(db, player, action: str, data: dict) -> str:
+    """Парковка особняка: оставить машину или уехать на любой из стоящих.
+
+    Гараж семьи общий: ставят все свои и берут все свои, чья бы машина
+    ни стояла. Чин тут ничего не решает — ни Дона, ни приближённых
+    парковка не спрашивает.
+    """
+    from bot.car_service import CarError, leave, take_away
+    from bot.game.cars import IN_CLAN
+
+    standing = player.clan
+    if standing is None:
+        raise ClanError("Парковка особняка — для своих. Вступи в семью.")
+    try:
+        if action == "park":
+            return await leave(
+                db, player, str(data.get("car") or ""),
+                IN_CLAN, standing.clan.id, now_ts(),
+            )
+        return await take_away(
+            db, player, int(data.get("id", 0)),
+            IN_CLAN, standing.clan.id, now_ts(),
+        )
+    except CarError as error:
+        raise ClanError(str(error)) from error
+
+
+async def api_house_action(request: web.Request) -> web.Response:
+    """Дела жильца: снять, продлить, выселиться, сейф и кладовая."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.ESTATE)
+    try:
+        if action == "rent":
+            said = await flat_rent(db, player, int(data.get("flat", 0)))
+        elif action == "extend":
+            said = await flat_extend(db, player)
+        elif action == "leave":
+            said = await flat_move_out(db, player)
+        elif action == "deposit":
+            said = await flat_deposit(db, player, int(data.get("amount", 0)))
+        elif action == "cash":
+            said = await flat_withdraw(db, player, int(data.get("amount", 0)))
+        elif action == "stash":
+            said = await flat_stash(db, player, int(data.get("item", 0)))
+        elif action == "take":
+            said = await flat_take(db, player, int(data.get("item", 0)))
+        elif action in ("park", "unpark"):
+            said = await _flat_parking(db, player, action, data)
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except EstateError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+    fresh = await db.get_player(player.user_id) or player
+    return await _house_state(request, fresh, said)
+
+
+async def _flat_parking(db, player, action: str, data: dict) -> str:
+    """Место при квартире: оставить машину или забрать её.
+
+    Место одно и только у своего жилья: ставить машину во дворе чужого
+    дома незачем, а неоплаченная квартира заперта вся — вместе с ним.
+    """
+    from bot.car_service import CarError, leave, pick_up
+    from bot.game.cars import IN_FLAT
+
+    lease = player.flat
+    moment = now_ts()
+    if lease is None or lease.house != player.where(moment):
+        raise EstateError("Место под машину есть у своей квартиры, а не у этой.")
+    if lease.locked(moment):
+        raise EstateError("Срок квартиры вышел: сперва оплати, потом ставь.")
+    code = str(data.get("car") or "")
+    try:
+        if action == "park":
+            return await leave(db, player, code, IN_FLAT, lease.id, moment)
+        return await pick_up(db, player, code, moment)
+    except CarError as error:
+        raise EstateError(str(error)) from error
+
+
+# ---------- почта: посылки между бойцами ----------
+
+
+async def _post_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    # Просрочку сводим на входе: посылка с вышедшим сроком должна уже
+    # лежать развёрнутой, а не ждать следующего захода
+    await parcel_sweep(db, now_ts())
+    body = build_post(
+        player,
+        await db.parcels_for(player.user_id),
+        await db.parcels_from(player.user_id),
+    )
+    body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_post(request: web.Request) -> web.Response:
+    """Почта: что отправить и что тебя ждёт."""
+    player = await _at(request, Service.POST)
+    return await _post_state(request, player)
+
+
+async def api_post_action(request: web.Request) -> web.Response:
+    """Отправить посылку, получить её или отказаться."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.POST)
+    try:
+        if action == "send":
+            said = await parcel_send(
+                db,
+                player,
+                int(data.get("item", 0)),
+                str(data.get("nickname") or ""),
+                int(data.get("price", 0)),
+                str(data.get("term") or ""),
+            )
+        elif action == "take":
+            said = await parcel_collect(db, player, int(data.get("parcel", 0)))
+        elif action == "refuse":
+            said = await parcel_refuse(db, player, int(data.get("parcel", 0)))
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except PostError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+    fresh = await db.get_player(player.user_id) or player
+    return await _post_state(request, fresh, said)
+
+
+# ---------- выборы мэра ----------
+
+
+async def _elections_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    moment = now_ts()
+    state = await election_state(db, player, moment)
+    body = build_elections(player, state, moment, said)
+    if body["is_mayor"]:
+        body["seats"] = await seats_payload(db, player, moment)
+    body["ballot"] = ballot_payload(state)
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def _arena_state(request: web.Request, player, said: str = "") -> web.Response:
+    from bot.webapp.arena import build_arena
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_arena(db, player, request.app.get(DUELS_KEY), now_ts())
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_arena(request: web.Request) -> web.Response:
+    """Турнирная арена: расписание, призовой фонд и сетка плей-офф."""
+    player = await _at(request, Service.ARENA)
+    return await _arena_state(request, player)
+
+
+async def api_arena_action(request: web.Request) -> web.Response:
+    """Дела арены: записаться в турнир и выйти на свой бой."""
+    from bot.arena_service import ArenaError, confirm as arena_confirm, sign_up
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.ARENA)
+    try:
+        if action == "join":
+            said = await sign_up(db, player, now_ts())
+        elif action == "ready":
+            said = await arena_confirm(
+                db, request.app.get(DUELS_KEY), player, now_ts()
+            )
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except ArenaError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _arena_state(request, fresh, said)
+
+
+async def _cars_state(request: web.Request, player, said: str = "") -> web.Response:
+    from bot.webapp.cars import build_cars
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_cars(db, player, now_ts())
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_used_cars_action(request: web.Request) -> web.Response:
+    """Авторынок: выставить свою машину, снять с продажи и купить чужую.
+
+    Ручка своя, а не общая с салоном: там торгуют с городом, здесь — с
+    другим бойцом, и отказы у них разные.
+    """
+    from bot.used_cars_service import (
+        UsedCarError,
+        buy_car,
+        sell_car,
+        withdraw_car,
+    )
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.USED_CARS)
+    moment = now_ts()
+    try:
+        if action == "sell":
+            await sell_car(
+                db, player, str(data.get("code") or ""),
+                _int_field(data, "price"), moment,
+            )
+            said = "Машина выставлена на рынок."
+        elif action == "withdraw":
+            title = await withdraw_car(
+                db, player, int(data.get("id", 0) or 0), moment
+            )
+            said = f"«{title}» снята с продажи и снова при тебе."
+        elif action == "buy":
+            deal = await buy_car(
+                db, player, int(data.get("id", 0) or 0), moment
+            )
+            said = (
+                f"«{deal['title']}» куплена за {deal['price']} 💰. "
+                f"Продавцу ушло {deal['earned']} 💰, рынку {deal['fee']} 💰."
+            )
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except UsedCarError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _cars_state(request, fresh, said)
+
+
+async def api_cars(request: web.Request) -> web.Response:
+    """Машины: витрина салона, гараж службы или рынок — где боец стоит.
+
+    Услуг у экрана две: салон с гаражами (`CARS`) и авторынок
+    (`USED_CARS`). Экран один на обе — машина везде рисуется одинаково,
+    — а дверь спрашиваем ту, что открыта в этом доме: иначе рынок
+    отвечал бы «иди в салон», стоя на самом рынке.
+    """
+    player = await _own_player(request)
+    place = get_location(player.where(now_ts()))
+    service = (
+        Service.USED_CARS
+        if place and place.allows(Service.USED_CARS)
+        else Service.CARS
+    )
+    player = await _at(request, service)
+    return await _cars_state(request, player)
+
+
+async def api_cars_action(request: web.Request) -> web.Response:
+    """Дела с машинами: купить, снять, взять в гараже и сдать.
+
+    За руль садятся не здесь: машина надевается в карточке, и ручка у
+    этого своя — в салон за этим ходить не надо.
+    """
+    from bot.car_service import CarError, buy, hand_over, rent, take
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    code = str(data.get("code") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.CARS)
+    try:
+        if action == "buy":
+            said = await buy(db, player, code, now_ts())
+        elif action == "rent":
+            said = await rent(
+                db, player, code, str(data.get("span") or "day"), now_ts()
+            )
+        elif action == "take":
+            said = await take(db, player, code, now_ts())
+        elif action == "give":
+            said = await hand_over(db, player, code, now_ts())
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except CarError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _cars_state(request, fresh, said)
+
+
+async def api_wheel(request: web.Request) -> web.Response:
+    """Сесть за руль и выйти из машины.
+
+    Места тут нет нарочно: машину надевают в карточке, как вещь, —
+    значит, откуда угодно. Ключи на руках и права в кармане — всё,
+    что для этого нужно, и оба проверяет служба.
+    """
+    from bot.car_service import (
+        CarError,
+        leave_here,
+        park,
+        pick_here,
+        wheel,
+    )
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _own_player(request)
+    if player.arrive():
+        await db.save_player(player)
+    try:
+        if action == "wheel":
+            said = await wheel(db, player, str(data.get("code") or ""), now_ts())
+        elif action == "park":
+            said = await park(db, player, now_ts())
+        elif action == "leave":
+            # Оставить машину у того здания, где боец стоит: это не
+            # парковка, а улица, и видно её всем, кто сюда придёт
+            said = await leave_here(
+                db, player, str(data.get("code") or ""), now_ts()
+            )
+        elif action == "pick":
+            said = await pick_here(db, player, _int_field(data, "car"), now_ts())
+        elif action == "steal":
+            # Брошенную у здания уводят оттуда же: улица — не стоянка
+            from bot.car_service import steal
+
+            said = await steal(db, player, _int_field(data, "car"), now_ts())
+        elif action == "deliver":
+            # Патруль увозит брошенную разыскиваемую машину в участок.
+            # Делает это он на месте, у того же крыльца: в участке
+            # кнопки возврата нет, есть только адрес
+            from bot.police_service import PoliceError, deliver
+
+            try:
+                said = await deliver(
+                    db, player, _int_field(data, "car"), now_ts()
+                )
+            except PoliceError as error:
+                return web.json_response({"error": str(error)}, status=409)
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except CarError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await db.get_player(player.user_id) or player
+    config = request.app[CONFIG_KEY]
+    return web.json_response({
+        "said": said,
+        "card": build_card(fresh, config.bot_token, fresh.user_id),
+        **await _keys(db, fresh),
+    })
+
+
+async def _bid_said(db, player, code: str) -> str:
+    """Заявка на кресло — и ответ о том, что из неё вышло.
+
+    Городской мэр решает в тот же миг, а живой — когда захочет. Писать
+    бойцу «назначает мэр» после того, как его уже посадили, значило бы
+    спорить с самим собой.
+    """
+    seat = await bid_for_post(db, player, code)
+    fresh = await db.get_player(player.user_id)
+    if fresh is not None and fresh.job_code == code:
+        return (
+            f"Кресло твоё: {seat.title}, {fresh.job_salary} 💰 в неделю. "
+            "Мэра в городе нет, и назначила тебя управа — по стажу."
+        )
+    return (
+        f"Заявка подана: {seat.title}. Назначает мэр — "
+        "он и назовёт жалованье."
+    )
+
+
+async def api_keys(request: web.Request) -> web.Response:
+    """Свои ключи: что у бойца есть и что под ним сейчас.
+
+    Ручка карточки, а не дома: ключи при бойце, и смотрят их там же,
+    где надевают, — на экране персонажа.
+    """
+    db = request.app[DB_KEY]
+    player = await _own_player(request)
+    if player.arrive():
+        await db.save_player(player)
+    return web.json_response(await _keys(db, player))
+
+
+async def _keys(db, player) -> dict:
+    """Ключи и потолок: машин у бойца одна, с подпиской три.
+
+    Ключи — только то, что при бойце: оставленная на парковке машина в
+    карточке не висит, за ней идут в гараж, а брошенная у здания — на
+    карту. Потолок считает их же.
+    """
+    from bot.car_service import at_hand
+    from bot.game.cars import cars_allowed
+
+    moment = now_ts()
+    return {
+        "keys": await at_hand(db, player, moment),
+        "limit": cars_allowed(player.tier_rank(moment)),
+    }
+
+
+async def _dorm_state(request: web.Request, player, said: str = "") -> web.Response:
+    from bot.webapp.dorm import build_dorm
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_dorm(db, player, now_ts())
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_dorm(request: web.Request) -> web.Response:
+    """Общежитие: своя комната, её полки и сейф."""
+    player = await _at(request, Service.DORM)
+    return await _dorm_state(request, player)
+
+
+async def api_dorm_action(request: web.Request) -> web.Response:
+    """Дела студента: получить комнату, сейф, полки и выезд."""
+    from bot.dorm_service import (
+        DormError,
+        check_in,
+        collect,
+        deposit as dorm_deposit,
+        stash as dorm_stash,
+        take as dorm_take,
+        withdraw as dorm_withdraw,
+    )
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.DORM)
+    try:
+        if action == "room":
+            said = await check_in(db, player, now_ts())
+        elif action == "deposit":
+            said = await dorm_deposit(db, player, int(data.get("amount", 0)))
+        elif action == "cash":
+            said = await dorm_withdraw(db, player, int(data.get("amount", 0)))
+        elif action == "stash":
+            said = await dorm_stash(db, player, int(data.get("item", 0)))
+        elif action == "take":
+            said = await dorm_take(db, player, int(data.get("item", 0)))
+        elif action == "collect":
+            said = await collect(db, player, now_ts())
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except DormError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _dorm_state(request, fresh, said)
+
+
+async def _charge_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    from bot.webapp.charging import build_charge
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_charge(db, player, now_ts())
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_charge(request: web.Request) -> web.Response:
+    """АЗС: три колонки города и свои машины при них."""
+    player = await _at(request, Service.CHARGE)
+    return await _charge_state(request, player)
+
+
+async def api_charge_action(request: web.Request) -> web.Response:
+    """Дела у колонки: поставить машину и забрать её заряженной."""
+    from bot.charge_service import ChargeError, collect, plug
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.CHARGE)
+    try:
+        if action == "plug":
+            said = await plug(
+                db,
+                player,
+                str(data.get("code") or ""),
+                int(data.get("slot", 0)),
+                int(data.get("percent", 0)),
+                now_ts(),
+            )
+        elif action == "collect":
+            said = await collect(
+                db, player, int(data.get("slot", 0)), now_ts()
+            )
+        else:
+            return web.json_response(
+                {"error": "Непонятное действие."}, status=400
+            )
+    except ChargeError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _charge_state(request, fresh, said)
+
+
+async def _wash_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    from bot.webapp.wash import build_wash
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_wash(db, player, now_ts())
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_wash(request: web.Request) -> web.Response:
+    """Автомойка: свои машины и их номера."""
+    player = await _at(request, Service.WASH)
+    return await _wash_state(request, player)
+
+
+async def api_wash_action(request: web.Request) -> web.Response:
+    """Перебить номер: новый знак и чистое прошлое машины."""
+    from bot.car_service import CarError, restamp
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.WASH)
+    try:
+        if action == "restamp":
+            said = await restamp(db, player, str(data.get("code") or ""))
+        else:
+            return web.json_response(
+                {"error": "Непонятное действие."}, status=400
+            )
+    except CarError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _wash_state(request, fresh, said)
+
+
+async def _court_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    from bot.webapp.court import build_court
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_court(db, player, now_ts())
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_blackout(request: web.Request) -> web.Response:
+    """Электростанция: лобби рейда или снимок идущего «Чёрного пуска».
+
+    Дверь спрашивает место только у того, кто ещё не в рейде: внутри
+    станции боец стоит не в городе, а в её комнатах, и городская
+    проверка «ты у проходной?» там неверна.
+    """
+    from bot.blackout_service import state_for
+    from bot.game.blackout import MapMissing
+
+    db = request.app[DB_KEY]
+    player = await _own_player(request)
+    if not await db.blackout_of(player.user_id):
+        player = await _at(request, Service.BLACKOUT)
+    try:
+        return web.json_response(await state_for(db, player))
+    except MapMissing as error:
+        logger.error("«Чёрный пуск»: %s", error)
+        return web.json_response({"error": str(error)}, status=503)
+
+
+async def api_blackout_action(request: web.Request) -> web.Response:
+    """Ход рейда. Всё считает сервер: страница шлёт только кнопку."""
+    from bot.blackout_service import BlackoutError, act, state_for
+    from bot.game.blackout import MapMissing
+
+    data = await _payload(request)
+    db = request.app[DB_KEY]
+    player = await _own_player(request)
+    # «Услышал» — не ход, а ответ на окно прощания: рейд уже кончился,
+    # и требовать для него стоять у станции незачем. Всё остальное,
+    # что делают вне рейда, делают именно там
+    if (
+        str(data.get("action") or "") != "heard"
+        and not await db.blackout_of(player.user_id)
+    ):
+        player = await _at(request, Service.BLACKOUT)
+    # Тестовые команды — инструмент разработки. В городе их нет вовсе:
+    # иначе окно входа обходилось бы одним полем в запросе
+    body = dict(data)
+    if not request.app[CONFIG_KEY].blackout_sandbox:
+        body.pop("test", None)
+        body.pop("bots", None)
+    try:
+        said = await act(
+            db,
+            player,
+            str(data.get("action") or ""),
+            body,
+            str(data.get("command") or ""),
+        )
+    except BlackoutError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except MapMissing as error:
+        logger.error("«Чёрный пуск»: %s", error)
+        return web.json_response({"error": str(error)}, status=503)
+    fresh = await db.get_player(player.user_id) or player
+    body = await state_for(db, fresh)
+    body["said"] = said
+    return web.json_response(body)
+
+
+async def _casino_state(
+    request: web.Request, player, table_id: int = 0, said: str = ""
+) -> web.Response:
+    from bot.webapp.casino import build_casino
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_casino(db, player, table_id=table_id)
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_casino(request: web.Request) -> web.Response:
+    """Казино: лобби со столами или снимок своего стола.
+
+    Место спрашиваем у всех: за столом сидят ногами, и фишки меняют
+    там же. Игра из города, в котором боец не стоит, — это не игра, а
+    запрос мимо интерфейса.
+    """
+    player = await _at(request, Service.CASINO)
+    try:
+        table_id = int(request.query.get("table") or 0)
+    except (TypeError, ValueError):
+        table_id = 0
+    return await _casino_state(request, player, table_id)
+
+
+async def api_casino_action(request: web.Request) -> web.Response:
+    """Касса, посадка, ставка и ход. Всё решает сервер."""
+    from bot.casino_service import CasinoError
+    from bot.webapp.casino import casino_action
+
+    data = await _payload(request)
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.CASINO)
+    try:
+        said, table_id = await casino_action(db, player, data)
+    except CasinoError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+    fresh = await db.get_player(player.user_id) or player
+    return await _casino_state(request, fresh, table_id, said)
+
+
+async def api_court(request: web.Request) -> web.Response:
+    """Суд: дела об угоне и свои приговоры."""
+    player = await _at(request, Service.COURT)
+    return await _court_state(request, player)
+
+
+async def api_court_action(request: web.Request) -> web.Response:
+    """Вынести приговор по делу об угоне."""
+    from bot.court_service import sentence
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.COURT)
+    try:
+        if action == "sentence":
+            said = await sentence(db, player, _int_field(data, "case"))
+        else:
+            return web.json_response(
+                {"error": "Непонятное действие."}, status=400
+            )
+    except CourtError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _court_state(request, fresh, said)
+
+
+async def _dojo_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    from bot.webapp.dojo import build_dojo
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_dojo(db, player, now_ts())
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_dojo(request: web.Request) -> web.Response:
+    """Школа боевых искусств: ведомость бойца и все приёмы клуба."""
+    player = await _at(request, Service.DOJO)
+    return await _dojo_state(request, player)
+
+
+async def api_dojo_action(request: web.Request) -> web.Response:
+    """Дела в школе: взять приём в обучение, бросить и выучить."""
+    from bot.dojo_service import DojoError, learn as learn_trick, start, stop
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.DOJO)
+    try:
+        if action == "start":
+            said = await start(
+                db, player, str(data.get("code") or ""), now_ts()
+            )
+        elif action == "stop":
+            said = await stop(db, player, str(data.get("code") or ""), now_ts())
+        elif action == "learn":
+            # Приём называют: набранных может ждать несколько, и
+            # подтверждают они по одному
+            ability = await learn_trick(
+                db, player, str(data.get("code") or ""), now_ts()
+            )
+            said = f"«{ability.title}» выучен. {ability.note}"
+        else:
+            return web.json_response(
+                {"error": "Непонятное действие."}, status=400
+            )
+    except DojoError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _dojo_state(request, fresh, said)
+
+
+async def api_prison(request: web.Request) -> web.Response:
+    """Тюрьма: свой срок и все, кто сидит сейчас.
+
+    Место тут есть: в тюрьму заходят ногами — и сидящий, которого в
+    ней заперли, и всякий, кто пришёл посмотреть на список.
+    """
+    from bot.webapp.prison import build_prison
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    player = await _at(request, Service.PRISON)
+    body = await build_prison(db, player, now_ts())
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_elections(request: web.Request) -> web.Response:
+    """Выборы: кандидаты, свой голос и что сейчас можно.
+
+    Места тут нет нарочно: голосуют откуда угодно, и бюллетень должен
+    открываться там, где боец стоит. В администрацию ходят ногами
+    только затем, чтобы выдвинуться, — это проверяет служба.
+    """
+    player = await _own_player(request)
+    if player.arrive():
+        await request.app[DB_KEY].save_player(player)
+    return await _elections_state(request, player)
+
+
+async def api_elections_action(request: web.Request) -> web.Response:
+    """Выдвинуть кандидатуру или отдать голос."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _own_player(request)
+    try:
+        if action == "nominate":
+            said = await election_nominate(
+                db, player, str(data.get("program") or "")
+            )
+        elif action == "vote":
+            said = await election_vote(db, player, _int_field(data, "user"))
+        elif action == "appoint":
+            seat, chosen = await appoint(
+                db,
+                player,
+                str(data.get("job") or ""),
+                _int_field(data, "user"),
+                _int_field(data, "salary"),
+            )
+            said = (
+                f"{chosen.nickname} назначен: {seat.title}. "
+                f"Жалованье — {seat.salary} 💰 в неделю."
+            )
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except (ElectionError, WorkError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+    fresh = await db.get_player(player.user_id) or player
+    return await _elections_state(request, fresh, said)
+
+
+# ---------- кто здесь: соседи по дому и ограбления ----------
+
+
+async def _crowd_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_crowd(
+        db, player, request.app.get(ROB_KEY), now_ts(), said
+    )
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_crowd(request: web.Request) -> web.Response:
+    """Кто сейчас в этом доме и что в нём происходит.
+
+    Места тут нет отдельной проверкой: дом — тот, в котором боец стоит,
+    и другого он не увидит. Соседей по чужому дому не подсмотреть.
+    """
+    player = await _own_player(request)
+    if player.arrive():
+        await request.app[DB_KEY].save_player(player)
+    return await _crowd_state(request, player)
+
+
+async def api_crowd_action(request: web.Request) -> web.Response:
+    """Ограбление: напасть, вмешаться, ударить и закрыть развязку."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _own_player(request)
+    service = request.app.get(ROB_KEY)
+    if service is None:  # pragma: no cover - приложение заводит её само
+        return web.json_response({"error": "Сейчас не до этого."}, status=503)
+    try:
+        if action == "rob":
+            raid = await service.rob(player, _int_field(data, "user"))
+            said = f"Ты взял {raid.names.get(raid.victim, 'его')} в оборот."
+        elif action == "join":
+            await service.join(_int_field(data, "raid_id"), player)
+            said = "Ты в драке."
+        elif action == "step_in":
+            # Полицейский встаёт за того, на кого напали. Без лицензии:
+            # защищать — это работа, а не право, которое покупают
+            await service.step_in(_int_field(data, "raid_id"), player)
+            said = "Ты вмешался. Держись."
+        elif action == "arrest":
+            raid = await service.arrest(player, _int_field(data, "user"))
+            said = f"Задержание: {raid.names.get(raid.victim, 'он')} не уйдёт."
+        elif action == "steal":
+            # Угон не драка: машину уводят у того, кто оставил её на
+            # себе. Ни лицензии, ни драки для этого не нужно — нужна
+            # семья и зазевавшийся хозяин
+            from bot.car_service import CarError, steal
+
+            try:
+                said = await steal(db, player, _int_field(data, "car"))
+            except CarError as error:
+                return web.json_response({"error": str(error)}, status=409)
+        elif action == "take":
+            # Угонщик не в сети — машину забирают молча, без драки.
+            # Делают это там, где он стоит: участок адрес знает, а
+            # ехать по нему сотруднику
+            from bot.police_service import PoliceError, take_from_thief
+
+            try:
+                said = await take_from_thief(
+                    db, player, _int_field(data, "car")
+                )
+            except PoliceError as error:
+                return web.json_response({"error": str(error)}, status=409)
+        elif action == "turn":
+            raid = service.of_user(player.user_id)
+            if raid is None:
+                raise RobberyError("Ты сейчас не дерёшься.")
+            hands = _hands(data)
+            block = str(data.get("block", ""))
+            fighter = raid.fighters.get(player.user_id)
+            need = fighter.attacks_per_round if fighter else 1
+            if len(hands) < need or not block:
+                raise RobberyError("Выбери и удар, и блок.")
+            for hand, zone in sorted(hands.items()):
+                await service.choose(raid.id, player.user_id, "attack", zone, hand)
+            said = await service.choose(
+                raid.id, player.user_id, "block", block
+            )
+        elif action == "ability":
+            raid = service.of_user(player.user_id)
+            if raid is None:
+                raise RobberyError("Ты сейчас не дерёшься.")
+            said = await service.use_ability(
+                raid.id, player.user_id, str(data.get("code") or "")
+            )
+        elif action == "done":
+            service.forget_result(player.user_id)
+            said = ""
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except RobberyError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятное нажатие."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _crowd_state(request, fresh, said)
+
+
+# ---------- территории: война за точки города ----------
+
+
+async def _turf_state(request: web.Request, player, said: str = "") -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_war(
+        db, player, request.app.get(WAR_KEY), now_ts(), said
+    )
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_turf(request: web.Request) -> web.Response:
+    """Карта территорий: кто что держит и сколько это приносит.
+
+    Места тут нет нарочно: карту войны смотрят откуда угодно — воевать
+    приходят в дом, а знать, за что воюют, можно и из кармана.
+    """
+    player = await _own_player(request)
+    return await _turf_state(request, player)
+
+
+async def api_turf_action(request: web.Request) -> web.Response:
+    """Живая осада: созвать отряд, вести его, бить и закрыть итог."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _own_player(request)
+    war = request.app.get(WAR_KEY)
+    if war is None:  # pragma: no cover - приложение заводит её само
+        return web.json_response({"error": "Война сейчас недоступна."}, status=503)
+    try:
+        if action == "call":
+            # Созвать отряд на точку. Созвавший записан первым
+            await war.open_muster(player, str(data.get("spot") or ""))
+            said = "Отряд собирается. Свои подтянутся — и вперёд."
+        elif action == "free":
+            # Освобождение: пустой дом семьи город снимает без боя
+            said = await turf_release(db, player, str(data.get("spot") or ""))
+        elif action == "join":
+            await war.join(_int_field(data, "muster_id"), player)
+            said = "Ты в отряде."
+        elif action == "leave":
+            muster = war.muster_of_user(player.user_id)
+            if muster is None:
+                raise TurfError("Ты никуда не записан.")
+            await war.leave(muster.id, player.user_id)
+            said = "Ты вышел из отряда."
+        elif action == "march":
+            muster = war.muster_of_user(player.user_id)
+            if muster is None:
+                raise TurfError("Ты никуда не записан.")
+            await war.march(muster.id, player.user_id)
+            said = "Пошли."
+        elif action == "turn":
+            # Ход целиком: удар каждой рукой и блок уходят одной кнопкой
+            siege = war.siege_of_user(player.user_id)
+            if siege is None:
+                raise TurfError("Ты сейчас не на штурме.")
+            hands = _hands(data)
+            block = str(data.get("block", ""))
+            fighter = siege.party.get(player.user_id)
+            need = fighter.attacks_per_round if fighter else 1
+            if len(hands) < need or not block:
+                raise TurfError("Выбери и удар, и блок.")
+            for hand, zone in sorted(hands.items()):
+                await war.choose(siege.id, player.user_id, "attack", zone, hand)
+            said = await war.choose(siege.id, player.user_id, "block", block)
+        elif action == "ability":
+            siege = war.siege_of_user(player.user_id)
+            if siege is None:
+                raise TurfError("Ты сейчас не на штурме.")
+            said = await war.use_ability(
+                siege.id, player.user_id, str(data.get("code") or "")
+            )
+        elif action == "hire":
+            # Нанятый выходит из кармана того, кто его взял
+            done = await hire_one(db, player, str(data.get("grade") or ""))
+            said = (
+                f"{done['grade'].title} нанят. На руках ещё место: "
+                f"{done['left']}."
+            )
+        elif action == "post":
+            done = await post_one(
+                db, player, _int_field(data, "hire_id"), player.where(now_ts())
+            )
+            said = f"Охрана выставлена: {done['total']} из {done['max']}."
+        elif action == "done":
+            war.forget_result(player.user_id)
+            said = ""
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except HireError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except TurfError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятное нажатие."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _turf_state(request, fresh, said)
+
+
+# ---------- учёба: корпус, колледж, академия и университет ----------
+
+
+async def _study_state(
+    request: web.Request, player, said: str = "", extra: dict | None = None
+) -> web.Response:
+    config = request.app[CONFIG_KEY]
+    body = build_study(player, now_ts(), said)
+    if extra:
+        body.update(extra)
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_study(request: web.Request) -> web.Response:
+    """Учёба: приёмная этого дома, свой курс и идущее занятие."""
+    player = await _at(request, Service.STUDY)
+    return await _study_state(request, player)
+
+
+async def api_study_action(request: web.Request) -> web.Response:
+    """Записаться, встать на занятие, взять билет или сдать его."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.STUDY)
+    extra: dict | None = None
+    try:
+        if action == "enrol":
+            said = await study_enrol(db, player, str(data.get("course") or ""))
+        elif action == "leave":
+            said = await study_leave(db, player)
+        elif action == "attend":
+            until = await study_attend(db, player)
+            left = format_duration(max(0, until - now_ts()))
+            said = f"Занятие пошло: {left} на месте, уйти нельзя."
+        elif action == "exam":
+            # Билет не меняет состояния: его берут посмотреть, а
+            # попытку засчитывают только по ответам
+            course, questions = await study_start_exam(db, player)
+            return await _study_state(
+                request, player, "", {"exam": exam_payload(questions, course)}
+            )
+        elif action == "pass":
+            answers = [int(one) for one in data.get("answers") or []]
+            course, right, won = await study_pass(db, player, answers)
+            extra = {
+                "attempt": {
+                    "right": right,
+                    "total": EXAM_SIZE,
+                    "need": PASS_MARK,
+                    "passed": won,
+                    "title": course.diploma_title,
+                }
+            }
+            said = (
+                f"Экзамен сдан: {right} из {EXAM_SIZE}. "
+                f"Ты получаешь документ — {course.diploma_title}."
+                if won
+                else (
+                    f"Не сдал: {right} из {EXAM_SIZE}, а нужно {PASS_MARK}. "
+                    "Пересдача через неделю."
+                )
+            )
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except StudyError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _study_state(request, fresh, said, extra)
+
+
+# ---------- бар: бармен и его задания ----------
+
+
+async def _bar_state(request: web.Request, player, said: str = "") -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = build_bar(player, await quest_journal(db, player), now_ts(), said)
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_bar(request: web.Request) -> web.Response:
+    """Бар: бармен за стойкой, разговор и список заданий."""
+    player = await _at(request, Service.TAVERN)
+    return await _bar_state(request, player)
+
+
+async def api_bar_action(request: web.Request) -> web.Response:
+    """Ответ бармену: взять задание, сдать его или ответить на вопрос."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.TAVERN)
+    try:
+        if action == "take":
+            said = await quest_take(db, player, str(data.get("quest") or ""))
+        elif action == "hand":
+            said = await quest_hand(db, player, str(data.get("quest") or ""))
+        elif action == "answer":
+            right, said = await quest_answer(
+                db, player, int(data.get("step", 0)), int(data.get("option", -1))
+            )
+        elif action in ("later", "bye"):
+            said = ""
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except QuestError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+    fresh = await db.get_player(player.user_id) or player
+    return await _bar_state(request, fresh, said)
+
+
+async def api_quests(request: web.Request) -> web.Response:
+    """Список заданий бойца — вкладка «Квесты» в карточке.
+
+    Места тут нет нарочно: журнал боец носит с собой, и смотреть в него
+    можно откуда угодно.
+    """
+    player = await _own_player(request)
+    db = request.app[DB_KEY]
+    log = await quest_journal(db, player)
+    chapters = chapters_payload(player, log)
+    rows = [one for chapter in chapters for one in chapter["quests"]]
+    return web.json_response(
+        {
+            # Главами и плоским списком сразу: журнал рисуется главами, а
+            # счётчик «сдано из двадцати» считается по всем
+            "chapters": chapters,
+            "quests": rows,
+            "level": player.level,
+            "done": sum(1 for row in rows if row["state"] == "done"),
+            "total": len(rows),
+            # Где искать того, кто их раздаёт
+            "giver": "Бармен в Баре",
         }
     )
 
@@ -1756,8 +4047,15 @@ def create_app(
     if battles is not None:
         app[BATTLES_KEY] = battles
     app[TRADE_KEY] = TradeService(db)
-    # Кого дорога спрашивает, можно ли уходить: из недодранного боя нельзя
-    app[TRAVEL_KEY].watch(duels, raids, battles)
+    # Войну за территории держит само приложение: она живёт в мини-аппе,
+    # ветки в группе у неё нет, и заводить её снаружи незачем
+    app[WAR_KEY] = TurfWar(db)
+    # Ограбления: та же история, что и у войны, — живут в мини-аппе
+    app[ROB_KEY] = RobberyService(db)
+    # Кого дорога спрашивает, можно ли уходить: из недодранного боя нельзя.
+    # Война за территории там же: точку берут ногами, и уйти из-под неё
+    # посреди сбора или волны — то же бегство, что и посреди дуэли
+    app[TRAVEL_KEY].watch(duels, raids, battles, app[WAR_KEY], app[ROB_KEY])
     # А обмен спрашивает то же самое про стол: позвать занятого бойцом
     # нельзя, и согласиться, пока тебя ждут на ринге, — тоже
     app[TRADE_KEY].watch(duels, raids, battles)
@@ -1784,6 +4082,9 @@ def create_app(
             web.post("/api/use", api_use),
             web.post("/api/upgrade", api_upgrade),
             web.get("/api/club", api_club),
+            web.get("/api/ladder", api_ladder),
+            web.post("/api/seen", api_seen),
+            web.get("/api/players", api_players),
             web.get("/api/fights", api_fights),
             web.post("/api/fight", api_fight),
             web.get("/api/history", api_history),
@@ -1792,6 +4093,11 @@ def create_app(
             web.get("/api/bank", api_bank),
             web.post("/api/bank", api_bank_action),
             web.post("/api/purse", api_purse),
+            web.get("/api/school", api_school),
+            web.post("/api/school", api_school_action),
+            web.get("/api/police", api_police),
+            web.post("/api/police", api_police_action),
+            web.post("/api/licence", api_licence),
             web.get("/api/hr", api_hr),
             web.post("/api/hr", api_hr_action),
             web.get("/api/work", api_work),
@@ -1810,10 +4116,54 @@ def create_app(
             web.get("/api/fight/{fight_id}", api_fight_log),
             web.get("/api/magic", api_magic),
             web.post("/api/pro", api_pro),
+            web.post("/api/promo", api_promo),
             web.get("/api/looks", api_looks),
+            web.get("/api/barber", api_barber),
+            web.post("/api/barber", api_barber_action),
             web.post("/api/look", api_look),
             web.get("/api/topup", api_topup),
             web.post("/api/invoice", api_invoice),
+            web.get("/api/elections", api_elections),
+            web.post("/api/elections", api_elections_action),
+            web.get("/api/crowd", api_crowd),
+            web.post("/api/crowd", api_crowd_action),
+            web.get("/api/mafia", api_mansion),
+            web.post("/api/mafia", api_mansion_action),
+            web.get("/api/clan", api_clan),
+            web.post("/api/clan", api_clan_action),
+            web.get("/api/flats", api_house_flats),
+            web.post("/api/flats", api_house_action),
+            web.get("/api/post", api_post),
+            web.post("/api/post", api_post_action),
+            web.get("/api/arena", api_arena),
+            web.post("/api/arena", api_arena_action),
+            web.get("/api/prison", api_prison),
+            web.get("/api/dorm", api_dorm),
+            web.post("/api/dorm", api_dorm_action),
+            web.get("/api/casino", api_casino),
+            web.post("/api/casino", api_casino_action),
+            web.get("/api/dojo", api_dojo),
+            web.post("/api/dojo", api_dojo_action),
+            web.get("/api/charge", api_charge),
+            web.post("/api/charge", api_charge_action),
+            web.get("/api/wash", api_wash),
+            web.post("/api/wash", api_wash_action),
+            web.get("/api/blackout", api_blackout),
+            web.post("/api/blackout", api_blackout_action),
+            web.get("/api/court", api_court),
+            web.post("/api/court", api_court_action),
+            web.get("/api/cars", api_cars),
+            web.post("/api/cars", api_cars_action),
+            web.post("/api/used-cars", api_used_cars_action),
+            web.get("/api/keys", api_keys),
+            web.post("/api/keys", api_wheel),
+            web.get("/api/turf", api_turf),
+            web.post("/api/turf", api_turf_action),
+            web.get("/api/study", api_study),
+            web.post("/api/study", api_study_action),
+            web.get("/api/bar", api_bar),
+            web.post("/api/bar", api_bar_action),
+            web.get("/api/quests", api_quests),
             web.get("/avatar/{user_id}", avatar),
             web.get("/healthz", healthz),
             web.static("/static", STATIC_DIR),

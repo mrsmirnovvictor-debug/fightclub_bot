@@ -130,7 +130,11 @@ def test_card_has_everything_the_screen_needs():
         "raid_wins": player.raid_wins,
         "raid_fights": player.raid_fights,
         "rating": player.rating,
+        # Чужой кошелёк не наше дело: эта карточка открыта соседом
         "credits": 0,
+        "account": 0,
+        "has_account": False,
+        "has_card": False,
     }
     assert card["hp"]["current"] == card["hp"]["max"] == player.max_hp
     assert card["hp"]["color"] == "green"
@@ -334,11 +338,34 @@ async def test_the_page_carries_a_version_and_is_never_cached(client):
     assert (await client.get(f"/static/card.css?v={stamp}")).status == 200
 
 
+async def test_the_loading_picture_reaches_the_page_by_its_real_address(client):
+    """Заставка нужна раньше первого ответа, значит её адрес — в странице.
+
+    Подставляет его сервер, а не вёрстка: все адреса картинок в игре
+    живут в одном месте. Если имя места в странице переименуют, браузер
+    получит само `{{loading}}` вместо картинки, и увидит это только
+    игрок — поэтому проверяем обе половины: подстановка сработала и
+    следа от неё не осталось.
+    """
+    from bot.game.art import LOADING
+    from bot.webapp.server import LOADING_SLOT
+
+    body = await (await client.get("/")).text()
+
+    assert LOADING in body
+    assert LOADING_SLOT not in body
+
+
 def test_the_version_changes_with_the_files(tmp_path, monkeypatch):
-    """Метка считается по содержимому: правка стиля обязана её сдвинуть."""
+    """Метка считается по содержимому: правка стиля обязана её сдвинуть.
+
+    Список файлов берём у сервера, а не перечисляем руками: он уже
+    однажды разошёлся — страница подключила новый скрипт, а стенд о нём
+    не знал и падал на отсутствующем файле.
+    """
     import bot.webapp.server as server
 
-    for name in ("card.html", "card.css", "card.js"):
+    for name in ("card.html", *server.ASSETS):
         (tmp_path / name).write_text("было", encoding="utf-8")
     monkeypatch.setattr(server, "STATIC_DIR", tmp_path)
 
@@ -485,8 +512,140 @@ async def test_club_lists_every_fighter(client, db):
     me = next(row for row in body["fighters"] if row["user_id"] == 42)
     assert me["is_self"] and me["level"] == 4
     assert me["fclass"]["title"] == "Воин"
-    # всё остальное — аватар, слоты, счёт — приезжает из /api/card по кнопке «i»
-    assert set(me) == {"user_id", "nickname", "level", "pro", "is_self", "fclass"}
+    # всё остальное — аватар, слоты, счёт — приезжает из /api/card по кнопке «i».
+    # Клан и служба — исключение: их значки стоят в самой строке, рядом
+    # с ником, и носить их разом нельзя
+    assert set(me) == {
+        "user_id", "nickname", "level", "rating", "place", "pro", "badge",
+        "is_self", "fclass", "clan", "service",
+    }
+    # Место считает сервер от смещения страницы, а не страница от своего
+    # списка: на второй странице первая строка — пятьдесят первое место
+    assert [row["place"] for row in body["fighters"]] == [1, 2, 3]
+    assert me["place"] == 2 and me["rating"] == 1000
+    assert me["clan"] == {}, "боец без клана знаков не носит"
+    assert me["service"] == {}, "боец без службы значка не носит"
+
+
+async def a_crowd(db, many: int, start: int = 100) -> None:
+    """Клуб из `many` бойцов: рейтинг убывает с номером, как и места."""
+    from bot.models import Player
+
+    for number in range(many):
+        player = Player(
+            user_id=start + number,
+            nickname=f"Боец {number + 1}",
+            class_code="warrior",
+            level=1 + number % 9,
+        )
+        player.rating = 2000 - number
+        await db.save_player(player)
+
+
+async def test_the_rating_comes_in_pages_of_fifty(client, db):
+    """Рейтинг листается страницами: номер со страницы, смещение с сервера.
+
+    Место считает сервер и от смещения: на второй странице первая
+    строка — пятьдесят первое место, и страница, считающая места сама,
+    написала бы там единицу.
+    """
+    await a_crowd(db, 137)
+    head = {"X-Telegram-Init-Data": make_init_data(100)}
+
+    first = await (await client.get("/api/club", headers=head)).json()
+    assert first["total"] == 137
+    assert first["page"] == 1 and first["pages"] == 3
+    assert first["offset"] == 0 and first["page_size"] == 50
+    assert len(first["fighters"]) == 50
+    assert first["fighters"][0]["place"] == 1
+    assert first["fighters"][-1]["place"] == 50
+
+    second = await (await client.get("/api/club?page=2", headers=head)).json()
+    assert second["page"] == 2 and second["offset"] == 50
+    assert second["fighters"][0]["place"] == 51
+    assert second["fighters"][0]["rating"] == 2000 - 50
+
+    last = await (await client.get("/api/club?page=3", headers=head)).json()
+    assert last["page"] == 3 and len(last["fighters"]) == 37
+    assert last["fighters"][-1]["place"] == 137
+
+    # Ни один боец не попал на две страницы и ни один не потерялся
+    seen = [
+        row["user_id"]
+        for page in (first, second, last)
+        for row in page["fighters"]
+    ]
+    assert len(seen) == len(set(seen)) == 137
+
+
+async def test_a_page_past_the_end_lands_on_the_last_one(client, db):
+    """Просили двадцатую, а их три — отдаём третью, а не отказ.
+
+    Доска почёта не та вещь, на запрос которой отвечают ошибкой: номер
+    страницы приходит со страницы, и мусор в нём — не повод закрыться.
+    """
+    await a_crowd(db, 60)
+    head = {"X-Telegram-Init-Data": make_init_data(100)}
+
+    far = await (await client.get("/api/club?page=20", headers=head)).json()
+    assert far["page"] == 2 and far["fighters"][0]["place"] == 51
+
+    for typed in ("0", "-5", "каша", ""):
+        answer = await client.get(f"/api/club?page={typed}", headers=head)
+        assert answer.status == 200, typed
+        assert (await answer.json())["page"] == 1, typed
+
+
+async def test_the_search_finds_fighters_by_a_piece_of_the_nickname(client, db):
+    """Поиск по куску ника: начинающиеся с него — первыми."""
+    from bot.models import Player
+
+    for user_id, nickname in (
+        (42, "Марла"),
+        (43, "Команданте Марио"),
+        (44, "Тайлер"),
+    ):
+        await db.save_player(
+            Player(user_id=user_id, nickname=nickname, class_code="warrior")
+        )
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+
+    found = await (await client.get("/api/players?q=мар", headers=head)).json()
+    names = [row["nickname"] for row in found["fighters"]]
+    assert names == ["Марла", "Команданте Марио"], (
+        "набравший «Мар» ищет Марлу, а не того, у кого это в середине"
+    )
+    assert found["total"] == 2
+    # Мест в поиске нет: это не рейтинг
+    assert all(row["place"] == 0 for row in found["fighters"])
+    assert found["fighters"][0]["is_self"] is True
+
+    # Регистр не важен: прозвище — не пароль
+    assert len(
+        (await (await client.get("/api/players?q=МАРЛ", headers=head)).json())[
+            "fighters"
+        ]
+    ) == 1
+
+
+async def test_an_empty_search_shows_nobody_rather_than_everybody(client, db):
+    """Поиск без слова — это не картотека: он отдаёт пусто."""
+    from bot.models import Player
+
+    await db.save_player(
+        Player(user_id=42, nickname="Тайлер", class_code="warrior")
+    )
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+
+    for query in ("", "   ", "%"):
+        found = await (
+            await client.get(f"/api/players?q={query}", headers=head)
+        ).json()
+        assert found["fighters"] == [], query
+
+
+async def test_the_search_needs_a_signature(client):
+    assert (await client.get("/api/players?q=мар")).status == 401
 
 
 async def test_the_club_list_needs_a_signature(client):
@@ -554,3 +713,624 @@ async def test_a_crash_report_survives_junk_instead_of_json(client):
     """Отчёт присылают из упавшего скрипта — там может прийти что угодно."""
     assert (await client.post("/api/oops", data=b"not json")).status == 200
     assert (await client.post("/api/oops", json=["не", "объект"])).status == 200
+
+
+# Два имени на странице заняты дважды, и это не одобрение, а запись
+# долга. `plural` — одно правило, написанное двумя способами: что из них
+# победит, неважно. `clockText` — настоящий конфликт: тела разные, и
+# второе молча перебивает первое, так что часы, писавшиеся под «время
+# вышло» и «45 сек», показывают «0:00» и «0:45». Чинить это — менять вид
+# экранов, и решать такое надо отдельно.
+TWICE_DEFINED = {"clockText", "plural"}
+
+
+def test_no_two_functions_on_the_page_share_a_name():
+    """Второе объявление молча съедает первое, и заметить это нечем.
+
+    Страница — один большой файл с плоским списком функций, без модулей
+    и без сборщика. Объявил функцию с занятым именем — браузер оставит
+    последнюю, а вызовы первой уедут в неё же. Ошибка тихая: файл
+    разбирается, тесты соседних экранов проходят, а ломается тот, чьё
+    имя увели.
+
+    Так и случилось с авторынком: он завёл `marketAction`, которым уже
+    звалась комиссионка, и три экрана торговли перестали отправлять
+    запросы. Проверка руками это пропустила — она искала `function` и не
+    видела `async function`.
+    """
+    import re
+
+    from bot.webapp.server import ASSETS, STATIC_DIR
+
+    # Скриптов на странице стало больше одного, а пространство имён у
+    # неё по-прежнему общее: функция из второго файла так же молча
+    # съедает одноимённую из первого. Поэтому смотрим все скрипты,
+    # которые страница подключает, а не только карточку
+    scripts = [name for name in ASSETS if name.endswith(".js")]
+    assert len(scripts) > 1, "скриптов стало меньше — проверку можно упростить"
+
+    names: list[str] = []
+    for name in scripts:
+        page = (STATIC_DIR / name).read_text(encoding="utf-8")
+        names += re.findall(r"^(?:async )?function (\w+)\(", page, re.M)
+
+    seen, twice = set(), set()
+    for name in names:
+        (twice if name in seen else seen).add(name)
+
+    assert twice <= TWICE_DEFINED, f"имя занято дважды: {twice - TWICE_DEFINED}"
+
+
+def test_the_page_knows_every_shop_and_every_house_in_town():
+    """Новый магазин на карте — новая строка на странице, и обе рядом.
+
+    Дом на карте открывает экран по своей услуге, а прилавок подписан по
+    ней же. Заводится услуга в правилах, а не на странице, и забыть там
+    строку легко: дом тогда открывается молча ничем, а прилавок — «Лавкой»
+    без имени. Поэтому карты услуг страницы сверяем с городом.
+    """
+    import re
+
+    from bot.game.locations import LOCATIONS, SHOP_SERVICES
+    from bot.webapp.server import STATIC_DIR
+
+    page = (STATIC_DIR / "card.js").read_text(encoding="utf-8")
+
+    def keys(name: str) -> set[str]:
+        body = page.split(f"{name} = {{", 1)[1].split("\n};", 1)[0]
+        return set(re.findall(r"^  (\w+):", body, re.M))
+
+    titles, screens = keys("const SHOP_TITLES"), keys("const HOUSE_SCREENS")
+    # Дом открывается по первой своей услуге: у каждой работающей двери в
+    # городе должна быть строка, иначе дверь откроет молча ничего
+    doors = {place.services[0].value for place in LOCATIONS if place.works}
+    assert doors <= screens, doors - screens
+    # Прилавок подписан по услуге. Элитный магазин сюда не входит: он
+    # открывает не прилавок, а вкладку товара за звёзды, и зовётся там сам
+    counters = set(
+        re.findall(r"^  (\w+): \(\) => openShop\(\),", page, re.M)
+    )
+    assert {one.value for one in SHOP_SERVICES} & counters <= titles
+    assert counters <= titles, counters - titles
+    assert "jewel" in counters, "ювелира страница за магазин не считает"
+
+
+async def test_the_card_carries_the_set_line_everywhere_the_thing_is_shown():
+    """Строка комплекта едет с вещью в куклу, в рюкзак и на прилавок.
+
+    Считает её сервер, а не страница: число вещей набора известно только
+    ему — а значит, и во сколько работает оружие. На прилавке чужая
+    вещь приходит с нулём, но с лестницей: покупатель должен понимать,
+    за что платит.
+    """
+    from bot.game.locations import Service
+    from bot.webapp.card import build_shop
+
+    player = make_player(level=10, class_code="tank", strength=25, endurance=25)
+    worn = {
+        Slot.WEAPON: "set_bouncer_weapon",
+        Slot.HEAD: "set_bouncer_head",
+        Slot.JACKET: "set_bouncer_jacket",
+        Slot.BOOTS: "set_bouncer_boots",
+    }
+    for number, (slot, code) in enumerate(worn.items(), start=1):
+        player.gear.append(
+            OwnedItem(item=CATALOGUE[code], id=number, slot=slot)
+        )
+    # И одна вещь набора в рюкзаке: она тоже знает про комплект
+    player.gear.append(OwnedItem(item=CATALOGUE["set_bouncer_belt"], id=9))
+
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    cells = {
+        row["slot"]: row for row in card["slots"]["left"] + card["slots"]["right"]
+    }
+    hand = cells["weapon"]["item"]["kit"]
+    assert hand["worn"] == 4 and hand["power"] == 120
+    assert hand["next"] == {"need": 7, "power": 135}
+    assert "Вышибала" in hand["text"]
+    # Шлем — не оружие, и строка у него про оружие набора
+    assert cells["head"]["item"]["kit"]["power"] == 120
+    assert cells["head"]["item"]["kit"]["weapon"] is False
+
+    bag = {row["code"]: row for row in card["inventory"]}
+    assert bag["set_bouncer_belt"]["kit"]["worn"] == 4
+
+    # На прилавке — та же строка: у своего набора с числом, у чужого с нулём
+    shelf = build_shop(player, Service.WEAPONS)
+    goods = {
+        row["code"]: row
+        for section in shelf["sections"]
+        for row in section["items"]
+    }
+    assert goods["set_bouncer_weapon"]["kit"]["worn"] == 4
+    assert goods["set_army_weapon"]["kit"]["worn"] == 0
+    assert goods["set_army_weapon"]["kit"]["power"] == 100
+    assert goods["viking_axe"]["kit"] == {}
+
+
+# ---------- казино ----------
+
+
+async def test_the_casino_door_asks_where_you_stand(client, db):
+    """Играть можно в казино, а не из любого места города.
+
+    Проверяем на сервере, а не прятанием кнопки: спрятанная обходится
+    запросом мимо интерфейса.
+    """
+    player = make_player(location="fight_club")
+    await db.save_player(player)
+    headers = {"X-Telegram-Init-Data": make_init_data()}
+    response = await client.get("/api/casino", headers=headers)
+    assert response.status == 409, await response.text()
+
+    player.location = "casino"
+    await db.save_player(player)
+    response = await client.get("/api/casino", headers=headers)
+    assert response.status == 200
+    body = await response.json()
+    assert len(body["lobby"]["games"]) == 4
+    assert body["wallet"] == {"chips": 0, "reserved": 0}
+    # Порядок карманов приходит с сервера: клиент его не выдумывает
+    assert len(body["wheel"]) == 37 and body["wheel"][0] == 0
+
+
+async def test_the_casino_changes_money_over_http(client, db):
+    """Касса меняет кредиты на фишки и обратно одной ручкой."""
+    player = make_player(location="casino", credits=300)
+    await db.save_player(player)
+    headers = {"X-Telegram-Init-Data": make_init_data()}
+
+    response = await client.post(
+        "/api/casino", headers=headers,
+        json={"action": "exchange", "kind": "buy", "amount": 200},
+    )
+    assert response.status == 200, await response.text()
+    body = await response.json()
+    assert body["wallet"]["chips"] == 200
+    assert (await db.get_player(42)).credits == 100
+
+    response = await client.post(
+        "/api/casino", headers=headers,
+        json={"action": "exchange", "kind": "sell", "amount": 500},
+    )
+    assert response.status == 409, "больше, чем есть, не сдать"
+    assert (await db.get_player(42)).credits == 100
+
+
+async def test_the_casino_seats_and_bets_over_http(client, db):
+    """Сесть, поставить и встать — всё теми же двумя ручками."""
+    player = make_player(location="casino", credits=300)
+    await db.save_player(player)
+    headers = {"X-Telegram-Init-Data": make_init_data()}
+    await client.post(
+        "/api/casino", headers=headers,
+        json={"action": "exchange", "kind": "buy", "amount": 300},
+    )
+    lobby = await (await client.get("/api/casino", headers=headers)).json()
+    dice = next(
+        one for one in lobby["lobby"]["games"] if one["code"] == "dice"
+    )
+    table_id = dice["tables"][0]["id"]
+
+    response = await client.post(
+        "/api/casino", headers=headers,
+        json={"action": "sit", "table": table_id, "seat": 1},
+    )
+    assert response.status == 200, await response.text()
+    body = await response.json()
+    assert body["table"]["id"] == table_id
+    assert body["table"]["mine"]
+
+    response = await client.post(
+        "/api/casino", headers=headers,
+        json={"action": "bet", "table": table_id, "amount": 40,
+              "pick": "seven", "command": "once"},
+    )
+    assert response.status == 200, await response.text()
+    body = await response.json()
+    assert body["wallet"] == {"chips": 260, "reserved": 40}
+
+    # Тот же ключ команды — та же ставка, а не вторая
+    await client.post(
+        "/api/casino", headers=headers,
+        json={"action": "bet", "table": table_id, "amount": 40,
+              "pick": "seven", "command": "once"},
+    )
+    assert (await db.casino_wallet(42)) == {"chips": 260, "reserved": 40}
+
+    # Встали до закрытия — ставка вернулась
+    response = await client.post(
+        "/api/casino", headers=headers, json={"action": "leave"},
+    )
+    assert response.status == 200
+    assert (await db.casino_wallet(42)) == {"chips": 300, "reserved": 0}
+
+
+# ---------- шкала опыта ----------
+
+
+def test_the_bar_gets_the_very_thresholds_the_ups_are_paid_at():
+    """Засечки шкалы считает лестница, а не страница.
+
+    Второе место, где живут пороги апгрейдов, однажды разошлось бы с
+    первым — и шкала рисовала бы засечку там, где очко не дают.
+    """
+    from bot.game.economy import exp_at_up
+    from bot.webapp.card import ups_payload
+
+    player = make_player(level=10, exp=6_000, micro_ups=2)
+
+    marks = ups_payload(player)
+
+    assert [one["number"] for one in marks] == [1, 2, 3]
+    assert [one["at"] for one in marks] == [2_100, 4_500, 7_200]
+    assert [one["at"] for one in marks] == [exp_at_up(10, n) for n in (1, 2, 3)]
+    assert [one["taken"] for one in marks] == [True, True, False]
+
+
+def test_the_fourth_up_is_not_a_notch_but_the_level_itself():
+    """Четвёртого апгрейда на дорожке нет: он и есть новый уровень."""
+    from bot.game.economy import MICRO_UPS_PER_LEVEL
+    from bot.webapp.card import ups_payload
+
+    marks = ups_payload(make_player(level=10, exp=6_000, micro_ups=2))
+
+    assert len(marks) == MICRO_UPS_PER_LEVEL - 1
+    assert all(one["at"] < 10_200 for one in marks)
+
+
+def test_at_the_ceiling_the_bar_has_no_notches_at_all():
+    """На потолке уровня впереди нет, а значит, нет и долей до него."""
+    from bot.webapp.card import ups_payload
+
+    assert ups_payload(make_player(level=15, exp=0)) == []
+
+
+def test_the_card_carries_the_whole_bar():
+    """Всё, что рисует шкала, приезжает одним куском."""
+    card = build_card(make_player(level=10, exp=6_000, micro_ups=2), TOKEN, 42)
+
+    bar = card["progress"]
+    assert bar["level"] == 10 and bar["next_level"] == 11
+    assert bar["exp"] == 6_000 and bar["exp_needed"] == 10_200
+    assert bar["exp_to_next_up"] == 1_200
+    assert len(bar["ups"]) == 3
+
+
+# ---------- список игроков: отбор по уровню и алфавит ----------
+
+
+async def _club_of(db, *rows):
+    """Клуб из нескольких бойцов: (номер, ник, ELO, уровень)."""
+    from bot.models import Player
+
+    for user_id, nickname, rating, level in rows:
+        player = Player(
+            user_id=user_id, nickname=nickname, class_code="warrior", level=level
+        )
+        player.rating = rating
+        await db.save_player(player)
+
+
+async def test_the_player_list_can_be_sorted_by_nickname(client, db):
+    """Алфавитная сортировка по нику — и она не путается в регистре.
+
+    Кириллица тут важна: `lower()` у SQLite знает только латиницу, и
+    без своей замены «Ангел» и «ангел» встали бы в разные концы списка.
+    """
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(
+        db,
+        (42, "Тайлер", 1000, 4),
+        (43, "марла", 1400, 7),
+        (44, "Ангел", 900, 2),
+        (45, "ёжик", 800, 2),
+    )
+
+    body = await (await client.get("/api/club?sort=name", headers=head)).json()
+    assert [row["nickname"] for row in body["fighters"]] == [
+        "Ангел", "ёжик", "марла", "Тайлер"
+    ]
+    assert body["sort"] == "name"
+    # ELO в строке остаётся — оно свойство бойца, а не порядка строк
+    assert [row["rating"] for row in body["fighters"]] == [900, 800, 1400, 1000]
+
+
+async def test_the_alphabetical_list_shows_no_places(client, db):
+    """В переставленном списке мест нет: «пятый» означал бы не то.
+
+    Место бойцу даёт ELO по всему клубу. Номер строки алфавитного
+    списка читался бы как место в клубе — и врал бы.
+    """
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4), (43, "Ангел", 1400, 7))
+
+    by_elo = await (await client.get("/api/club", headers=head)).json()
+    assert [row["place"] for row in by_elo["fighters"]] == [1, 2]
+
+    by_name = await (await client.get("/api/club?sort=name", headers=head)).json()
+    assert [row["place"] for row in by_name["fighters"]] == [0, 0]
+
+
+async def test_the_player_list_can_be_cut_down_to_one_level(client, db):
+    """Отбор по уровню: тот же список, только без чужих уровней."""
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(
+        db,
+        (42, "Тайлер", 1000, 4),
+        (43, "Марла", 1400, 7),
+        (44, "Ангел", 900, 4),
+    )
+
+    body = await (await client.get("/api/club?level=4", headers=head)).json()
+    assert body["level"] == 4
+    assert body["total"] == 2, "число страниц считается по тому же отбору"
+    assert [row["nickname"] for row in body["fighters"]] == ["Тайлер", "Ангел"]
+    # И мест в урезанном списке тоже нет: «второй» среди четвёртого
+    # уровня — это не второе место в клубе
+    assert [row["place"] for row in body["fighters"]] == [0, 0]
+
+    # Уровни на выбор — только те, на которых кто-то есть
+    assert body["levels"] == [4, 7]
+
+
+async def test_an_empty_filter_is_an_empty_list_and_not_an_error(client, db):
+    """Пустой результат отбора отличается от ошибки загрузки.
+
+    Ответ двести с пустым списком — это «никого такого нет». Отказ
+    читался бы как «рейтинг не открылся», и игрок жал бы «ещё раз».
+    """
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4))
+
+    answer = await client.get("/api/club?level=9", headers=head)
+    assert answer.status == 200
+    body = await answer.json()
+    assert body["fighters"] == [] and body["total"] == 0
+    assert body["level"] == 9
+
+
+async def test_junk_in_the_filter_does_not_break_the_list(client, db):
+    """Мусор в отборе — список целиком, а не отказ."""
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4), (43, "Марла", 1400, 7))
+
+    for typed in ("", "ноль", "-5", "4.5", "'; DROP TABLE players; --"):
+        answer = await client.get(f"/api/club?level={typed}", headers=head)
+        assert answer.status == 200, typed
+        body = await answer.json()
+        assert body["total"] == 2, typed
+        assert body["level"] == 0, typed
+
+
+# ---------- рейтинг недели ----------
+
+
+async def _fought(db, user_id, count, at=None, outcome="draw", delta=0):
+    """Положить бойцу несколько зачётных боёв в журнал ELO."""
+    from bot.game.health import now_ts
+
+    from uuid import uuid4
+
+    moment = now_ts() if at is None else at
+    for _ in range(count):
+        player = await db.get_player(user_id)
+        was = player.rating
+        player.apply_rating(delta)
+        await db.save_player(player)
+        # Ключ боя случайный: одинаковый отбросил бы уникальный индекс
+        # журнала, и второй вызов этой заготовки не добавил бы ни боя
+        await db.log_rating(
+            user_id, "duel", uuid4().hex,
+            outcome, player.rating - was, player.rating, moment,
+        )
+
+
+async def test_the_weekly_rating_shows_only_those_who_fought_ten_times(client, db):
+    """Порог виден и на экране: с девятью боями бойца в рейтинге нет."""
+    from bot.game.ladder import QUALIFY
+
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4), (43, "Марла", 1400, 7))
+    await _fought(db, 42, QUALIFY)
+    await _fought(db, 43, QUALIFY - 1)
+
+    body = await (await client.get("/api/ladder", headers=head)).json()
+
+    assert [row["nickname"] for row in body["fighters"]] == ["Тайлер"]
+    assert body["total"] == 1
+    assert body["qualify"] == QUALIFY
+    row = body["fighters"][0]
+    assert row["place"] == 1 and row["fights"] == QUALIFY
+    assert row["prize"] == 400, "предварительная награда за первое место"
+    assert row["is_self"]
+
+
+async def test_the_weekly_rating_says_the_prize_is_preliminary(client, db):
+    """Подпись о предварительности и границы недели — в самом ответе.
+
+    Это часть правил, а не оформления: страница, придумавшая подпись
+    сама, однажды разошлась бы с тем, как считает сервер.
+    """
+    from bot.game.ladder import QUALIFY
+
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4))
+    await _fought(db, 42, QUALIFY)
+
+    body = await (await client.get("/api/ladder", headers=head)).json()
+
+    assert "воскресенье" in body["note"] and "12:00" in body["note"]
+    assert "Москв" in body["window"] and "до" in body["window"]
+    assert body["settled"] is False
+    assert body["period"]
+    # Призовая таблица приезжает оттуда же, где её считают
+    assert body["prizes"][0] == {"from": 1, "to": 1, "place": "1", "prize": 400}
+    assert body["prizes"][-1]["place"] == "20–50"
+
+
+async def test_a_fighter_below_the_threshold_sees_his_own_progress(client, db):
+    """До квалификации вместо места — личный прогресс «7 из 10»."""
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4))
+    await _fought(db, 42, 7)
+
+    body = await (await client.get("/api/ladder", headers=head)).json()
+
+    assert body["fighters"] == []
+    assert body["mine"]["fights"] == 7
+    assert body["mine"]["left"] == 3
+    assert body["mine"]["qualified"] is False
+    assert body["mine"]["place"] == 0 and body["mine"]["prize"] == 0
+    assert body["mine"]["progress"] == "7 из 10 PvP-боёв в Бойцовском клубе"
+
+
+async def test_the_tenth_fight_puts_a_fighter_on_the_board(client, db):
+    """После десятого боя тот же экран показывает место, а не прогресс."""
+    from bot.game.ladder import QUALIFY
+
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4))
+    await _fought(db, 42, QUALIFY - 1)
+
+    before = await (await client.get("/api/ladder", headers=head)).json()
+    assert before["mine"]["place"] == 0
+
+    await _fought(db, 42, 1, outcome="win")
+
+    after = await (await client.get("/api/ladder", headers=head)).json()
+    assert after["mine"]["qualified"] is True
+    assert after["mine"]["place"] == 1
+    assert after["mine"]["prize"] == 400
+    assert [row["user_id"] for row in after["fighters"]] == [42]
+
+
+async def test_an_empty_weekly_rating_says_so_in_words(client, db):
+    """Пустой рейтинг подписан словами, а не пустотой."""
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4))
+
+    answer = await client.get("/api/ladder", headers=head)
+    assert answer.status == 200, "пустой рейтинг — не ошибка"
+    body = await answer.json()
+    assert body["fighters"] == [] and body["total"] == 0
+    assert body["empty"] == "Пока никто не провёл 10 PvP-боёв за эту неделю."
+
+
+async def test_the_weekly_rating_goes_in_pages_of_fifty(client, db):
+    """Страницы по пятьдесят, а места считаются по всему рейтингу.
+
+    На второй странице первая строка — пятьдесят первое место, а не
+    первое: иначе призовая таблица платила бы за место на странице.
+    """
+    from bot.game.ladder import QUALIFY
+
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    for number in range(1, 56):
+        await _club_of(db, (number, f"Боец{number}", 5000 - number, 4))
+        await _fought(db, number, QUALIFY)
+
+    first = await (await client.get("/api/ladder", headers=head)).json()
+    assert first["pages"] == 2 and first["page"] == 1
+    assert len(first["fighters"]) == 50
+    assert first["fighters"][0]["place"] == 1
+
+    second = await (await client.get("/api/ladder?page=2", headers=head)).json()
+    assert second["page"] == 2 and second["offset"] == 50
+    assert [row["place"] for row in second["fighters"]] == list(range(51, 56))
+    # И награды на второй странице уже нулевые: платят до пятидесятого
+    assert [row["prize"] for row in second["fighters"]] == [0] * 5
+
+    # Мусор в номере страницы — первая, а не отказ
+    for typed in ("", "ноль", "-1", "99"):
+        answer = await client.get(f"/api/ladder?page={typed}", headers=head)
+        assert answer.status == 200, typed
+
+
+async def test_the_weekly_rating_needs_a_signature(client, db):
+    assert (await client.get("/api/ladder")).status == 401
+
+
+async def test_opening_the_rating_settles_the_week_that_ended(client, db):
+    """Взгляд на рейтинг закрывает кончившуюся неделю и платит за неё.
+
+    Часов, которые будили бы бота в полдень воскресенья, в клубе нет:
+    период закрывает тот, кто на него смотрит. И закрывает целиком —
+    платят всем, а не только тому, кто смотрел.
+    """
+    from bot.game.clock import WEEK_SECONDS, week_key, week_opens
+    from bot.game.health import now_ts
+    from bot.game.ladder import QUALIFY
+
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4), (43, "Марла", 1400, 7))
+    # Оба дрались на прошлой неделе, смотрит только первый
+    last_week = week_opens(now_ts()) - WEEK_SECONDS + 3600
+    await _fought(db, 42, QUALIFY, at=last_week)
+    await _fought(db, 43, QUALIFY, at=last_week)
+    closed = week_key(last_week)
+
+    body = await (await client.get("/api/ladder", headers=head)).json()
+
+    assert await db.settled_week(closed) is not None, "неделя не закрыта"
+    # Марла на экран не заходила, а деньги получила
+    assert (await db.get_player(43)).credits == 400
+    assert (await db.get_player(42)).credits == 375
+    # И тот, кто смотрел, видит, чем кончилась прошлая неделя
+    assert body["last"]["period"] == closed
+    assert body["last"]["place"] == 2 and body["last"]["prize"] == 375
+    assert body["last"]["paid"] is True
+    # Идущая неделя при этом пустая: бои той недели в неё не затекли
+    assert body["fighters"] == [] and body["mine"]["fights"] == 0
+
+
+async def test_a_broken_payout_does_not_close_the_rating_screen(client, db, monkeypatch):
+    """Сорвалась выплата — экран всё равно открывается.
+
+    Рейтинг показать важнее, чем доплатить именно сейчас: доплатит
+    следующий взгляд, а отказ оставил бы игрока без экрана вовсе.
+    """
+    import bot.webapp.server as server
+    from bot.game.ladder import QUALIFY
+
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4))
+    await _fought(db, 42, QUALIFY)
+
+    async def breaks(*args, **kwargs):
+        raise RuntimeError("касса закрыта")
+
+    monkeypatch.setattr(server, "settle_due", breaks)
+    answer = await client.get("/api/ladder", headers=head)
+
+    assert answer.status == 200
+    body = await answer.json()
+    assert [row["user_id"] for row in body["fighters"]] == [42]
+
+
+async def test_a_fighter_who_left_the_club_keeps_his_place_in_the_week(client, db):
+    """Удалённый боец не обрушивает список мест.
+
+    Место ему посчитал журнал, а прозвище лежало у бойца — и бойца
+    могли удалить между подсчётом и запросом. Набор полей в строке тот
+    же, что у живой: страница рисует её тем же кодом, и из-за одного
+    выбывшего пропали бы все остальные места.
+    """
+    from bot.game.ladder import QUALIFY
+
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4), (43, "Марла", 1400, 7))
+    await _fought(db, 42, QUALIFY)
+    await _fought(db, 43, QUALIFY)
+    await db.delete_player(43)
+
+    body = await (await client.get("/api/ladder", headers=head)).json()
+
+    assert [row["place"] for row in body["fighters"]] == [1, 2]
+    gone = body["fighters"][0]
+    assert gone["user_id"] == 43 and gone["nickname"] == "боец выбыл"
+    assert gone["rating"] == 1400, "ELO знает журнал, а не карточка"
+    assert gone["prize"] == 400
+    # Набор полей тот же, что у живого бойца
+    alive = body["fighters"][1]
+    assert set(gone) == set(alive)

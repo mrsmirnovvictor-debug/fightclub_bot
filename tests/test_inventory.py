@@ -31,8 +31,10 @@ from tests.test_webapp import TOKEN, make_init_data
 
 ARMED = FightMode.ARMED
 KNUCKLES = CATALOGUE["knuckles"]
-SNEAKERS = CATALOGUE["sneakers"]
-WRAPS = CATALOGUE["wraps"]
+# Кеды и бинты пак сетов сменил на «Кеды плута» и байкерские перчатки:
+# покупать здесь нужно то, что сейчас лежит на прилавке
+BOOTS = CATALOGUE["set_plut_boots"]
+GLOVES = CATALOGUE["set_biker_gloves"]
 
 
 class Dice:
@@ -66,7 +68,7 @@ def make_player(user_id: int = 1, credits: int = 500, **kwargs) -> Player:
 
 
 def test_new_item_is_pristine():
-    owned = OwnedItem(item=SNEAKERS)
+    owned = OwnedItem(item=BOOTS)
     assert owned.describe_wear() == f"0/{MAX_WEAR}"
     assert owned.repair_price == 0
     assert not owned.is_worn_out
@@ -83,7 +85,7 @@ def test_only_a_lost_fight_wears_the_gear():
 
     def wears(won, times=2000):
         return sum(
-            apply_fight_wear([OwnedItem(item=SNEAKERS)], won, rng)[0] != []
+            apply_fight_wear([OwnedItem(item=BOOTS)], won, rng)[0] != []
             for _ in range(times)
         )
 
@@ -93,7 +95,7 @@ def test_only_a_lost_fight_wears_the_gear():
 
 
 def test_the_last_point_of_wear_turns_the_item_into_dust():
-    owned = OwnedItem(item=SNEAKERS, wear=MAX_WEAR - 1)
+    owned = OwnedItem(item=BOOTS, wear=MAX_WEAR - 1)
     damaged, broken = apply_fight_wear([owned], won=False, rng=Dice(0.0))
     assert damaged == [owned] and broken == [owned]
     assert owned.wear == MAX_WEAR
@@ -101,7 +103,7 @@ def test_the_last_point_of_wear_turns_the_item_into_dust():
 
 
 def test_repair_costs_a_credit_per_point():
-    owned = OwnedItem(item=SNEAKERS, wear=19)
+    owned = OwnedItem(item=BOOTS, wear=19)
     assert owned.repair_price == 19
     result = repair(owned, 19, Dice(0.99))  # прочность уцелела
     assert (result.points, result.price) == (19, 19)
@@ -111,7 +113,7 @@ def test_repair_costs_a_credit_per_point():
 
 
 def test_each_repair_risks_a_point_of_durability():
-    owned = OwnedItem(item=SNEAKERS, wear=19)
+    owned = OwnedItem(item=BOOTS, wear=19)
     result = repair(owned, 19, Dice(0.0))
     assert result.degraded
     assert owned.max_wear == MAX_WEAR - 1
@@ -119,9 +121,9 @@ def test_each_repair_risks_a_point_of_durability():
 
 def test_repairing_bit_by_bit_kills_the_item_faster():
     """Пять походов к мастеру — пять бросков на прочность, один поход — один."""
-    at_once = OwnedItem(item=SNEAKERS, wear=5)
+    at_once = OwnedItem(item=BOOTS, wear=5)
     repair(at_once, 5, Dice(0.0))
-    piecemeal = OwnedItem(item=SNEAKERS, wear=5)
+    piecemeal = OwnedItem(item=BOOTS, wear=5)
     for _ in range(5):
         repair(piecemeal, 1, Dice(0.0))
 
@@ -131,7 +133,7 @@ def test_repairing_bit_by_bit_kills_the_item_faster():
 
 
 def test_item_crumbles_when_durability_runs_out():
-    owned = OwnedItem(item=SNEAKERS, wear=1, max_wear=1)
+    owned = OwnedItem(item=BOOTS, wear=1, max_wear=1)
     result = repair(owned, 1, Dice(0.0))
     assert result.destroyed
     assert owned.max_wear == 0
@@ -156,21 +158,37 @@ async def test_buying_moves_credits_into_the_backpack(db):
     player = make_player(credits=100)
     await db.save_player(player)
 
-    owned = await buy(db, player, "sneakers")
-    assert player.credits == 100 - SNEAKERS.price
+    owned = await buy(db, player, "set_plut_boots")
+    assert player.credits == 100 - BOOTS.price
     assert owned.id > 0
 
     saved = await db.get_player(player.user_id)
-    assert [item.code for item in saved.backpack] == ["sneakers"]
-    assert saved.credits == 100 - SNEAKERS.price
+    assert [item.code for item in saved.backpack] == ["set_plut_boots"]
+    assert saved.credits == 100 - BOOTS.price
     assert saved.equipment.bonus == Stats()  # лежит в рюкзаке, статов не даёт
+
+
+async def test_the_shop_does_not_sell_what_it_took_off_the_counter(db):
+    """Снятую вещь не купить даже по коду: кнопки на неё нет, а код — есть.
+
+    Старая кнопка живёт в чужой переписке сколько угодно, и нажать её
+    можно через год. Кредиты за это списываться не должны.
+    """
+    player = make_player(credits=500)
+    await db.save_player(player)
+
+    assert CATALOGUE["sneakers"].retired
+    with pytest.raises(InventoryError, match="Такого товара в лавке нет"):
+        await buy(db, player, "sneakers")
+    assert player.credits == 500
+    assert (await db.get_player(player.user_id)).gear == []
 
 
 async def test_shop_refuses_when_credits_run_short(db):
     player = make_player(credits=10)
     await db.save_player(player)
     with pytest.raises(InventoryError, match="Не хватает кредитов"):
-        await buy(db, player, "sneakers")
+        await buy(db, player, "set_plut_boots")
     assert player.credits == 10
     assert (await db.get_player(player.user_id)).gear == []
 
@@ -229,7 +247,7 @@ async def test_a_second_weapon_has_nowhere_to_go(db):
     assert saved.gear_in_slot(Slot.WEAPON).id == offhand.id
     assert [item.id for item in saved.backpack] == [weapon.id]
 
-    boots = await buy(db, player, "sneakers")
+    boots = await buy(db, player, "set_plut_boots")
     with pytest.raises(InventoryError, match="в этот слот не надевается"):
         await equip(db, player, boots.id, Slot.HEAD)
 
@@ -237,7 +255,7 @@ async def test_a_second_weapon_has_nowhere_to_go(db):
 async def test_taking_the_item_off_returns_it_to_the_backpack(db):
     player = make_player()
     await db.save_player(player)
-    owned = await buy(db, player, "sneakers")
+    owned = await buy(db, player, "set_plut_boots")
     await equip(db, player, owned.id)
 
     await unequip(db, player, Slot.BOOTS)
@@ -252,7 +270,7 @@ async def test_taking_the_item_off_returns_it_to_the_backpack(db):
 async def test_repair_charges_the_credits_and_saves_the_result(db):
     player = make_player(credits=100)
     await db.save_player(player)
-    owned = await buy(db, player, "sneakers")
+    owned = await buy(db, player, "set_plut_boots")
     owned.wear = 7
     await db.save_gear(owned)
     paid = player.credits
@@ -268,7 +286,7 @@ async def test_repair_charges_the_credits_and_saves_the_result(db):
 async def test_repair_needs_credits_and_something_to_repair(db):
     player = make_player(credits=100)
     await db.save_player(player)
-    owned = await buy(db, player, "wraps")
+    owned = await buy(db, player, "set_biker_gloves")
     player.credits = 3  # кредиты кончились после покупки
     await db.save_player(player)
 
@@ -404,7 +422,7 @@ async def test_the_bag_says_what_the_shop_would_pay(db):
 async def test_a_finished_item_disappears_from_the_bag_for_good(db):
     player = make_player()
     await db.save_player(player)
-    owned = await buy(db, player, "sneakers")
+    owned = await buy(db, player, "set_plut_boots")
     owned.wear, owned.max_wear = 1, 1
     await db.save_gear(owned)
 
@@ -417,7 +435,7 @@ async def test_a_finished_item_disappears_from_the_bag_for_good(db):
 async def test_wear_after_the_fight_reaches_the_database(db):
     player = make_player()
     await db.save_player(player)
-    owned = await buy(db, player, "sneakers")
+    owned = await buy(db, player, "set_plut_boots")
     await equip(db, player, owned.id)
 
     broken = await wear_after_fight(db, player, won=False, rng=Dice(0.0))
@@ -429,14 +447,14 @@ async def test_wear_after_the_fight_reaches_the_database(db):
 async def test_gear_worn_to_dust_leaves_both_the_slot_and_the_bag(db):
     player = make_player()
     await db.save_player(player)
-    owned = await buy(db, player, "sneakers")
+    owned = await buy(db, player, "set_plut_boots")
     await equip(db, player, owned.id)
     owned.wear = MAX_WEAR - 1
     await db.save_gear(owned)
 
     broken = await wear_after_fight(db, player, won=False, rng=Dice(0.0))
 
-    assert [item.code for item in broken] == ["sneakers"]
+    assert [item.code for item in broken] == ["set_plut_boots"]
     saved = await db.get_player(player.user_id)
     assert saved.gear == []
     assert saved.equipment.get(Slot.BOOTS) is None
@@ -445,7 +463,7 @@ async def test_gear_worn_to_dust_leaves_both_the_slot_and_the_bag(db):
 async def test_deleting_a_fighter_takes_the_inventory_with_him(db):
     player = make_player()
     await db.save_player(player)
-    await buy(db, player, "sneakers")
+    await buy(db, player, "set_plut_boots")
 
     await db.delete_player(player.user_id)
 
@@ -487,11 +505,11 @@ def test_strangers_do_not_see_the_backpack():
 
 def test_worn_gear_shows_its_wear_in_the_slot():
     player = make_player()
-    player.gear = [OwnedItem(item=SNEAKERS, id=11, wear=4, slot=Slot.BOOTS)]
+    player.gear = [OwnedItem(item=BOOTS, id=11, wear=4, slot=Slot.BOOTS)]
     card = build_card(player, TOKEN, viewer_id=player.user_id)
     boots = next(s for s in card["slots"]["right"] if s["slot"] == "boots")
     assert boots["item"]["wear"] == 4
-    assert boots["item"]["image"] == SNEAKERS.picture
+    assert boots["item"]["image"] == BOOTS.picture
 
 
 # ---------- ручки мини-аппа ----------
@@ -528,7 +546,7 @@ def headers(user_id: int) -> dict:
 async def test_mini_app_dresses_and_undresses_the_fighter(client, db):
     player = make_player(user_id=42)
     await db.save_player(player)
-    owned = await buy(db, player, "sneakers")
+    owned = await buy(db, player, "set_plut_boots")
 
     response = await client.post(
         "/api/equip", json={"item_id": owned.id}, headers=headers(42)
@@ -537,13 +555,13 @@ async def test_mini_app_dresses_and_undresses_the_fighter(client, db):
     card = await response.json()
     assert card["inventory"] == []
     boots = next(s for s in card["slots"]["right"] if s["slot"] == "boots")
-    assert boots["item"]["title"] == "Кеды"
+    assert boots["item"]["title"] == BOOTS.title
 
     response = await client.post(
         "/api/unequip", json={"slot": "boots"}, headers=headers(42)
     )
     card = await response.json()
-    assert [item["title"] for item in card["inventory"]] == ["Кеды"]
+    assert [item["title"] for item in card["inventory"]] == [BOOTS.title]
 
 
 async def test_mini_app_explains_why_the_button_is_grey(client, db):
@@ -561,7 +579,7 @@ async def test_mini_app_explains_why_the_button_is_grey(client, db):
 async def test_mini_app_repairs_for_credits(client, db):
     player = make_player(user_id=42, credits=200, location="workshop")
     await db.save_player(player)
-    owned = await buy(db, player, "sneakers")
+    owned = await buy(db, player, "set_plut_boots")
     owned.wear = 5
     await db.save_gear(owned)
 
@@ -573,7 +591,7 @@ async def test_mini_app_repairs_for_credits(client, db):
     assert body["repair"]["points"] == 5
     assert body["repair"]["price"] == 5
     assert body["card"]["inventory"][0]["wear"] == 0
-    assert body["card"]["record"]["credits"] == 200 - SNEAKERS.price - 5
+    assert body["card"]["record"]["credits"] == 200 - BOOTS.price - 5
     # Мастерская приходит тем же ответом, и починенной вещи в ней уже нет:
     # список чинить нечего, потому что всё снятое стало целым
     assert body["workshop"]["repair"] == []
@@ -583,7 +601,7 @@ async def test_mini_app_repairs_for_credits(client, db):
 async def test_nobody_touches_a_stranger_backpack(client, db):
     owner = make_player(user_id=42)
     await db.save_player(owner)
-    owned = await buy(db, owner, "sneakers")
+    owned = await buy(db, owner, "set_plut_boots")
     await db.save_player(make_player(user_id=43, nickname="Марла"))
 
     response = await client.post(
@@ -608,7 +626,7 @@ async def test_gear_wears_out_over_real_fights(bot_and_db):
     for user_id, name in ((1, "Тайлер"), (2, "Марла")):
         player = make_player(user_id=user_id, nickname=name, credits=500)
         await db.save_player(player)
-        owned = await buy(db, player, "sneakers")
+        owned = await buy(db, player, "set_plut_boots")
         await equip(db, player, owned.id)
 
     for _ in range(3):
@@ -633,7 +651,7 @@ async def test_dust_is_announced_in_the_thread(bot_and_db):
     for user_id, name in ((1, "Тайлер"), (2, "Марла")):
         player = make_player(user_id=user_id, nickname=name, credits=500)
         await db.save_player(player)
-        owned = await buy(db, player, "sneakers")
+        owned = await buy(db, player, "set_plut_boots")
         await equip(db, player, owned.id)
         owned.wear = MAX_WEAR - 1
         await db.save_gear(owned)
@@ -661,7 +679,7 @@ async def test_nobody_changes_clothes_in_the_middle_of_a_fight(db):
     for user_id, name in ((42, "Тайлер"), (43, "Марла")):
         player = make_player(user_id=user_id, nickname=name)
         await db.save_player(player)
-        owned = await buy(db, player, "sneakers")
+        owned = await buy(db, player, "set_plut_boots")
         await equip(db, player, owned.id)
 
     await service.start_duel(-100, 7, await db.get_player(42), await db.get_player(43))
@@ -675,7 +693,7 @@ async def test_nobody_changes_clothes_in_the_middle_of_a_fight(db):
         assert response.status == 409
         assert "Ты на ринге" in (await response.json())["error"]
 
-    assert (await db.get_player(42)).equipped[0].code == "sneakers"
+    assert (await db.get_player(42)).equipped[0].code == "set_plut_boots"
     await service.shutdown()
 
 
@@ -737,7 +755,9 @@ async def test_mini_app_serves_the_shop_and_takes_the_money(client, db):
     assert response.status == 200
     shop = await response.json()
     # У оружейника на прилавке только то, что берут в руки
-    assert [section["slot"] for section in shop["sections"]] == ["weapon", "offhand"]
+    assert [section["slot"] for section in shop["sections"]] == [
+        "weapon", "offhand", "tickets"
+    ]
 
     response = await client.post("/api/buy", json={"code": "pipe"}, headers=headers(42))
     body = await response.json()
@@ -780,27 +800,23 @@ def test_gear_percentages_reach_the_fighter():
 # ---------- образы ----------
 
 
-async def test_wardrobe_shows_what_is_worn_and_what_is_for_sale(db):
-    from bot.game.looks import LOOKS, LOOK_PRICE
+async def test_the_wardrobe_shows_only_what_the_fighter_owns(db):
+    """Гардероб — это своё, а не витрина.
+
+    Платные образы переехали на полки домов: мужские в барбершоп,
+    женские в салон красоты (`tests/test_looks_shop.py`). В карточке
+    остались только свои, и докупать там нечего.
+    """
     from bot.looks_service import wardrobe
 
     player = make_player(credits=0)
     await db.save_player(player)
 
     rows = await wardrobe(db, player)
-    # Гардероб своего пола: чужие образы на страницу не приходят вовсе, и
-    # старая выдача не висит, пока её не выдали
-    assert len(rows) == len(
-        [look for look in LOOKS if not look.pro and look.gender == player.sex]
-    )
-    assert sum(1 for row in rows if row["price"] == 0) == 3
-    assert sum(1 for row in rows if row["price"] == LOOK_PRICE) == 3
+    # Три открытых своего пола: больше у новичка ничего и нет
+    assert {row["code"] for row in rows} == {"rookie", "worker", "racer"}
+    assert all(row["owned"] for row in rows)
     assert {row["gender"] for row in rows} == {player.sex}
-
-    # бесплатные свои, платные — нет, и без кредитов они не по карману
-    assert all(row["owned"] for row in rows if not row["price"])
-    assert not any(row["owned"] for row in rows if row["price"])
-    assert not any(row["affordable"] for row in rows if row["price"])
 
     # пока образ не выбирали, ни один не отмечен: в рамке значок бойца
     assert not any(row["current"] for row in rows)
@@ -810,16 +826,20 @@ async def test_wardrobe_shows_what_is_worn_and_what_is_for_sale(db):
         "worker"
     ]
 
+    # Купленное приходит в гардероб и остаётся в нём
+    await db.add_look(player.user_id, "veteran")
+    assert "veteran" in {row["code"] for row in await wardrobe(db, player)}
+
 
 async def test_a_free_look_is_just_put_on(db):
-    from bot.looks_service import choose_look
+    from bot.looks_service import wear_look
 
     player = make_player(credits=50)
     await db.save_player(player)
 
     # Образ своего пола: боец без пола считается мужчиной, и гардероб у
     # него мужской. Про сам пол — tests/test_gender.py
-    choice = await choose_look(db, player, "worker")
+    choice = await wear_look(db, player, "worker")
 
     assert not choice.bought and choice.credits == 50
     assert (await db.get_player(player.user_id)).look == "worker"
@@ -827,79 +847,88 @@ async def test_a_free_look_is_just_put_on(db):
 
 
 async def test_a_paid_look_is_bought_once_and_stays_forever(db):
+    """Платят в барбершопе, переключаются в карточке — и бесплатно."""
     from bot.game.looks import LOOK_PRICE
-    from bot.looks_service import choose_look
+    from bot.looks_service import buy_look, wear_look
 
     player = make_player(credits=LOOK_PRICE + 200)
     await db.save_player(player)
 
-    bought = await choose_look(db, player, "veteran")
+    bought = await buy_look(db, player, "veteran", "barbershop")
     assert bought.bought and bought.credits == 200
     assert await db.owned_looks(player.user_id) == {"veteran"}
 
     # ушёл на бесплатный и вернулся — второй раз не платит
-    await choose_look(db, player, "rookie")
-    again = await choose_look(db, player, "veteran")
+    await wear_look(db, player, "rookie")
+    again = await wear_look(db, player, "veteran")
     assert not again.bought
     assert (await db.get_player(player.user_id)).credits == 200
 
 
-async def test_a_look_you_cannot_afford_is_refused(db):
-    from bot.looks_service import LookError, choose_look
+async def test_a_look_that_is_not_yours_is_not_put_on(db):
+    """Из карточки чужой образ не наденешь, сколько бы ни было кредитов.
 
-    player = make_player(credits=999)
+    Деньги тут не при чём: карточка образами не торгует. За новым лицом
+    идут в барбершоп, и она об этом говорит.
+    """
+    from bot.looks_service import LookError, wear_look
+
+    player = make_player(credits=10_000)
     await db.save_player(player)
 
-    with pytest.raises(LookError, match="на счету"):
-        await choose_look(db, player, "ghost")
+    with pytest.raises(LookError, match="За ним — в барбершоп"):
+        await wear_look(db, player, "ghost")
     with pytest.raises(LookError, match="нет"):
-        await choose_look(db, player, "император")
+        await wear_look(db, player, "император")
 
     fresh = await db.get_player(player.user_id)
-    assert fresh.credits == 999 and not fresh.look
+    assert fresh.credits == 10_000 and not fresh.look
     assert not await db.owned_looks(player.user_id)
 
 
 async def test_choosing_a_look_takes_the_photo_off(db):
     """Образ и фото — одна рамка: выбрал образ, значит фото убрали."""
-    from bot.looks_service import choose_look
+    from bot.looks_service import wear_look
 
     player = make_player()
     player.avatar_file_id = "file-123"
     await db.save_player(player)
 
-    await choose_look(db, player, "racer")
+    await wear_look(db, player, "racer")
 
     fresh = await db.get_player(player.user_id)
     assert fresh.look == "racer" and fresh.avatar_file_id is None
 
 
-async def test_mini_app_serves_the_wardrobe_and_charges_for_a_look(client, db):
+async def test_mini_app_serves_the_wardrobe_and_puts_on_what_is_yours(client, db):
+    """Ручка карточки отдаёт своё и надевает своё. Кассы в ней нет."""
     from bot.game.looks import LOOK_PRICE
 
     player = make_player(credits=LOOK_PRICE)
     await db.save_player(player)
+    await db.add_look(player.user_id, "veteran")
 
     listing = await client.get("/api/looks", headers=headers(1))
     body = await listing.json()
-    # Шесть своего пола: три открытых и три за кредиты
-    assert listing.status == 200 and len(body["looks"]) == 6
+    # Три открытых своего пола и один купленный
+    assert listing.status == 200 and len(body["looks"]) == 4
 
     response = await client.post(
         "/api/look", json={"code": "veteran"}, headers=headers(1)
     )
     result = await response.json()
     assert response.status == 200
-    assert result["chosen"]["bought"] and result["chosen"]["credits"] == 0
+    assert not result["chosen"]["bought"]
+    assert result["chosen"]["credits"] == LOOK_PRICE, "кредиты не тронуты"
     assert result["card"]["avatar"]["look"] == "veteran"
     assert [row["current"] for row in result["looks"] if row["code"] == "veteran"] == [True]
 
-    # второй платный уже не по карману
+    # А некупленный из карточки не надеть, и кредиты тут не помогут
     refused = await client.post(
         "/api/look", json={"code": "boss"}, headers=headers(1)
     )
     assert refused.status == 409
-    assert "на счету" in (await refused.json())["error"]
+    assert "в барбершоп" in (await refused.json())["error"]
 
 
 async def test_the_wardrobe_is_yours_alone(client):
@@ -916,11 +945,15 @@ def test_shop_sections_are_named_after_body_parts():
 
     assert [slot.section for slot in ALL_SLOTS] == [
         "голова",
+        "ожерелья",
         "оружие",
         "щиты",
         "футболки",
         "пояс",
         "перчатки",
+        "кольца",
+        "кольца",
+        "кольца",
         "верхняя одежда",
         "ноги",
         "обувь",
@@ -933,15 +966,41 @@ def test_shop_sections_are_named_after_body_parts():
     assert build_shop(make_player(), Service.CLOTHES)["sections"][0]["title"] == "Голова"
 
 
-def test_every_look_points_at_its_own_picture():
-    """Картинка образа лежит под его кодом — переименовали, и всё поехало."""
+def test_every_look_points_at_its_own_transparent_picture():
+    """Картинка образа лежит под его кодом — переименовали, и всё поехало.
+
+    И она png с прозрачным фоном: на карточке образ ложится поверх
+    машины, и непрозрачный квадрат её бы закрыл.
+    """
     from bot.game.art import AVATARS
     from bot.game.looks import LOOKS
 
     pictures = [look.picture for look in LOOKS]
     assert len(set(pictures)) == len(LOOKS)
     for look in LOOKS:
-        assert look.picture == f"{AVATARS}/{look.code}.jpeg"
+        assert look.picture == f"{AVATARS}/{look.code}_transparent.png"
+
+
+def test_a_look_costs_two_hundred_and_not_a_thousand():
+    """Внешность — вкус, а не сила: платить за неё как за броню незачем."""
+    from bot.game.looks import LOOK_PRICE, paid_looks
+
+    assert LOOK_PRICE == 200
+    assert {look.price for look in paid_looks()} == {LOOK_PRICE}
+
+
+def test_the_second_batch_gave_six_looks_to_each_gender():
+    """По шестёрке на пол, и коды у них — имена файлов в бакете."""
+    from bot.game.looks import FEMALE, LOOKS, MALE
+
+    second = [look for look in LOOKS if look.code[:4] in ("male", "fema")]
+    assert len(second) == 12
+    assert sum(1 for look in second if look.gender == MALE) == 6
+    assert sum(1 for look in second if look.gender == FEMALE) == 6
+    # Все платные и по одной цене: они не стартовый набор
+    assert all(look.paid and not look.pro for look in second)
+    # И у каждого своё имя и свой значок — иначе в гардеробе не различить
+    assert len({look.title for look in LOOKS}) == len(LOOKS)
 
 
 def test_a_look_can_override_its_picture():
@@ -950,6 +1009,211 @@ def test_a_look_can_override_its_picture():
 
     custom = Look("x", "Тест", "🥊", "male", image="https://example.com/one.png")
     assert custom.picture == "https://example.com/one.png"
+
+
+# ---------- украшения: ожерелье и три кольца ----------
+
+
+def ring(code: str = "test_ring", **extra):
+    """Кольцо для проверок: своего товара у ювелира ещё нет.
+
+    Лавка ювелира приедет отдельно, а правила клеток готовы уже сейчас, и
+    проверять их на пустом месте нечем. Поэтому кольцо здесь своё — ровно
+    такое, каким его заведут в каталоге: слот правой клетки, а дальше
+    `Item.slots` сам раздаёт ему все три.
+    """
+    from bot.game.equipment import Item
+
+    return Item(code, "Кольцо " + code[-1], Slot.RING_RIGHT, "💍", price=100, **extra)
+
+
+def with_rings(player: Player, how_many: int) -> list[OwnedItem]:
+    """Выдать бойцу колец в рюкзак — надетыми они станут сами."""
+    owned = []
+    for number in range(how_many):
+        one = OwnedItem(item=ring(f"test_ring_{number}"), id=100 + number)
+        player.gear.append(one)
+        owned.append(one)
+    return owned
+
+
+def test_a_ring_fits_any_of_its_three_cells():
+    """Клетки колец равноправны: кольцо лежит в любой из трёх."""
+    from bot.game.equipment import RING_SLOTS
+
+    one = ring()
+    assert one.is_ring
+    assert one.slots == RING_SLOTS == (
+        Slot.RING_RIGHT, Slot.RING_MIDDLE, Slot.RING_LEFT
+    )
+    # Прочие вещи своей клеткой и ограничены
+    assert not CATALOGUE["set_plut_boots"].is_ring
+    assert CATALOGUE["set_plut_boots"].slots == (Slot.BOOTS,)
+
+
+async def test_rings_fill_up_from_the_right(db):
+    """Первое кольцо — в правую клетку, второе в среднюю, третье в левую."""
+    player = make_player()
+    await db.save_player(player)
+    rings = with_rings(player, 3)
+    for one in rings:
+        await equip(db, player, one.id)
+    assert [
+        player.gear_in_slot(slot).id
+        for slot in (Slot.RING_RIGHT, Slot.RING_MIDDLE, Slot.RING_LEFT)
+    ] == [rings[0].id, rings[1].id, rings[2].id]
+
+
+async def test_a_freed_cell_is_the_one_that_fills_next(db):
+    """Сняли среднее — туда и ляжет следующее, а края не трогаются."""
+    player = make_player()
+    await db.save_player(player)
+    rings = with_rings(player, 4)
+    for one in rings[:3]:
+        await equip(db, player, one.id)
+
+    await unequip(db, player, Slot.RING_MIDDLE)
+    assert player.gear_in_slot(Slot.RING_MIDDLE) is None
+
+    await equip(db, player, rings[3].id)
+    assert player.gear_in_slot(Slot.RING_MIDDLE).id == rings[3].id
+    assert player.gear_in_slot(Slot.RING_RIGHT).id == rings[0].id
+    assert player.gear_in_slot(Slot.RING_LEFT).id == rings[2].id
+
+
+async def test_the_fourth_ring_waits_until_one_comes_off(db):
+    """Все три клетки заняты — четвёртое кольцо не надевается молча.
+
+    Снять что-нибудь само служба не вправе: какое из трёх колец бойцу
+    дороже, знает только он. Поэтому вместо тихой подмены — отказ словами.
+    """
+    player = make_player()
+    await db.save_player(player)
+    rings = with_rings(player, 4)
+    for one in rings[:3]:
+        await equip(db, player, one.id)
+
+    with pytest.raises(InventoryError, match="заполнены все слоты колец"):
+        await equip(db, player, rings[3].id)
+
+    # И ни одно из надетых при этом не слетело
+    assert all(
+        player.gear_in_slot(slot) is not None
+        for slot in (Slot.RING_RIGHT, Slot.RING_MIDDLE, Slot.RING_LEFT)
+    )
+    assert rings[3].slot is None
+
+
+async def test_a_named_cell_still_wins(db):
+    """Клетку можно назвать руками — тогда кольцо ляжет именно в неё."""
+    player = make_player()
+    await db.save_player(player)
+    rings = with_rings(player, 2)
+
+    await equip(db, player, rings[0].id, Slot.RING_LEFT)
+    assert player.gear_in_slot(Slot.RING_LEFT).id == rings[0].id
+    assert player.gear_in_slot(Slot.RING_RIGHT) is None
+
+    # Названная занятая клетка освобождается, как и у всех прочих вещей
+    await equip(db, player, rings[1].id, Slot.RING_LEFT)
+    assert player.gear_in_slot(Slot.RING_LEFT).id == rings[1].id
+    assert rings[0].slot is None
+
+
+def test_only_the_jeweller_and_the_fan_shop_sell_jewellery(monkeypatch):
+    """Кольцо на прилавок одёжника не ложится: его место у ювелира.
+
+    Правило «одёжник торгует всем, кроме оружия» подхватило бы кольца
+    молча: они не оружие. Поэтому украшения продают двое — ювелир, у
+    которого только они, и «Северный Вал», где фанатская линия лежит
+    целиком, от биты до перстня. У одёжника с оружейником их нет, даже
+    если кольцо попадёт на клубную витрину, как здесь, подложенное
+    руками.
+    """
+    from bot.game.locations import Service, service_for, where_to
+    from bot.webapp.card import sells
+    from bot.game.equipment import JEWEL_SLOTS
+
+    for service in (Service.CLOTHES, Service.WEAPONS):
+        for slot in JEWEL_SLOTS:
+            assert not sells(service, slot), f"{service.value}: {slot.value}"
+    for slot in Slot:
+        assert sells(Service.JEWEL, slot) is (slot in JEWEL_SLOTS), slot.value
+        assert sells(Service.FAN, slot), f"Вал не торгует {slot.value}"
+
+    # И то же самое на живой витрине, с настоящей вещью на полке
+    import bot.content.items as content
+
+    jewel = ring("test_shop_ring")
+    monkeypatch.setattr(content, "SHOWCASE", content.SHOWCASE + (jewel,))
+    player = make_player(level=10, credits=1000)
+    for service in (Service.CLOTHES, Service.WEAPONS):
+        shop = build_shop(player, service)
+        shown = [row["code"] for one in shop["sections"] for row in one["items"]]
+        assert jewel.code not in shown, service.value
+
+    # А настоящее кольцо спрашивают по его прилавку: ювелирное — у
+    # ювелира, фанатское — на Валу, и дом у каждого свой
+    assert service_for("ring_luck") == Service.JEWEL
+    assert service_for("set_hero_necklace") == Service.JEWEL
+    assert service_for("fan_rogue_ring") == Service.FAN
+    assert service_for("fan_boss_necklace") == Service.FAN
+    assert where_to(Service.JEWEL).code == "jewelry_store"
+
+
+def test_a_worn_thing_carries_the_shape_of_its_cell():
+    """Надетая вещь знает форму клетки, в которой лежит.
+
+    По нажатию на клетку куклы её карточку рисует тот же код, что и
+    строку рюкзака, и форму он берёт из вещи. Без этого поля ожерелье в
+    карточке показывалось квадратом — в самой клетке полосой, а в
+    карточке квадратом, и это выглядело двумя разными вещами.
+
+    Форма берётся у клетки, а не у предмета: кольцо записано в правую, а
+    надето может быть в любой из трёх.
+    """
+    player = make_player(level=10)
+    player.strength = player.agility = player.intuition = player.endurance = 25
+    player.gear.append(
+        OwnedItem(item=CATALOGUE["set_bouncer_necklace"], id=5, slot=Slot.NECKLACE)
+    )
+    player.gear.append(
+        OwnedItem(item=CATALOGUE["ring_balance"], id=6, slot=Slot.RING_MIDDLE)
+    )
+    # Ещё одно ожерелье лежит в рюкзаке, ненадетое
+    player.gear.append(OwnedItem(item=CATALOGUE["set_cardsharp_necklace"], id=7))
+    player.gear.append(OwnedItem(item=KNUCKLES, id=8))
+
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    rows = {
+        row["slot"]: row for row in card["slots"]["left"] + card["slots"]["right"]
+    }
+
+    chain = rows["necklace"]
+    assert chain["shape"] == "wide" and chain["item"]["shape"] == "wide"
+    ring = rows["ring_middle"]
+    assert ring["shape"] == "ring" and ring["item"]["shape"] == "ring"
+    # И в рюкзаке у ожерелья форма та же: строку рисует тот же код
+    bag = {row["code"]: row for row in card["inventory"]}
+    assert bag["set_cardsharp_necklace"]["shape"] == "wide"
+    assert bag["knuckles"]["shape"] == "square"
+
+
+def test_the_jeweller_lays_out_two_shelves():
+    """У ювелира на прилавке ровно две полки: ожерелья и кольца."""
+    from bot.game.locations import Service
+
+    shop = build_shop(make_player(level=10, credits=5000), Service.JEWEL)
+    assert [one["title"] for one in shop["sections"]] == ["Ожерелья", "Кольца"]
+    assert [len(one["items"]) for one in shop["sections"]] == [16, 23]
+    rings = shop["sections"][1]
+    assert rings["slot"] == Slot.RING_RIGHT.value
+    # Кольцо первого уровня открыто всем и стоит двадцать кредитов: с него
+    # и начинают, а дальше по уровню
+    first = rings["items"][0]
+    assert (first["title"], first["price"], first["unlocked"]) == (
+        "Кольцо силы", 20, True
+    )
 
 
 def test_empty_slots_carry_their_own_placeholder():
@@ -969,7 +1233,13 @@ def test_empty_slots_carry_their_own_placeholder():
         assert row["placeholder_image"] == Slot(row["slot"]).placeholder
         assert row["placeholder_image"].startswith(f"{SLOTS}/")
         assert row["placeholder"], "значок остаётся запасным вариантом"
-    assert len({row["placeholder_image"] for row in rows}) == len(rows)
+    # Подложка у каждой клетки своя — кроме трёх колец: кольцо оно и есть
+    # кольцо, и рисовать три одинаковых колечка под разными именами незачем
+    pictures = [row["placeholder_image"] for row in rows]
+    assert len(set(pictures)) == len(rows) - 2
+    rings = [row for row in rows if row["slot"].startswith("ring_")]
+    assert len(rings) == 3
+    assert len({row["placeholder_image"] for row in rings}) == 1
 
 
 def test_two_cells_borrow_a_placeholder_from_a_neighbour():
@@ -982,10 +1252,14 @@ def test_two_cells_borrow_a_placeholder_from_a_neighbour():
     from bot.game.art import SLOTS
     from bot.game.equipment import ALL_SLOTS
 
+    from bot.game.equipment import RING_SLOTS
+
     assert Slot.OFFHAND.placeholder == f"{SLOTS}/shield.jpeg"
     assert Slot.JACKET.placeholder == f"{SLOTS}/shirt.png"
+    for slot in RING_SLOTS:
+        assert slot.placeholder == f"{SLOTS}/ring.png"
     for slot in ALL_SLOTS:
-        if slot in (Slot.OFFHAND, Slot.JACKET):
+        if slot in (Slot.OFFHAND, Slot.JACKET, *RING_SLOTS):
             continue
         assert slot.placeholder == f"{SLOTS}/{slot.value}.png"
 
@@ -1119,37 +1393,5 @@ async def test_a_respec_undresses_what_it_can_no_longer_carry(db):
 
     assert [owned.title for owned in dropped] == ["Клинок ассасина"]
     assert (await db.get_player(1)).equipped == []
-
-
-# ---------- разовая выдача под ручные тесты ----------
-
-
-async def test_the_boosted_gear_lands_in_the_backpacks_once(db):
-    """Усиленные вещи выдаются обоим бойцам и ровно по одному разу."""
-    from bot.models import Player
-    from bot.seed import TEST_FIGHTERS, TEST_GEAR, grant_test_gear
-
-    for user_id, nickname in enumerate(TEST_FIGHTERS, start=100):
-        await db.save_player(
-            Player(user_id=user_id, nickname=nickname, class_code="warrior")
-        )
-
-    given = await grant_test_gear(db)
-
-    assert given == len(TEST_FIGHTERS) * len(TEST_GEAR)
-    for user_id in range(100, 100 + len(TEST_FIGHTERS)):
-        codes = sorted(owned.code for owned in await db.list_gear(user_id))
-        assert codes == sorted(TEST_GEAR)
-
-    # второй запуск бота ничего не задваивает
-    assert await grant_test_gear(db) == 0
-    assert len(await db.list_gear(100)) == len(TEST_GEAR)
-
-
-async def test_the_boosted_gear_waits_for_a_missing_fighter(db):
-    """Бойца ещё нет — выдача молча ждёт следующего запуска."""
-    from bot.seed import grant_test_gear
-
-    assert await grant_test_gear(db) == 0
 
 

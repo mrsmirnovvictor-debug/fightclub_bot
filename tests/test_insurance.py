@@ -50,13 +50,24 @@ def headers(user_id: int = 42) -> dict:
 
 
 def make_player(
-    location: str = OFFICE, credits: int = 1000, pro: bool = False
+    location: str = OFFICE,
+    credits: int = 1000,
+    premium: bool = False,
+    pro: bool = False,
 ) -> Player:
+    """Боец у страховой. `premium` — со старшей подпиской, `pro` — с младшей.
+
+    Полис держит только PREMIUM, поэтому у тестов про «полис от
+    подписки» флаг именно такой. PRO тут нужна ровно для того, чтобы
+    показать, что полиса она не даёт.
+    """
     player = Player(
         user_id=42, nickname="Тайлер", class_code="warrior", level=8,
         credits=credits, location=location,
         **Stats(strength=10, agility=10, intuition=10, endurance=30).as_dict(),
     )
+    if premium:
+        player.premium_until = now_ts() + 30 * 24 * 3600
     if pro:
         player.pro_until = now_ts() + 30 * 24 * 3600
     return player
@@ -205,8 +216,8 @@ async def test_a_second_payment_extends_the_same_policy(db):
 
 
 async def test_a_subscription_writes_the_policy_for_its_own_term(db):
-    """«С PRO полис даётся автоматически на время действия PRO»."""
-    player = await stand(db, make_player(credits=0, pro=True))
+    """«С PREMIUM полис даётся сам, на всё время подписки»."""
+    player = await stand(db, make_player(credits=0, premium=True))
     moment = now_ts()
 
     said = await settle(db, player, moment)
@@ -215,8 +226,8 @@ async def test_a_subscription_writes_the_policy_for_its_own_term(db):
     assert player.credits == 0
     assert player.insured(moment)
     # Срок полиса — ровно срок подписки, а не месяц
-    assert player.policy.until == player.pro_until
-    assert (await db.policy_of(42)).until == player.pro_until
+    assert player.policy.until == player.premium_until
+    assert (await db.policy_of(42)).until == player.premium_until
 
 
 async def test_a_subscriber_cannot_stack_free_months(db):
@@ -225,7 +236,7 @@ async def test_a_subscriber_cannot_stack_free_months(db):
     Иначе «продлить» нажимали бы сколько угодно раз, и бесплатные месяцы
     жили бы после самой подписки, за которую их дали.
     """
-    player = await stand(db, make_player(credits=0, pro=True))
+    player = await stand(db, make_player(credits=0, premium=True))
     moment = now_ts()
 
     first = await settle(db, player, moment)
@@ -234,7 +245,7 @@ async def test_a_subscriber_cannot_stack_free_months(db):
     assert first, "первый раз полис всё-таки выписывают"
     # А дальше подписке нечего прибавить, и она молчит
     assert said == [""] * 9
-    assert player.policy.until == player.pro_until, "срок не должен расти"
+    assert player.policy.until == player.premium_until, "срок не должен расти"
     # И купить месяц даром нельзя: цена одна для всех
     assert price_for(player) == POLICY_PRICE
     with pytest.raises(InsuranceError, match="Не хватает кредитов"):
@@ -242,10 +253,10 @@ async def test_a_subscriber_cannot_stack_free_months(db):
 
 
 async def test_the_policy_dies_with_the_subscription(db):
-    player = await stand(db, make_player(credits=0, pro=True))
+    player = await stand(db, make_player(credits=0, premium=True))
     moment = now_ts()
     await settle(db, player, moment)
-    after_pro = player.pro_until + 1
+    after_pro = player.premium_until + 1
 
     assert not player.insured(after_pro)
     # И сам собой не продлевается: за него ни разу не платили
@@ -255,10 +266,10 @@ async def test_the_policy_dies_with_the_subscription(db):
 
 async def test_a_subscriber_who_pays_gets_a_month_after_the_subscription(db):
     """Подписчик покупает не полис, который у него есть, а время после."""
-    player = await stand(db, make_player(credits=500, pro=True))
+    player = await stand(db, make_player(credits=500, premium=True))
     moment = now_ts()
     await settle(db, player, moment)
-    pro_end = player.pro_until
+    pro_end = player.premium_until
 
     deal = await buy_policy(db, player, moment)
 
@@ -424,18 +435,18 @@ async def test_an_empty_purse_switches_the_renewal_off_and_says_so(db):
 
 async def test_extending_the_subscription_extends_the_policy_with_it(db):
     """Подписка продлилась — полис дотянулся до её нового конца."""
-    from bot.game.pro import paid_offer
+    from bot.game.pro import PREMIUM, paid_offer
     from bot.pro_service import grant_pro
 
-    player = await stand(db, make_player(credits=0, pro=True))
+    player = await stand(db, make_player(credits=0, premium=True))
     moment = now_ts()
     await settle(db, player, moment)
     first = player.policy.until
 
-    grant = await grant_pro(db, player, paid_offer(), moment)
+    grant = await grant_pro(db, player, paid_offer(PREMIUM), moment)
 
     assert grant.policy, "выдача подписки должна дотянуть полис"
-    assert player.policy.until == player.pro_until > first
+    assert player.policy.until == player.premium_until > first
     assert player.credits == 0
 
 
@@ -446,7 +457,7 @@ async def test_a_paid_month_is_not_shortened_by_a_subscription(db):
     await buy_policy(db, player, moment)
     paid_until = player.policy.until
     # Подписка короче оплаченного месяца
-    player.pro_until = moment + 3 * 24 * 3600
+    player.premium_until = moment + 3 * 24 * 3600
     await db.save_player(player)
 
     assert await settle(db, player, moment) == ""
@@ -517,7 +528,7 @@ async def test_the_card_carries_the_documents_only_to_their_owner(db):
 
 
 async def test_the_counter_says_the_subscription_holds_the_policy(db):
-    player = await stand(db, make_player(credits=500, pro=True))
+    player = await stand(db, make_player(credits=500, premium=True))
     await settle(db, player)
 
     body = build_insurance(player)
@@ -525,10 +536,44 @@ async def test_the_counter_says_the_subscription_holds_the_policy(db):
     # Цена та же для всех: подписчик платит за время после подписки
     assert body["price"] == POLICY_PRICE
     assert body["pro"] and body["by_pro"] and body["insured"]
-    assert "держит подписка" in body["why"]
+    assert "держит PREMIUM" in body["why"]
     # И обещания у такого полиса другие: не месяц, а срок подписки
     assert any("подписка" in line for line in body["gives"])
     assert body["action"] == "Продлить на месяц"
+
+
+async def test_the_younger_subscription_does_not_hold_the_policy(db):
+    """У PRO полиса нет, и экран страховой обещает его не ей.
+
+    Полис — то, чем старшая ступень отличается от младшей. Боец с PRO
+    покупает его за кредиты, как и всякий другой, и экран не должен
+    говорить ему, что полис у него уже есть.
+    """
+    player = await stand(db, make_player(credits=500, pro=True))
+    moment = now_ts()
+
+    assert await settle(db, player, moment) == "", "PRO выписала полис"
+    assert not player.insured(moment)
+    assert player.policy_cover_until(moment) == 0
+
+    body = build_insurance(player)
+    assert body["pro"], "подписка у бойца всё-таки есть"
+    assert not body["by_pro"] and not body["insured"]
+    assert body["why"] == ""
+    assert body["action"] == "Оформить полис"
+
+
+async def test_the_top_subscription_holds_the_policy_over_the_younger_one(db):
+    """Держит полис PREMIUM, даже если под ней дожива́ет оплаченная PRO."""
+    player = await stand(db, make_player(credits=0, premium=True, pro=True))
+    moment = now_ts()
+    # PRO кончится раньше: срок полиса должен считаться по PREMIUM
+    player.pro_until = moment + 24 * 3600
+    await db.save_player(player)
+
+    await settle(db, player, moment)
+
+    assert player.policy.until == player.premium_until > player.pro_until
 
 
 async def test_the_counter_says_nothing_about_a_subscription_to_the_rest(db):
@@ -637,13 +682,13 @@ async def test_the_hospital_renews_the_policy_before_it_prices_the_cure(client, 
 
 async def test_the_policy_of_a_subscriber_says_by_what_right_it_is_held(db):
     """На бланке видно, оплачен полис или держится подпиской."""
-    player = await stand(db, make_player(credits=0, pro=True))
+    player = await stand(db, make_player(credits=0, premium=True))
     moment = now_ts()
     await settle(db, player, moment)
 
     paper = policy_document(player, moment)
 
-    assert paper["by_pro"] and paper["ground"] == "По подписке PRO"
+    assert paper["by_pro"] and paper["ground"] == "По подписке PREMIUM"
     # Переключать такому полису нечего: им распоряжается срок подписки
     assert not paper["switchable"]
     assert any("подписка" in line for line in paper["gives"])
@@ -661,7 +706,7 @@ async def test_a_paid_policy_says_it_is_paid_and_keeps_its_switch(db):
 
 async def test_a_month_bought_past_the_subscription_is_a_paid_policy_again(db):
     """Купил месяц поверх подписки — бланк снова оплаченный, со всеми правами."""
-    player = await stand(db, make_player(credits=500, pro=True))
+    player = await stand(db, make_player(credits=500, premium=True))
     moment = now_ts()
     await settle(db, player, moment)
     await buy_policy(db, player, moment)
