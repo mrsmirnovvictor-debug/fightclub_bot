@@ -374,6 +374,31 @@ def test_the_version_changes_with_the_files(tmp_path, monkeypatch):
     assert server.asset_stamp() != before
 
 
+def test_the_page_and_the_version_list_name_the_same_files():
+    """Что страница грузит — то и попадает в метку версии, и наоборот.
+
+    Это две разные беды, и обе уже случались. Файл на странице, но не в
+    `ASSETS`, остаётся без метки: Telegram держит мини-апп в вебвью и
+    кеширует скрипты намертво, человек после выката видит вчерашний
+    код. Файл в `ASSETS`, но не на странице, — мёртвый груз: он сдвигает
+    метку всей страницы, ничего при этом не делая.
+    """
+    import re
+
+    import bot.webapp.server as server
+
+    page = (server.STATIC_DIR / "card.html").read_text(encoding="utf-8")
+    # Берём только свои файлы: telegram-web-app.js приходит со стороны
+    # и метку версии от нас не получает
+    on_page = set(re.findall(r'(?:src|href)="static/([^"?]+)"', page))
+
+    assert on_page == set(server.ASSETS), (
+        "страница и список версий разошлись: "
+        f"только на странице {sorted(on_page - set(server.ASSETS))}, "
+        f"только в ASSETS {sorted(set(server.ASSETS) - on_page)}"
+    )
+
+
 # ---------- ссылки на карточку в чате ----------
 
 
