@@ -26,6 +26,29 @@ var REACH = 62;
 // догоняет следующий удар
 var BADGE_MS = 800;
 
+// Чем подписываем событие, если сервер не назвал приёма. Приём
+// назван — показываем его: «Железная защита» говорит больше, чем
+// «блок». Не назван — слово, иначе защита проходит молча
+var PLAIN_WORDS = {
+  block: "блок",
+  dodge: "уворот",
+  counter: "контрудар",
+};
+
+// Цвет числа здоровья. Обычный удар синим, критический красным,
+// лечение зелёным: цвет читается быстрее, чем знак и размер
+var HIT_COLOUR = "#58a6ff";
+var CRIT_COLOUR = "#ff4d4d";
+var HEAL_COLOUR = "#5bc87a";
+
+// Размеры подписей в логических единицах сцены. На телефоне сцена
+// ужимается до ширины экрана, и то, что на макете читалось, в бою
+// оказывалось мелким
+var HUD_FONT = 18;
+var BADGE_FONT = 20;
+var DAMAGE_FONT = 24;
+var CRIT_FONT = 30;
+
 // Как зона удара превращается в ряд уворота. В движке у уворота зоны
 // нет вовсе: он либо случился, либо нет. Это чистая презентация —
 // от удара в голову уходят верхом, от удара в ноги подскакивают
@@ -156,7 +179,7 @@ function fightStage(options) {
         var hold = answer.breaking ? ms("breakHold") : 0;
         var guardEnd = contact + hold + (answer.breaking ? 0 : ms("breakHold"));
         lay(taker, t0 + approach, guardEnd, "block", zone);
-        badge(t0 + approach, taker, answer.ability);
+        badge(t0 + approach, taker, answer.ability || PLAIN_WORDS.block);
         theirs = Math.max(theirs, guardEnd);
       } else if (answer.kind === "hit") {
         // Пробитие доходит до тела позже: сперва сорвать защиту
@@ -167,7 +190,7 @@ function fightStage(options) {
       } else if (answer.kind === "dodge") {
         var row = DODGE_ROWS[zone] || "body";
         lay(taker, t0 + approach, t0 + approach + ms("dodge"), "dodge", row);
-        badge(t0 + approach, taker, answer.ability);
+        badge(t0 + approach, taker, answer.ability || PLAIN_WORDS.dodge);
         theirs = Math.max(theirs, t0 + approach + ms("dodge"));
       } else if (answer.kind === "counter") {
         counter = answer;
@@ -184,7 +207,8 @@ function fightStage(options) {
       // привязан и зональную броню игнорирует. Подписываем словом, а
       // если и зону пришлось додумать — тусклее, чтобы не выдавать
       // презентацию за данные сервера
-      badge(from, taker, counter.ability || "ответ", counter.assumed_zone);
+      badge(from, taker, counter.ability || PLAIN_WORDS.counter,
+        counter.assumed_zone);
       var touch = from + ms("contact");
       lay(hitter, touch, touch + ms("hitReaction"), "hit", counter.zone);
       drop(touch, hitter, counter.hp, counter.damage, counter.critical);
@@ -456,14 +480,44 @@ function drawStage(ctx, stage, assets, scene) {
   drawHud(ctx, stage, scene);
 }
 
+// Сколько места между именем и остатком: вплотную они читаются как
+// одно слово
+var HUD_GAP = 12;
+
+// Ширина строки. Вынесено, потому что на стенде холст поддельный:
+// там `measureText` может не быть вовсе, и падать из-за этого нельзя
+function textRoom(ctx, text) {
+  if (!ctx.measureText) {
+    // Грубая оценка на случай холста без измерения: лучше чуть
+    // подрезать лишнего, чем наложить одно на другое
+    return text.length * 9;
+  }
+  return ctx.measureText(text).width;
+}
+
+// Подрезать строку под отведённое место, добавив многоточие
+function shorten(ctx, text, room) {
+  if (room <= 0 || textRoom(ctx, text) <= room) {
+    return text;
+  }
+  var cut = text;
+  while (cut.length > 1 && textRoom(ctx, cut + "…") > room) {
+    cut = cut.slice(0, -1);
+  }
+  return cut + "…";
+}
+
 // Имена и полосы здоровья. Стоят в сцене, а не над ней: ТЗ требует
 // держать их внутри безопасной зоны фона, иначе на узком экране их
 // срежет вместе с краями картинки
 function drawHud(ctx, stage, scene) {
   var safe = scene.safeArea;
   var top = safe.top;
-  var width = 150;
-  var height = 9;
+  // Плашка шире, чем нужно полосе: над ней стоят имя и остаток, а
+  // шрифт вырос в полтора раза. На полутора сотнях они налезали друг
+  // на друга, и «Растафарайчик 40/100» читался как «Растафарай40/100»
+  var width = 200;
+  var height = 10;
 
   ["left", "right"].forEach(function (side) {
     var who = stage.cast_of(side);
@@ -484,11 +538,17 @@ function drawHud(ctx, stage, scene) {
     ctx.fillStyle = share > 0.5 ? "#4caf50" : share > 0.25 ? "#e0a53a" : "#d2452f";
     ctx.fillRect(x, top, width * share, height);
     ctx.fillStyle = "#e8e8ea";
-    ctx.font = "12px sans-serif";
+    ctx.font = HUD_FONT + "px sans-serif";
+    // Остаток здоровья занимает своё место первым: его длина известна
+    // и он важнее, а имя ужимается под то, что осталось. Прозвища
+    // бывают любой длины, и подрезать надо по настоящей ширине букв,
+    // а не по их числу
+    var left = hp + "/" + full;
+    var room = width - textRoom(ctx, left) - HUD_GAP;
     ctx.textAlign = mine ? "left" : "right";
-    ctx.fillText(who.name, mine ? x : x + width, top - 5);
+    ctx.fillText(shorten(ctx, who.name, room), mine ? x : x + width, top - 7);
     ctx.textAlign = mine ? "right" : "left";
-    ctx.fillText(hp + "/" + full, mine ? x + width : x, top - 5);
+    ctx.fillText(left, mine ? x + width : x, top - 7);
     ctx.restore();
 
     // Свежий урон — числом у того, кто его получил
@@ -496,11 +556,13 @@ function drawHud(ctx, stage, scene) {
     if (hurt) {
       ctx.save();
       ctx.fillStyle = hurt.healing
-        ? "#5bc87a"
+        ? HEAL_COLOUR
         : hurt.critical
-          ? "#ffd24a"
-          : "#f2f2f4";
-      ctx.font = (hurt.critical ? "bold 20px" : "16px") + " sans-serif";
+          ? CRIT_COLOUR
+          : HIT_COLOUR;
+      ctx.font =
+        (hurt.critical ? "bold " + CRIT_FONT : String(DAMAGE_FONT)) +
+        "px sans-serif";
       ctx.textAlign = "center";
       ctx.fillText(
         (hurt.healing ? "+" : "−") + hurt.damage,
@@ -516,7 +578,7 @@ function drawHud(ctx, stage, scene) {
     if (said) {
       ctx.save();
       ctx.fillStyle = said.assumed ? "#8a8d98" : "#cfd2dc";
-      ctx.font = "13px sans-serif";
+      ctx.font = BADGE_FONT + "px sans-serif";
       ctx.textAlign = "center";
       ctx.fillText(said.text, scene.fighterAnchors[side].x, top + 24);
       ctx.restore();

@@ -397,6 +397,12 @@ function recorder() {
       fillRect(x, y, w, h) {
         calls.bars.push({ x: x, y: y, w: w, h: h, fill: this.fillStyle });
       },
+      // Ширина буквы примерно половина кегля — для проверки
+      // наложения этого довольно, а точные метрики тут не нужны
+      measureText(text) {
+        const px = Number(/(\d+)px/.exec(this.font || "16px")[1]);
+        return { width: text.length * px * 0.5 };
+      },
       fillText(text, x, y) {
         calls.words.push({ text: text, x: x, y: y, fill: this.fillStyle,
           font: this.font, align: this.textAlign });
@@ -594,10 +600,145 @@ check("догаданная зона контрудара подписана т�
     defence_ability: "Уход",
   })]));
   const when = T.approach + T.dodge + 10;
-  const a = paint(told, when).words.filter((one) => one.text === "ответ");
-  const b = paint(guessed, when).words.filter((one) => one.text === "ответ");
-  ok(a.length && b.length, "ответ подписан в обоих случаях");
+  const a = paint(told, when).words.filter((one) => one.text === "контрудар");
+  const b = paint(guessed, when).words.filter((one) => one.text === "контрудар");
+  ok(a.length && b.length, "контрудар подписан в обоих случаях");
   ok(a[0].fill !== b[0].fill, "но цвет разный: " + a[0].fill + "/" + b[0].fill);
+});
+
+// ---------- подписи: слова, цвет и размер ----------
+
+// Какого размера шрифт в подписи. Из строки вида "bold 30px sans-serif"
+function size(font) {
+  return Number(/(\d+)px/.exec(font)[1]);
+}
+
+check("защита подписана словом, если приёма не было", () => {
+  const cases = {
+    block: "блок",
+    dodge: "уворот",
+  };
+  for (const [outcome, word] of Object.entries(cases)) {
+    const it = stage(turn([strike({ outcome: outcome, hp_after: 100 })]));
+    const drawn = paint(it, T.approach + 10).words.map((one) => one.text);
+    ok(drawn.indexOf(word) >= 0, outcome + " подписан «" + word + "»: " + drawn);
+  }
+  // Контрудар — позже, после уворота
+  const counter = stage(turn([strike({
+    outcome: "counter", hp_after: 100, counter: 9, counter_hp_after: 91,
+    counter_zone: "head",
+  })]));
+  const said = paint(counter, T.approach + T.dodge + 10).words.map((o) => o.text);
+  ok(said.indexOf("контрудар") >= 0, said.join(","));
+});
+
+check("названный приём вытесняет общее слово", () => {
+  const it = stage(turn([strike({
+    outcome: "block", hp_after: 100, defence_ability: "Железная защита",
+  })]));
+  const drawn = paint(it, T.approach + 10).words.map((one) => one.text);
+  ok(drawn.indexOf("Железная защита") >= 0, drawn.join(","));
+  ok(drawn.indexOf("блок") < 0, "двух подписей разом нет: " + drawn.join(","));
+});
+
+check("обычный удар синим, критический красным, лечение зелёным", () => {
+  const when = T.approach + T.contact + 10;
+  const plain = paint(stage(turn([strike()])), when).words
+    .filter((one) => one.text[0] === "\u2212")[0];
+  const crit = paint(stage(turn([strike({ outcome: "crit" })])), when).words
+    .filter((one) => one.text[0] === "\u2212")[0];
+
+  const heal = stage(turn([strike({ damage: 97, hp_after: 3 })]));
+  heal.at(heal.length() + 2000);
+  heal.sync("right", 25);
+  const green = paint(heal, heal.length() + 2000).words
+    .filter((one) => one.text[0] === "+")[0];
+
+  ok(plain && crit && green, "все три числа показаны");
+  const colours = [plain.fill, crit.fill, green.fill];
+  same(new Set(colours).size, 3, "три разных цвета: " + colours.join(" "));
+  // Синий: синего в нём больше, чем красного. Красный — наоборот
+  const channel = (hex, at) => parseInt(hex.slice(at, at + 2), 16);
+  ok(channel(plain.fill, 5) > channel(plain.fill, 1), "обычный синий: " + plain.fill);
+  ok(channel(crit.fill, 1) > channel(crit.fill, 5), "критический красный: " + crit.fill);
+  ok(channel(green.fill, 3) > channel(green.fill, 1), "лечение зелёное: " + green.fill);
+});
+
+check("подписи крупные: читаются на телефоне", () => {
+  const when = T.approach + T.contact + 10;
+  const drawn = paint(stage(turn([strike({ ability: "Двойка" })])), when);
+  const number = drawn.words.filter((one) => one.text[0] === "\u2212")[0];
+  const named = drawn.words.filter((one) => one.text === "Двойка")[0];
+  const hud = drawn.words.filter((one) => one.text === "Тайлер")[0];
+
+  ok(size(number.font) >= 24, "число урона " + number.font);
+  ok(named && size(named.font) >= 20, "подпись приёма " + (named || {}).font);
+  ok(size(hud.font) >= 17, "имя в сцене " + hud.font);
+
+  const crit = paint(stage(turn([strike({ outcome: "crit" })])), when).words
+    .filter((one) => one.text[0] === "\u2212")[0];
+  ok(size(crit.font) > size(number.font), "критический крупнее обычного");
+});
+
+check("подписи не вылезают за края сцены", () => {
+  const when = T.approach + T.contact + 10;
+  const drawn = paint(stage(turn([strike({ ability: "Двойка" })])), when);
+  for (const one of drawn.words) {
+    ok(one.y > 0 && one.y < scene.logicalSize.height,
+      "«" + one.text + "» по вертикали на сцене, y=" + one.y);
+    ok(one.x > 0 && one.x < scene.logicalSize.width,
+      "«" + one.text + "» по горизонтали на сцене, x=" + one.x);
+  }
+});
+
+check("имя и остаток здоровья не налезают друг на друга", () => {
+  // Прозвища бывают длинные. «Растафарайчик» при подписи в полтора
+  // раза крупнее перекрывал «40/100» — на экране читалось
+  // «Растафарай40/100»
+  const it = stage(turn([strike()]));
+  it.cast(
+    { id: ME, name: "Растафарайчик-Длинноимённый", line: "warrior",
+      hp: 40, maxHp: 100 },
+    { id: FOE, name: "М", line: "tank", hp: 90, maxHp: 95 },
+  );
+  const tape = recorder();
+  it.at(10);
+  sandbox.drawStage(tape.ctx, it, shelf(), scene);
+
+  const px = (f) => Number(/(\d+)px/.exec(f)[1]);
+  const span = (one) => {
+    const w = one.text.length * px(one.font) * 0.5;
+    if (one.align === "left") return [one.x, one.x + w];
+    if (one.align === "right") return [one.x - w, one.x];
+    return [one.x - w / 2, one.x + w / 2];
+  };
+
+  const pairs = [["40/100", 0], ["90/95", 0]];
+  for (const [number] of pairs) {
+    const said = tape.calls.words.find((one) => one.text === number);
+    ok(said, "остаток «" + number + "» показан целиком, без подрезки");
+    const numbers = span(said);
+    // Имя — та подпись на той же строке, что не число
+    const name = tape.calls.words.find(
+      (one) => one.y === said.y && one !== said && !/^\d+\/\d+$/.test(one.text)
+    );
+    ok(name, "имя рядом с «" + number + "» есть");
+    const names = span(name);
+    ok(
+      names[1] <= numbers[0] + 0.5 || numbers[1] <= names[0] + 0.5,
+      "«" + name.text + "» " + names.map(Math.round) +
+        " и «" + number + "» " + numbers.map(Math.round) + " пересеклись",
+    );
+  }
+  // Длинное имя подрезано, короткое — нет
+  ok(
+    tape.calls.words.some((one) => one.text.endsWith("…")),
+    "длинное прозвище подрезано многоточием",
+  );
+  ok(
+    tape.calls.words.some((one) => one.text === "М"),
+    "короткое оставлено как есть",
+  );
 });
 
 if (failed) {
