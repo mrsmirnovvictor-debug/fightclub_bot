@@ -63,6 +63,19 @@ function fightStage(options) {
   var fallen = {};
   var finished = false;
 
+  // Какое здоровье показываем в этот момент. Вынесено отдельно: тем же
+  // счётом пользуется сверка с сервером, а часы она трогать не должна
+  function hpAt(side, when) {
+    var fighter = side === "left" ? left : right;
+    var shown = fighter ? fighter.hp : 0;
+    for (var i = 0; i < drops.length; i += 1) {
+      if (drops[i].side === side && when >= drops[i].at) {
+        shown = drops[i].hp;
+      }
+    }
+    return shown;
+  }
+
   function sideOf(id) {
     if (left && left.id === id) return "left";
     if (right && right.id === id) return "right";
@@ -91,9 +104,13 @@ function fightStage(options) {
     });
   }
 
-  function drop(at, side, hp, damage, critical) {
+  function drop(at, side, hp, damage, critical, healing) {
     drops.push({
       at: at, side: side, hp: hp, damage: damage, critical: !!critical,
+      // Лечение — такое же изменение здоровья, как урон, и показывать
+      // его надо так же. Иначе человек жмёт приём на трёх очках
+      // здоровья и не видит ничего
+      healing: !!healing,
     });
   }
 
@@ -234,6 +251,22 @@ function fightStage(options) {
           cursor += ms("approach");
         } else if (event.kind === "settle") {
           flush();
+          // Сервер прислал итоговое здоровье хода. Сверяемся с ним, а
+          // не только со своими ударами: лечение, яд и всё прочее
+          // случается мимо разменов, и без этой сверки полоса остаётся
+          // той, какой её оставил последний удар. Ставим на конец хода,
+          // чтобы не опередить сам удар
+          ["left", "right"].forEach(function (side) {
+            var who = side === "left" ? left : right;
+            if (!who) return;
+            var told = event.hp[String(who.id)];
+            if (told === undefined) return;
+            var shown = hpAt(side, cursor);
+            if (told !== shown) {
+              drop(cursor, side, told, Math.abs(told - shown), false,
+                told > shown);
+            }
+          });
           if (event.finished) {
             finished = true;
             var loser = null;
@@ -298,14 +331,23 @@ function fightStage(options) {
     // Здоровье, которое показываем. Снимается в момент контакта, а не
     // в начале удара: полоса не должна опускаться раньше попадания
     hp: function (side) {
-      var fighter = side === "left" ? left : right;
-      var shown = fighter ? fighter.hp : 0;
-      for (var i = 0; i < drops.length; i += 1) {
-        if (drops[i].side === side && clock >= drops[i].at) {
-          shown = drops[i].hp;
-        }
+      return hpAt(side, clock);
+    },
+
+    // Сервер сказал, сколько у бойца здоровья прямо сейчас. Принимаем
+    // это, только когда всё расставленное доиграно: пока размен идёт,
+    // опрос знает БУДУЩЕЕ — здоровье после удара, который ещё не
+    // показан, — и верить ему значило бы ронять полосу раньше удара
+    sync: function (side, hp) {
+      if (typeof hp !== "number" || clock < cursor) {
+        return false;
       }
-      return shown;
+      var shown = hpAt(side, clock);
+      if (hp === shown) {
+        return false;
+      }
+      drop(clock, side, hp, Math.abs(hp - shown), false, hp > shown);
+      return true;
     },
 
     // Свежий урон — его показывают всплывающим числом
@@ -453,11 +495,15 @@ function drawHud(ctx, stage, scene) {
     var hurt = stage.damage(side);
     if (hurt) {
       ctx.save();
-      ctx.fillStyle = hurt.critical ? "#ffd24a" : "#f2f2f4";
+      ctx.fillStyle = hurt.healing
+        ? "#5bc87a"
+        : hurt.critical
+          ? "#ffd24a"
+          : "#f2f2f4";
       ctx.font = (hurt.critical ? "bold 20px" : "16px") + " sans-serif";
       ctx.textAlign = "center";
       ctx.fillText(
-        "−" + hurt.damage,
+        (hurt.healing ? "+" : "−") + hurt.damage,
         scene.fighterAnchors[side].x,
         top + 46,
       );

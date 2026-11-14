@@ -1585,3 +1585,82 @@ async def test_the_fighter_payload_names_the_class_by_code_not_by_title():
         assert body["class_code"] == code, code
         assert body["fclass"] == fclass.title, "название тоже на месте"
         assert body["class_code"] != body["fclass"], code
+
+
+# ---------- лечение говорит о себе ----------
+
+
+async def test_healing_in_a_duel_goes_into_the_fight_log(bot, db):
+    """Лечение не ждёт удара — и без своей строки исчезает бесследно.
+
+    Рейд, блэкаут, бой отрядов и война за район говорили о лечении
+    словами, а дуэль молчала: нажавший видел личный ответ, а в журнале
+    хода здоровье просто оказывалось другим, чем было. По этому журналу
+    рисует сцена боя — и показывала полосу, которую объясняют только
+    удары, то есть не поднимала её вовсе.
+    """
+    from bot.game.abilities import MAX_ENERGY
+
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "tank"))
+    await db.save_player(make_player(2, "Марла", "assassin"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+
+    healer = session.fighters[1]
+    healer.loadout.slots["recovery"] = 1
+    healer.energy = MAX_ENERGY
+    healer.hp = 3  # на трёх очках за лечение и хватаются
+
+    said = await service.use_ability(session.id, 1, "recovery")
+    assert "+" in said and "❤️" in said, said
+    assert healer.hp > 3, "здоровье вернулось"
+
+    # Ход ещё не считался: слова ждут ближайшего размена
+    assert session.notes, "лечение записано"
+    assert not session.rounds
+
+    await play_round(service, session)
+
+    assert session.rounds, "размен посчитан"
+    lines = session.rounds[0]["lines"]
+    # Голосом судьи и с остатком в скобках, как у удара: это такое же
+    # изменение здоровья, и читать его надо так же
+    assert any(
+        "Тайлер" in line and "переводит дух" in line and "+" in line
+        for line in lines
+    ), lines
+    assert any(f"/{healer.max_hp}]" in line for line in lines), lines
+    # Первыми строками: лечились раньше, чем били
+    assert "переводит дух" in lines[0], lines
+    assert not session.notes, "список снят, иначе строка повторится"
+
+    # И второй ход её уже не повторяет
+    await play_round(service, session)
+    if len(session.rounds) > 1:
+        assert not any(
+            "переводит дух" in line for line in session.rounds[1]["lines"]
+        )
+
+
+async def test_the_healing_line_reaches_the_judge_in_the_chat(bot, db):
+    """Ту же строку слышит ветка: судья говорит одно и то же везде."""
+    from bot.game.abilities import MAX_ENERGY
+
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "tank"))
+    await db.save_player(make_player(2, "Марла", "assassin"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    healer = session.fighters[1]
+    healer.loadout.slots["recovery"] = 1
+    healer.energy = MAX_ENERGY
+    healer.hp = 3
+
+    await service.use_ability(session.id, 1, "recovery")
+    await play_round(service, session)
+
+    everywhere = list(bot.texts) + list(getattr(bot, "log", []))
+    assert any("переводит дух" in text for text in everywhere), everywhere[-3:]

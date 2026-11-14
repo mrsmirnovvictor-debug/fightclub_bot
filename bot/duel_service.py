@@ -19,6 +19,7 @@ from bot.config import Config
 from bot.database import Database
 from bot.game.classes import Zone, block_combo, block_title
 from bot.game.equipment import BARE_HANDS_ICON
+from bot.game.combat import heal_line
 from bot.game.health import now_ts
 from bot.game.modes import FightMode
 from bot.game.scout import SCOUT_FIGHTS, Habits, read_habits
@@ -182,6 +183,12 @@ class DuelSession:
     # тот, чьи это привычки: разбирают ведь соперника. Пусто — подписки
     # нет ни у кого, и разбор никто не заказывал
     habits: dict[int, Habits] = field(default_factory=dict)
+    # Что случилось между разменами и о чём судья обязан сказать. Пока
+    # это лечение: оно не ждёт удара, случается в момент нажатия, и без
+    # своей строки исчезает бесследно — здоровье просто оказывается
+    # другим, чем было. Слова копятся здесь и уходят в журнал вместе с
+    # ближайшим разменом, первыми строками: лечились-то до него
+    notes: list[str] = field(default_factory=list)
     # Слова судьи в конце боя — уже без разметки. В ветке они остаются
     # сообщением, а в мини-аппе показывать нечего: бой из списка исчезает
     # ровно в тот момент, когда игроку и надо прочитать итог.
@@ -693,7 +700,21 @@ class DuelService:
             if ability.heal:
                 gained = fighter.heal_by(ability.heal)
                 fighter.charges.pop()
-                return f"{ability.icon} {ability.title}: +{gained} ❤️"
+                # Нажавшему — личный ответ, бою — событие. Без строки в
+                # журнале лечение видел только тот, кто его нажал:
+                # соперник, зритель и сцена боя просто находили здоровье
+                # не тем, каким оставили
+                #
+                # В журнале строка идёт голосом судьи и с остатком в
+                # скобках, как у удара: это такое же изменение здоровья,
+                # и читать его надо так же. Личный ответ остаётся
+                # прежним — там имя бойца ни к чему, он и так про себя
+                session.notes.append(
+                    f"{ability.icon} {fighter.name} переводит дух — "
+                    f"{ability.title}, +{gained} "
+                    f"[{fighter.hp}/{fighter.max_hp}]"
+                )
+                return heal_line(ability, gained)
             return f"{ability.icon} {ability.title} наготове."
 
     async def handle_choice(
@@ -797,6 +818,12 @@ class DuelService:
         # уходит ровно то, что он сказал. Позвать разбор дважды — значит
         # получить про один и тот же удар два разных описания.
         said = strike_lines(result, session.fighters, self.rng)
+        # Что случилось до размена — первыми строками: лечились раньше,
+        # чем били. Список снимаем, иначе одна и та же строка повторялась
+        # бы в каждом следующем ходу
+        if session.notes:
+            said = session.notes + said
+            session.notes = []
         session.rounds.append(turn_payload(result, said))
         # Итог раунда встаёт на место его же панели: так за раунд уходит
         # два обращения к чату вместо четырёх, и бой не упирается в лимит

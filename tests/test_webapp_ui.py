@@ -19592,3 +19592,47 @@ async def test_other_weapons_keep_the_board_until_they_are_drawn(server):
         assert not asked, f"графику боя качать было незачем: {asked}"
 
         await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_healing_lifts_the_bar_in_the_scene(server):
+    """Лечение случается мимо ударов — и сцена обязана его показать.
+
+    Игрок жмёт приём на трёх очках здоровья. Удара при этом нет, и
+    сцена, считающая полосу только по разменам, не двинула бы её вовсе:
+    ровно это и случилось в бою. Здоровье из опроса — источник истины.
+    """
+    fights = ring_with_scene()
+    fights["duel"]["fighters"][0]["hp"] = 3
+    async with async_playwright() as pw:
+        browser, page, asked = await open_scene(pw, server, fights)
+        await page.wait_for_selector(".fight-veil.gone", timeout=10000)
+        # Ждём, пока раскадровка доиграет разменом из журнала: до этого
+        # она числам опроса верить не должна
+        await page.wait_for_function(
+            "() => fightShow && fightShow.stage && fightShow.stage.done()",
+            timeout=10000,
+        )
+
+        before = await page.evaluate("() => fightShow.stage.hp('left')")
+
+        # Лечение приходит обычным опросом, как в игре: сервер отдаёт
+        # уже подлатанного бойца. Зовём sync не мы, а сама карточка —
+        # иначе проверка доказывала бы только то, что метод существует
+        healed = ring_with_scene()
+        healed["duel"]["fighters"][0]["hp"] = before + 22
+        await page.route("**/api/fights*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(healed)
+        ))
+        await page.evaluate("() => loadFights()")
+        await page.wait_for_timeout(300)
+
+        after = await page.evaluate("() => fightShow.stage.hp('left')")
+        shown = await page.evaluate("() => fightShow.stage.damage('left')")
+
+        assert after == before + 22, (before, after)
+        assert shown and shown["healing"], shown
+        assert shown["damage"] == 22, shown
+
+        await browser.close()
