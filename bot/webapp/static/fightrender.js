@@ -44,6 +44,13 @@ var HEAL_COLOUR = "#5bc87a";
 // Размеры подписей в логических единицах сцены. На телефоне сцена
 // ужимается до ширины экрана, и то, что на макете читалось, в бою
 // оказывалось мелким
+// Цвет подписи события. Синий — тот же, что у обычного удара: это
+// подписи одного ряда, и разнобой в цветах читался бы как разница по
+// смыслу, которой нет. Догадку сцены красим тем же тоном, но
+// приглушённо
+var BADGE_COLOUR = "#58a6ff";
+var BADGE_GUESS_COLOUR = "#3f6d9e";
+
 var HUD_FONT = 18;
 var BADGE_FONT = 20;
 var DAMAGE_FONT = 24;
@@ -572,15 +579,20 @@ function drawHud(ctx, stage, scene) {
       ctx.restore();
     }
 
-    // Подпись приёма. Если зону додумала сцена, а не прислал сервер,
-    // подпись идёт тусклее: выдавать догадку за данные нельзя
+    // Подпись события — по середине шкалы своего бойца, а не над
+    // фигурой: так сразу видно, чей это блок и чей уворот. Над
+    // фигурами двое в размене сходятся вплотную, и подпись
+    // оказывалась между ними, ничьей.
+    //
+    // Если зону додумала сцена, а не прислал сервер, подпись идёт
+    // приглушённее: выдавать догадку за данные нельзя
     var said = stage.badge(side);
     if (said) {
       ctx.save();
-      ctx.fillStyle = said.assumed ? "#8a8d98" : "#cfd2dc";
+      ctx.fillStyle = said.assumed ? BADGE_GUESS_COLOUR : BADGE_COLOUR;
       ctx.font = BADGE_FONT + "px sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText(said.text, scene.fighterAnchors[side].x, top + 24);
+      ctx.fillText(said.text, x + width / 2, top + height + BADGE_FONT + 4);
       ctx.restore();
     }
   });

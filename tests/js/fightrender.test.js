@@ -741,6 +741,56 @@ check("имя и остаток здоровья не налезают друг 
   );
 });
 
+check("подпись события стоит по середине шкалы своего бойца", () => {
+  // Над фигурами двое в размене сходятся вплотную, и подпись
+  // оказывалась между ними — непонятно, чья
+  const it = stage(turn([strike({ outcome: "block", hp_after: 100 })]));
+  const drawn = paint(it, T.approach + 40);
+  const said = drawn.words.find((one) => one.text === "блок");
+  ok(said, "блок подписан: " + drawn.words.map((o) => o.text).join(","));
+  same(said.align, "center", "подпись центрирована");
+
+  // Шкала защищавшегося — правая: её подложка это самый широкий
+  // прямоугольник в правой половине
+  const bars = drawn.bars.filter((one) => one.x > scene.logicalSize.width / 2);
+  ok(bars.length, "шкала справа есть");
+  const bar = bars[0];
+  same(
+    Math.round(said.x),
+    Math.round(bar.x + bar.w / 2),
+    "подпись по середине шкалы, а не над фигурой",
+  );
+  ok(
+    Math.abs(said.x - scene.fighterAnchors.right.x) > 1,
+    "и это не якорь фигуры",
+  );
+  ok(said.y > bar.y, "под шкалой, а не поверх неё");
+});
+
+check("подпись события синяя, догадка — приглушённее, но тем же тоном", () => {
+  const told = stage(turn([strike({
+    outcome: "counter", hp_after: 100, counter: 9, counter_hp_after: 91,
+    counter_zone: "head",
+  })]));
+  const guessed = stage(turn([strike({
+    outcome: "counter", hp_after: 100, counter: 9, counter_hp_after: 91,
+  })]));
+  const when = T.approach + T.dodge + 40;
+  const a = paint(told, when).words.find((one) => one.text === "контрудар");
+  const b = paint(guessed, when).words.find((one) => one.text === "контрудар");
+  ok(a && b, "контрудар подписан в обоих случаях");
+
+  const channel = (hex, at) => parseInt(hex.slice(at, at + 2), 16);
+  for (const one of [a, b]) {
+    // «Больше синего, чем красного» мало: у серого #cfd2dc синего тоже
+    // чуть больше. Синий должен преобладать заметно
+    const blue = channel(one.fill, 5) - channel(one.fill, 1);
+    ok(blue >= 40, "синяя с запасом (" + blue + "): " + one.fill);
+  }
+  ok(channel(a.fill, 5) > channel(b.fill, 5), "догадка приглушена: "
+    + a.fill + " против " + b.fill);
+});
+
 if (failed) {
   console.log("пало проверок: " + failed);
   process.exit(1);

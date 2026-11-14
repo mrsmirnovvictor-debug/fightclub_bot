@@ -19644,6 +19644,54 @@ async def test_the_very_first_exchange_is_played_and_not_swallowed(server):
 
 @pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
 @pytest.mark.asyncio
+async def test_the_answering_blow_does_not_land_before_it_is_shown(server):
+    """Урон от ответного удара не выскакивает вперёд своей анимации.
+
+    В ходу два удара: первый бьёт, второй отвечает. Опрос приносит
+    здоровье ПОСЛЕ всего хода, с обоими ударами сразу. Пока сверка с
+    опросом шла раньше подкладывания хода, раскадровке в тот миг было
+    нечего доигрывать — она число принимала, и урон от ответа появлялся
+    до того, как тот начался, а потом показывался второй раз, уже
+    своей анимацией.
+    """
+    opening = ring_with_scene()
+    opening["duel"]["log"] = []
+    # До размена оба целы
+    opening["duel"]["fighters"][0]["hp"] = 100
+    opening["duel"]["fighters"][1]["hp"] = 95
+
+    async with async_playwright() as pw:
+        browser, page, asked = await open_scene(pw, server, opening)
+        await page.wait_for_selector(".fight-veil.gone", timeout=10000)
+
+        after = ring_with_scene()  # тот же ход: 42 бьёт, 43 отвечает критом
+        await page.route("**/api/fights*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(after)
+        ))
+        await page.evaluate("() => loadFights()")
+        await page.wait_for_timeout(200)
+
+        # Ответ ещё впереди: здоровье бьющего не тронуто
+        assert await page.evaluate("() => fightShow.stage.hp('left')") == 100, (
+            "урон от ответа показан раньше самого ответа"
+        )
+        # И числа над ним нет — иначе оно же всплывёт второй раз
+        assert await page.evaluate("() => fightShow.stage.damage('left')") is None
+
+        await page.wait_for_function(
+            "() => fightShow.stage.done()", timeout=10000
+        )
+        told = after["duel"]["log"][-1]["hp_after"]
+        mine = str(after["duel"]["fighters"][0]["user_id"])
+        assert await page.evaluate("() => fightShow.stage.hp('left')") == (
+            told[mine]
+        ), "а когда ответ доиграл — снято, и по серверу"
+
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
 async def test_healing_lifts_the_bar_in_the_scene(server):
     """Лечение случается мимо ударов — и сцена обязана его показать.
 
