@@ -198,6 +198,8 @@ check("приём подписан, и подпись не висит весь �
   it.at(T.approach + 10);
   const shown = it.badge("left");
   ok(shown, "подпись есть");
+  // Раскадровка хранит название как есть; заглавными его пишет уже
+  // отрисовка — это её комиксный приём, а не данные
   same(shown.text, "Двойка");
   it.at(T.approach + 10 + 900);
   ok(!it.badge("left"), "и ушла");
@@ -368,8 +370,9 @@ check("сверка не трогает того, про кого сервер �
 function recorder() {
   let scale = { x: 1, y: 1 };
   let shift = { x: 0, y: 0 };
+  let turned = 0;
   const stack = [];
-  const calls = { images: [], shadows: [], bars: [], words: [] };
+  const calls = { images: [], shadows: [], bars: [], words: [], strokes: [] };
   return {
     calls: calls,
     ctx: {
@@ -378,18 +381,32 @@ function recorder() {
       beginPath() {},
       fill() {},
       save() {
-        stack.push({ scale: scale, shift: shift });
+        stack.push({ scale: scale, shift: shift, turned: turned });
       },
       restore() {
         const was = stack.pop();
         scale = was.scale;
         shift = was.shift;
+        turned = was.turned;
       },
       translate(x, y) {
         shift = { x: shift.x + x * scale.x, y: shift.y + y * scale.y };
       },
       scale(x, y) {
         scale = { x: scale.x * x, y: scale.y * y };
+      },
+      rotate(angle) {
+        turned += angle;
+      },
+      // Обводку пишем отдельно от заливки: это две разные вещи, и
+      // проверкам нужно различать их, а не считать одну за другую
+      strokeText(text, x, y) {
+        calls.strokes.push({
+          text: text, x: shift.x + x * scale.x, y: shift.y + y * scale.y,
+          fill: this.strokeStyle, width: this.lineWidth, font: this.font,
+          shadow: this.shadowColor, alpha: this.globalAlpha,
+          scale: scale.x, turned: turned,
+        });
       },
       ellipse(x, y, rx, ry) {
         calls.shadows.push({ x: x, y: y, rx: rx, ry: ry });
@@ -404,8 +421,12 @@ function recorder() {
         return { width: text.length * px * 0.5 };
       },
       fillText(text, x, y) {
-        calls.words.push({ text: text, x: x, y: y, fill: this.fillStyle,
-          font: this.font, align: this.textAlign });
+        calls.words.push({
+          text: text, x: shift.x + x * scale.x, y: shift.y + y * scale.y,
+          fill: this.fillStyle, font: this.font, align: this.textAlign,
+          shadow: this.shadowColor, alpha: this.globalAlpha,
+          scale: scale.x, turned: turned,
+        });
       },
       drawImage(image, sx, sy, sw, sh, dx, dy, dw, dh) {
         if (arguments.length <= 5) {
@@ -600,8 +621,8 @@ check("догаданная зона контрудара подписана т�
     defence_ability: "Уход",
   })]));
   const when = T.approach + T.dodge + 10;
-  const a = paint(told, when).words.filter((one) => one.text === "контрудар");
-  const b = paint(guessed, when).words.filter((one) => one.text === "контрудар");
+  const a = paint(told, when).words.filter((one) => one.text === "КОНТРУДАР");
+  const b = paint(guessed, when).words.filter((one) => one.text === "КОНТРУДАР");
   ok(a.length && b.length, "контрудар подписан в обоих случаях");
   ok(a[0].fill !== b[0].fill, "но цвет разный: " + a[0].fill + "/" + b[0].fill);
 });
@@ -615,8 +636,8 @@ function size(font) {
 
 check("защита подписана словом, если приёма не было", () => {
   const cases = {
-    block: "блок",
-    dodge: "уворот",
+    block: "БЛОК",
+    dodge: "УВОРОТ",
   };
   for (const [outcome, word] of Object.entries(cases)) {
     const it = stage(turn([strike({ outcome: outcome, hp_after: 100 })]));
@@ -629,7 +650,7 @@ check("защита подписана словом, если приёма не 
     counter_zone: "head",
   })]));
   const said = paint(counter, T.approach + T.dodge + 10).words.map((o) => o.text);
-  ok(said.indexOf("контрудар") >= 0, said.join(","));
+  ok(said.indexOf("КОНТРУДАР") >= 0, said.join(","));
 });
 
 check("названный приём вытесняет общее слово", () => {
@@ -637,8 +658,8 @@ check("названный приём вытесняет общее слово", 
     outcome: "block", hp_after: 100, defence_ability: "Железная защита",
   })]));
   const drawn = paint(it, T.approach + 10).words.map((one) => one.text);
-  ok(drawn.indexOf("Железная защита") >= 0, drawn.join(","));
-  ok(drawn.indexOf("блок") < 0, "двух подписей разом нет: " + drawn.join(","));
+  ok(drawn.indexOf("ЖЕЛЕЗНАЯ ЗАЩИТА") >= 0, drawn.join(","));
+  ok(drawn.indexOf("БЛОК") < 0, "двух подписей разом нет: " + drawn.join(","));
 });
 
 check("обычный удар синим, критический красным, лечение зелёным", () => {
@@ -668,7 +689,7 @@ check("подписи крупные: читаются на телефоне", (
   const when = T.approach + T.contact + 10;
   const drawn = paint(stage(turn([strike({ ability: "Двойка" })])), when);
   const number = drawn.words.filter((one) => one.text[0] === "\u2212")[0];
-  const named = drawn.words.filter((one) => one.text === "Двойка")[0];
+  const named = drawn.words.filter((one) => one.text === "ДВОЙКА")[0];
   const hud = drawn.words.filter((one) => one.text === "Тайлер")[0];
 
   ok(size(number.font) >= 24, "число урона " + number.font);
@@ -746,7 +767,7 @@ check("подпись события стоит по середине шкалы
   // оказывалась между ними — непонятно, чья
   const it = stage(turn([strike({ outcome: "block", hp_after: 100 })]));
   const drawn = paint(it, T.approach + 40);
-  const said = drawn.words.find((one) => one.text === "блок");
+  const said = drawn.words.find((one) => one.text === "БЛОК");
   ok(said, "блок подписан: " + drawn.words.map((o) => o.text).join(","));
   same(said.align, "center", "подпись центрирована");
 
@@ -776,8 +797,8 @@ check("подпись события синяя, догадка — приглу
     outcome: "counter", hp_after: 100, counter: 9, counter_hp_after: 91,
   })]));
   const when = T.approach + T.dodge + 40;
-  const a = paint(told, when).words.find((one) => one.text === "контрудар");
-  const b = paint(guessed, when).words.find((one) => one.text === "контрудар");
+  const a = paint(told, when).words.find((one) => one.text === "КОНТРУДАР");
+  const b = paint(guessed, when).words.find((one) => one.text === "КОНТРУДАР");
   ok(a && b, "контрудар подписан в обоих случаях");
 
   const channel = (hex, at) => parseInt(hex.slice(at, at + 2), 16);
@@ -789,6 +810,117 @@ check("подпись события синяя, догадка — приглу
   }
   ok(channel(a.fill, 5) > channel(b.fill, 5), "догадка приглушена: "
     + a.fill + " против " + b.fill);
+});
+
+// ---------- комиксный вид ----------
+
+check("у надписи есть обводка, и она темнее и толще самих букв", () => {
+  const when = T.approach + T.contact + 20;
+  const drawn = paint(stage(turn([strike()])), when);
+  const fill = drawn.words.find((one) => one.text[0] === "\u2212");
+  const line = drawn.strokes.find((one) => one.text[0] === "\u2212");
+  ok(fill && line, "число и нарисовано, и обведено");
+  same(line.text, fill.text, "обводка по тем же буквам");
+  ok(line.width >= 3, "обводка заметная: " + line.width);
+  const bright = (hex) =>
+    parseInt(hex.slice(1, 3), 16) + parseInt(hex.slice(3, 5), 16) +
+    parseInt(hex.slice(5, 7), 16);
+  ok(bright(line.fill) < bright(fill.fill), "обводка темнее: "
+    + line.fill + " против " + fill.fill);
+});
+
+check("тень падает от обводки, а не от заливки", () => {
+  // Силуэт у обводки шире: тень получается от всей надписи, а не от
+  // тонких букв. На заливке её гасим, иначе удвоится и замылит
+  const when = T.approach + T.contact + 20;
+  const drawn = paint(stage(turn([strike()])), when);
+  const line = drawn.strokes.find((one) => one.text[0] === "\u2212");
+  const fill = drawn.words.find((one) => one.text[0] === "\u2212");
+  ok(line.shadow && line.shadow !== "transparent", "у обводки тень: " + line.shadow);
+  same(fill.shadow, "transparent", "у заливки тени нет");
+});
+
+check("надпись выскакивает: сперва крупнее цели, потом садится", () => {
+  const it = stage(turn([strike()]));
+  const at = T.approach + T.contact;
+  const sizes = [2, 60, 110, 300].map((after) => {
+    const one = paint(it, at + after).words.find((w) => w.text[0] === "\u2212");
+    return one.scale;
+  });
+  ok(sizes[0] < 0.8, "в первый миг мельче: " + sizes[0]);
+  ok(Math.max.apply(null, sizes) > 1.05, "перелетает цель: " + sizes.join(" "));
+  ok(Math.abs(sizes[3] - 1) < 0.01, "и садится на место: " + sizes[3]);
+});
+
+check("надпись всплывает и тает, а не висит столбом", () => {
+  const it = stage(turn([strike()]));
+  const at = T.approach + T.contact;
+  const early = paint(it, at + 20).words.find((w) => w.text[0] === "\u2212");
+  const late = paint(it, at + 700).words.find((w) => w.text[0] === "\u2212");
+  ok(late.y < early.y - 10, "поднялась: " + early.y + " → " + late.y);
+  ok(late.alpha < early.alpha, "и тает: " + early.alpha + " → " + late.alpha);
+  same(early.alpha, 1, "но не сразу");
+});
+
+check("надписи наклонены, и бойцы — в разные стороны", () => {
+  const it = stage(turn([
+    strike(),
+    strike({ attacker_id: FOE, defender_id: ME, hp_after: 90 }),
+  ]));
+  const left = paint(it, it.length() - 60).words
+    .find((one) => one.text[0] === "\u2212" && one.turned !== 0);
+  const at = T.approach + T.contact + 20;
+  const right = paint(it, at).words.find((one) => one.text[0] === "\u2212");
+  ok(right && right.turned !== 0, "наклон есть: " + (right || {}).turned);
+  ok(left && Math.sign(left.turned) !== Math.sign(right.turned),
+    "в разные стороны: " + left.turned + " и " + right.turned);
+});
+
+check("критический наклонён сильнее обычного", () => {
+  const when = T.approach + T.contact + 20;
+  const plain = paint(stage(turn([strike()])), when).words
+    .find((one) => one.text[0] === "\u2212");
+  const crit = paint(stage(turn([strike({ outcome: "crit" })])), when).words
+    .find((one) => one.text[0] === "\u2212");
+  ok(Math.abs(crit.turned) > Math.abs(plain.turned),
+    "крит круче наклонён: " + crit.turned + " против " + plain.turned);
+});
+
+check("слова событий написаны заглавными", () => {
+  const it = stage(turn([strike({ outcome: "block", hp_after: 100 })]));
+  const drawn = paint(it, T.approach + 40).words.map((one) => one.text);
+  ok(drawn.indexOf("БЛОК") >= 0, drawn.join(","));
+  ok(drawn.indexOf("блок") < 0, "строчными не пишем");
+});
+
+check("слова событий тоже обведены и наклонены", () => {
+  const it = stage(turn([strike({ outcome: "dodge", hp_after: 100 })]));
+  const drawn = paint(it, T.approach + 40);
+  const line = drawn.strokes.find((one) => one.text === "УВОРОТ");
+  const fill = drawn.words.find((one) => one.text === "УВОРОТ");
+  ok(line, "обводка есть");
+  ok(line.width >= 3, "и она заметная: " + line.width);
+  ok(fill.turned !== 0, "наклон есть: " + fill.turned);
+});
+
+check("подпись не наезжает на шкалу здоровья, пока всплывает", () => {
+  // Надпись поднимается по ходу жизни. Начни она вплотную к шкале — к
+  // концу села бы на неё буквами
+  const it = stage(turn([strike({ outcome: "block", hp_after: 100 })]));
+  const at = T.approach;
+  for (const after of [10, 200, 400, 600, 780]) {
+    const drawn = paint(it, at + after);
+    const said = drawn.words.find((one) => one.text === "БЛОК");
+    if (!said) continue;
+    const size = Number(/(\d+)px/.exec(said.font)[1]) * said.scale;
+    const top = said.y - size;  // буквы идут вверх от базовой линии
+    // Шкалы — прямоугольники подложки; берём самый низкий их край
+    const bottom = Math.max.apply(
+      null, drawn.bars.map((one) => one.y + one.h),
+    );
+    ok(top >= bottom, "через " + after + " мс верх букв " + Math.round(top)
+      + " против низа шкалы " + Math.round(bottom));
+  }
 });
 
 if (failed) {

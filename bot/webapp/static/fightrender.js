@@ -404,6 +404,12 @@ function fightStage(options) {
 
     // Доиграно ли всё расставленное: по этому карточка понимает, что
     // можно показать итог боя
+    // Текущий момент. Нужен отрисовке: возраст надписи решает, какого
+    // она размера, насколько всплыла и не пора ли ей таять
+    now: function () {
+      return clock;
+    },
+
     done: function () {
       return clock >= cursor;
     },
@@ -487,6 +493,79 @@ function drawStage(ctx, stage, assets, scene) {
   drawHud(ctx, stage, scene);
 }
 
+// ---------- комиксная надпись ----------
+//
+// Удар должен читаться как удар, а не как строчка в отчёте. Поэтому у
+// надписей толстая тёмная обводка, тень из-под неё, лёгкий наклон и
+// «выскок» в первый миг: буквы вылетают крупнее цели и сразу садятся
+// на место. Дальше надпись всплывает и тает.
+
+// Сколько длится выскок
+var POP_MS = 170;
+// На сколько надпись всплывает за свою жизнь
+var RISE = 26;
+// С какой доли жизни начинает таять
+var FADE_FROM = 0.6;
+// Наклон в радианах, около пяти градусов. Бойцы наклонены в разные
+// стороны: так надписи не выглядят набором одинаковых штампов
+var TILT = 0.085;
+// Толщина обводки относительно кегля
+var OUTLINE = 0.18;
+var OUTLINE_COLOUR = "#10111a";
+var SHADOW_COLOUR = "rgba(0, 0, 0, 0.55)";
+
+// Размер в этот миг: вылетает крупнее цели и садится на место
+function popScale(age) {
+  if (age >= POP_MS) {
+    return 1;
+  }
+  var t = Math.max(0, age) / POP_MS;
+  // Две трети времени — разгон до перелёта, остаток — посадка
+  return t < 0.62
+    ? 0.55 + (1.18 - 0.55) * (t / 0.62)
+    : 1.18 - 0.18 * ((t - 0.62) / 0.38);
+}
+
+function comicText(ctx, text, x, y, look) {
+  var life = look.life || BADGE_MS;
+  var age = Math.max(0, look.age);
+  var gone = Math.min(1, age / life);
+  // Таять начинает не сразу: надпись должна успеть прочитаться
+  var fade = gone < FADE_FROM ? 1 : 1 - (gone - FADE_FROM) / (1 - FADE_FROM);
+  var size = look.size;
+
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, fade);
+  // Всплывает замедляясь: рывок в начале, спокойный конец
+  ctx.translate(x, y - RISE * Math.pow(gone, 0.6));
+  ctx.rotate(look.tilt || 0);
+  var scale = popScale(age);
+  ctx.scale(scale, scale);
+  ctx.textAlign = "center";
+  ctx.font = "italic 900 " + size + "px sans-serif";
+
+  // Обводка с тенью. Тень кладём от неё, а не от заливки: силуэт у
+  // обводки шире, и тень получается от всей надписи, а не от букв
+  ctx.lineJoin = "round";
+  ctx.miterLimit = 2;
+  ctx.lineWidth = size * OUTLINE;
+  ctx.strokeStyle = OUTLINE_COLOUR;
+  ctx.shadowColor = SHADOW_COLOUR;
+  ctx.shadowOffsetX = 3;
+  ctx.shadowOffsetY = 3;
+  ctx.shadowBlur = 4;
+  ctx.strokeText(text, 0, 0);
+
+  // Заливка — без тени, иначе та удвоится и буквы замылятся
+  ctx.shadowColor = "transparent";
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 0;
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = look.colour;
+  ctx.fillText(text, 0, 0);
+  ctx.restore();
+}
+
 // Сколько места между именем и остатком: вплотную они читаются как
 // одно слово
 var HUD_GAP = 12;
@@ -561,22 +640,23 @@ function drawHud(ctx, stage, scene) {
     // Свежий урон — числом у того, кто его получил
     var hurt = stage.damage(side);
     if (hurt) {
-      ctx.save();
-      ctx.fillStyle = hurt.healing
-        ? HEAL_COLOUR
-        : hurt.critical
-          ? CRIT_COLOUR
-          : HIT_COLOUR;
-      ctx.font =
-        (hurt.critical ? "bold " + CRIT_FONT : String(DAMAGE_FONT)) +
-        "px sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(
+      comicText(
+        ctx,
         (hurt.healing ? "+" : "−") + hurt.damage,
         scene.fighterAnchors[side].x,
         top + 46,
+        {
+          age: stage.now() - hurt.at,
+          size: hurt.critical ? CRIT_FONT : DAMAGE_FONT,
+          colour: hurt.healing
+            ? HEAL_COLOUR
+            : hurt.critical
+              ? CRIT_COLOUR
+              : HIT_COLOUR,
+          // Критический наклонён сильнее: он и должен выбиваться
+          tilt: (mine ? -1 : 1) * TILT * (hurt.critical ? 1.6 : 1),
+        },
       );
-      ctx.restore();
     }
 
     // Подпись события — по середине шкалы своего бойца, а не над
@@ -588,12 +668,24 @@ function drawHud(ctx, stage, scene) {
     // приглушённее: выдавать догадку за данные нельзя
     var said = stage.badge(side);
     if (said) {
-      ctx.save();
-      ctx.fillStyle = said.assumed ? BADGE_GUESS_COLOUR : BADGE_COLOUR;
-      ctx.font = BADGE_FONT + "px sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(said.text, x + width / 2, top + height + BADGE_FONT + 4);
-      ctx.restore();
+      comicText(
+        ctx,
+        // Заглавными: так пишут в комиксах, и короткое слово набирает
+        // вес, не прибавляя в кегле
+        said.text.toUpperCase(),
+        x + width / 2,
+        // Ниже шкалы на высоту всплытия: надпись поднимается по ходу
+        // жизни, и начни она вплотную к шкале — к концу наехала бы на
+        // неё буквами
+        top + height + BADGE_FONT + 4 + RISE,
+        {
+          age: stage.now() - said.at,
+          life: said.until - said.at,
+          size: BADGE_FONT,
+          colour: said.assumed ? BADGE_GUESS_COLOUR : BADGE_COLOUR,
+          tilt: (mine ? -1 : 1) * TILT,
+        },
+      );
     }
   });
 }
