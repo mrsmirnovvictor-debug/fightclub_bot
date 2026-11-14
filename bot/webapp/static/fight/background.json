@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "asset": "runtime/background.webp",
+  "source": "source/background.webp",
+  "logicalSize": { "width": 740, "height": 370 },
+  "pixelSize": { "width": 1480, "height": 740 },
+  "floorY": 332,
+  "fighterAnchors": {
+    "left": { "x": 270, "y": 332 },
+    "right": { "x": 470, "y": 332 }
+  },
+  "safeArea": {
+    "left": 110,
+    "right": 630,
+    "top": 42,
+    "bottom": 340
+  },
+  "rendering": {
+    "fit": "cover",
+    "position": "center",
+    "maximumDevicePixelRatio": 2
+  },
+  "notes": [
+    "Background only: fighters, HP bars and event labels are rendered separately.",
+    "Keep the floor aligned to logical y=332 when scaling the whole 740x370 scene.",
+    "Do not crop the bottom drain or move fighter anchors independently of the scene scale."
+  ]
+}
