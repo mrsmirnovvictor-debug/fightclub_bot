@@ -182,3 +182,52 @@ def test_the_scene_is_wired_only_to_modes_the_game_really_has():
     assert codes, "сцена не включена ни для одного режима"
     real = {mode.value for mode in FightMode}
     assert set(codes) <= real, f"выдуманные режимы: {set(codes) - real}"
+
+
+# ---------- стойка не ездит ----------
+
+# Насколько якорю стойки позволено гулять между кадрами, в логических
+# единицах сцены. Стойка крутится в петле всё время, пока боец ждёт
+# хода, и сдвиг якоря переставляет фигуру по экрану: не дыхание, а
+# прыжок. Число взято по тому, что уже нарисовано, с запасом — самый
+# неровный из четырёх классов укладывается в десять:
+#
+#   warrior 10.5 · assassin 2.4 · tank 6.2 · trickster 0.0
+#
+# Трикстер до исправления давал 90 и выглядел как бег туда-обратно.
+# Проверки на это не было, поэтому он и доехал до прода
+STANCE_DRIFT = 15.0
+
+
+def stance_offsets(line: str) -> list[float]:
+    """Где стоит якорь относительно середины кадра, по кадрам стойки."""
+    book = json.loads((FIGHT_DIR / line / "manifest.json").read_text("utf-8"))
+    row = book["rowMap"]["move"].index("stance_reference")
+    return [
+        frame["pivot"]["x"] - frame["drawSize"]["w"] / 2
+        for frame in book["sets"]["move"]["frames"]
+        if frame["row"] == row
+    ]
+
+
+@pytest.mark.parametrize("line", sorted(set(ART_LINES.values())))
+def test_the_stance_does_not_walk_the_fighter_across_the_scene(line):
+    """Якорь стойки стоит на месте: петля дышит, а не ходит.
+
+    Якорь говорит, какой точкой кадр садится на свою отметку на полу.
+    Если он гуляет от кадра к кадру, фигура переставляется по экрану
+    каждые несколько десятков миллисекунд — и спокойное ожидание хода
+    превращается в беготню. Ровно это и случилось с трикстером.
+
+    Сверяем кадры между собой, а не с серединой: у ассасина и танка
+    якорь смещён от середины на сорок с лишним, и они стоят спокойно,
+    потому что смещены одинаково. Беду делает разброс, а не смещение.
+    """
+    offsets = stance_offsets(line)
+    assert len(offsets) == 6, f"{line}: кадров стойки не шесть, а {len(offsets)}"
+    drift = max(offsets) - min(offsets)
+    assert drift <= STANCE_DRIFT, (
+        f"{line}: якорь стойки гуляет на {drift:.1f} — фигура будет "
+        f"переставляться по экрану. Отклонения по кадрам: "
+        f"{[round(one, 1) for one in offsets]}"
+    )
