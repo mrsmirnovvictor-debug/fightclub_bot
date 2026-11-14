@@ -104,6 +104,12 @@ def fighter_payload(fighter: Fighter, ready: bool, you: bool) -> dict[str, Any]:
         "level": fighter.level,
         "emoji": fighter.fclass.emoji,
         "fclass": fighter.fclass.title,
+        # Код класса рядом с названием, и не для красоты. Название
+        # локализовано — по нему нельзя выбрать ни комплект образов для
+        # сцены боя, ни что-либо ещё: переведут надпись, и выбор
+        # молча развалится. Для показа остаётся `fclass`, для выбора —
+        # этот код
+        "class_code": fighter.fclass.code,
         "hp": fighter.hp,
         "max_hp": fighter.max_hp,
         "percent": round(fighter.hp_percent * 100),

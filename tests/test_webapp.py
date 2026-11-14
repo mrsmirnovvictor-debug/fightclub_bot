@@ -357,10 +357,15 @@ async def test_the_loading_picture_reaches_the_page_by_its_real_address(client):
 
 
 def test_the_version_changes_with_the_files(tmp_path, monkeypatch):
-    """Метка считается по содержимому: правка стиля обязана её сдвинуть."""
+    """Метка считается по содержимому: правка стиля обязана её сдвинуть.
+
+    Список файлов берём у сервера, а не перечисляем руками: он уже
+    однажды разошёлся — страница подключила новый скрипт, а стенд о нём
+    не знал и падал на отсутствующем файле.
+    """
     import bot.webapp.server as server
 
-    for name in ("card.html", "card.css", "card.js"):
+    for name in ("card.html", *server.ASSETS):
         (tmp_path / name).write_text("было", encoding="utf-8")
     monkeypatch.setattr(server, "STATIC_DIR", tmp_path)
 
@@ -735,10 +740,19 @@ def test_no_two_functions_on_the_page_share_a_name():
     """
     import re
 
-    from bot.webapp.server import STATIC_DIR
+    from bot.webapp.server import ASSETS, STATIC_DIR
 
-    page = (STATIC_DIR / "card.js").read_text(encoding="utf-8")
-    names = re.findall(r"^(?:async )?function (\w+)\(", page, re.M)
+    # Скриптов на странице стало больше одного, а пространство имён у
+    # неё по-прежнему общее: функция из второго файла так же молча
+    # съедает одноимённую из первого. Поэтому смотрим все скрипты,
+    # которые страница подключает, а не только карточку
+    scripts = [name for name in ASSETS if name.endswith(".js")]
+    assert len(scripts) > 1, "скриптов стало меньше — проверку можно упростить"
+
+    names: list[str] = []
+    for name in scripts:
+        page = (STATIC_DIR / name).read_text(encoding="utf-8")
+        names += re.findall(r"^(?:async )?function (\w+)\(", page, re.M)
 
     seen, twice = set(), set()
     for name in names:

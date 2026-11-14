@@ -1564,3 +1564,24 @@ async def test_a_duel_counts_for_the_week_wherever_it_was_called(bot, db):
 
     assert await my_week(db, 1) == 1
     assert await my_week(db, 2) == 1
+
+
+async def test_the_fighter_payload_names_the_class_by_code_not_by_title():
+    """Рядом с названием класса едет его код.
+
+    Название локализовано: по нему нельзя выбрать ни комплект образов
+    для сцены боя, ни что-либо ещё. Переведут надпись — и выбор молча
+    развалится, причём не ошибкой, а неверной картинкой. Для показа
+    остаётся `fclass`, для выбора — `class_code`.
+    """
+    from bot.game.classes import FIGHTER_CLASSES
+    from bot.webapp.fight import fighter_payload
+
+    for code, fclass in FIGHTER_CLASSES.items():
+        fighter = Fighter(
+            user_id=1, name="Боец", fclass=fclass, stats=fclass.base_stats
+        )
+        body = fighter_payload(fighter, ready=False, you=True)
+        assert body["class_code"] == code, code
+        assert body["fclass"] == fclass.title, "название тоже на месте"
+        assert body["class_code"] != body["fclass"], code

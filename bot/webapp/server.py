@@ -241,8 +241,10 @@ from bot.webapp.card import (
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
-# Файлы, из которых собирается метка версии страницы
-ASSETS = ("card.css", "card.js")
+# Файлы, из которых собирается метка версии страницы. Сцена боя живёт
+# отдельным файлом нарочно: карточка и без неё под двадцать тысяч
+# строк, а у сцены свой разбор событий и свои проверки
+ASSETS = ("card.css", "fightscene.js", "card.js")
 
 # Место в странице, куда встаёт адрес картинки экрана загрузки
 LOADING_SLOT = "{{loading}}"
