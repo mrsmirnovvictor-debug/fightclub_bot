@@ -231,3 +231,37 @@ def test_the_stance_does_not_walk_the_fighter_across_the_scene(line):
         f"переставляться по экрану. Отклонения по кадрам: "
         f"{[round(one, 1) for one in offsets]}"
     )
+
+
+def test_a_fighter_in_his_stance_keeps_to_his_half_of_the_scene():
+    """Боец стоит на своей половине и не залезает в соперника.
+
+    Якорь говорит, какой точкой кадр садится на свою отметку: левый
+    боец рисуется влево от неё на `pivot.x`, правый — зеркально. Если
+    силуэт широк, а якорь смещён к краю, фигура уезжает в середину — и
+    двое в стойке оказываются нарисованы друг в друге. Так и было:
+    танки перекрывались на 27 единиц, ассасины сходились до трёх.
+
+    Середина — честная граница: пары бывают любые, и правило «каждый на
+    своей половине» держится при любом сочетании классов, а проверка
+    зазора между конкретными двумя — нет.
+    """
+    scene = json.loads((FIGHT_DIR / "background.json").read_text("utf-8"))
+    anchors = scene["fighterAnchors"]
+    middle = (anchors["left"]["x"] + anchors["right"]["x"]) / 2
+
+    for line in sorted(set(ART_LINES.values())):
+        book = json.loads((FIGHT_DIR / line / "manifest.json").read_text("utf-8"))
+        row = book["rowMap"]["move"].index("stance_reference")
+        for frame in book["sets"]["move"]["frames"]:
+            if frame["row"] != row:
+                continue
+            width, pivot = frame["drawSize"]["w"], frame["pivot"]["x"]
+            # Левый: от якоря влево на pivot.x, дальше вправо на ширину
+            edge = anchors["left"]["x"] - pivot + width
+            assert edge <= middle, (
+                f"{line}, кадр стойки {frame['frame']}: силуэт доходит до "
+                f"{edge:.0f} при середине сцены {middle:.0f} — боец залезает "
+                f"на половину соперника"
+            )
+            # Правый зеркален, поэтому достаточно проверить одного
