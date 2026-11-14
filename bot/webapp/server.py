@@ -15,7 +15,7 @@ from bot.abilities_service import AbilityError, ensure_starter
 from bot.daily_service import DailyError, check_in, claim, ladder_view
 from bot.abilities_service import learn as learn_ability
 from bot.database import Database
-from bot.game.art import LOADING
+from bot.game.art import LOADING, combat_base
 from bot.battle_service import BattleError
 from bot.duel_service import DuelError
 from bot.raid_service import RaidError
@@ -248,6 +248,11 @@ ASSETS = ("card.css", "fightscene.js", "card.js")
 
 # Место в странице, куда встаёт адрес картинки экрана загрузки
 LOADING_SLOT = "{{loading}}"
+# И адрес, от которого сцена боя считает фон и атласы. Он нужен ей до
+# первого ответа сервера — пока грузятся картинки, панель уже стоит, —
+# и прописывать бакет в вёрстке нельзя: все адреса картинок живут в
+# `bot.game.art`
+COMBAT_SLOT = "{{combat}}"
 
 # Типизированные ключи приложения — так рекомендует aiohttp
 BOT_KEY: web.AppKey = web.AppKey("bot")
@@ -345,7 +350,8 @@ def stamped_page(stamp: str) -> str:
     html = (STATIC_DIR / "card.html").read_text(encoding="utf-8")
     for name in ASSETS:
         html = html.replace(f"static/{name}", f"static/{name}?v={stamp}")
-    return html.replace(LOADING_SLOT, LOADING)
+    html = html.replace(LOADING_SLOT, LOADING)
+    return html.replace(COMBAT_SLOT, combat_base())
 
 
 async def index(request: web.Request) -> web.Response:
