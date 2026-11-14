@@ -1263,3 +1263,61 @@ def test_the_judge_names_the_ability_that_worked():
         Strike(1, 2, None, Outcome.HIT, ability="strong_hit", defence_ability="nimble")
     )
     assert "Сильный удар" in both and "Проворность" in both
+
+
+# ---------- приёмы доезжают до экрана ----------
+
+
+def test_the_payload_carries_the_ability_of_each_side_separately():
+    """Сериализация отдаёт приём атакующего и приём защищающегося.
+
+    Движок их считал и раньше — судья по ним и рассказывает ход, — а в
+    json они не попадали, и показать приём на экране было нечем.
+
+    Полей два, а не одно, и это важно: у защищающегося срабатывает
+    своё, и свалив их вместе, мы не знали бы, над кем рисовать плашку.
+    """
+    from bot.game.fightlog import strike_payload
+
+    attacker = teach(make(user_id=1), "strong_hit")
+    attacker.use("strong_hit")
+    mine = strike_payload(hit(attacker, make(user_id=2), seed=7))
+    assert mine["ability"] == "strong_hit"
+    assert mine["defence_ability"] == "", "защищавшийся ничего не применял"
+
+    # А теперь наоборот: приём у того, кто защищается
+    tank = teach(make(TANK, user_id=2), "nimble", tier=3)
+    tank.use("nimble")
+    theirs = strike_payload(hit(make(ASSASSIN, user_id=1), tank, seed=3))
+    assert theirs["defence_ability"] == "nimble"
+    assert theirs["ability"] == "", "атакующий ничего не применял"
+
+
+def test_a_plain_strike_says_it_had_no_abilities_at_all():
+    """Без приёмов оба поля пусты, а не отсутствуют.
+
+    Пустая строка и отсутствующий ключ — разные вещи для того, кто
+    читает json: по первой видно, что приёма не было, по второму — что
+    сервер старый. Старые журналы и так остаются без этих ключей.
+    """
+    from bot.game.fightlog import strike_payload
+
+    plain = strike_payload(hit(make(user_id=1), make(user_id=2), seed=7))
+    assert plain["ability"] == ""
+    assert plain["defence_ability"] == ""
+
+
+def test_every_ability_the_engine_can_name_is_in_the_catalogue():
+    """Код из этих полей всегда находится в каталоге приёмов.
+
+    По коду экран берёт название и картинку (`items/<code>.jpeg`), и
+    код, которого в каталоге нет, означал бы пустую плашку. Проверяем
+    не выдумку, а то, что движок кладёт в поля: он берёт их у самого
+    заряда, то есть из каталога.
+    """
+    from bot.content.abilities import CATALOGUE
+
+    assert len(CATALOGUE) == 16, "приёмов шестнадцать — столько и рисуют"
+    for code, ability in CATALOGUE.items():
+        assert ability.code == code, code
+        assert ability.title, code
