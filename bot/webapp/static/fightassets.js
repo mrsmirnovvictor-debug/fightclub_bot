@@ -29,10 +29,32 @@ var LATE_SETS = ["dodge"];
 function fightAssets(options) {
   var settings = options || {};
   var base = settings.base || "";
-  // Загрузку json и картинок передают снаружи: так загрузчик
-  // проверяется без браузера, а в бою работает на настоящих fetch/Image
-  var fetchJson = settings.fetchJson;
-  var loadImage = settings.loadImage;
+  // Загрузку json и картинок можно передать снаружи — так загрузчик
+  // проверяется без браузера. По умолчанию работают настоящие
+  // fetch и Image: подменять их обязан только стенд, не игра
+  var fetchJson = settings.fetchJson || function (url) {
+    return fetch(url).then(function (answer) {
+      if (!answer.ok) {
+        throw new Error("не отдали " + url + ": " + answer.status);
+      }
+      return answer.json();
+    });
+  };
+  var loadImage = settings.loadImage || function (url) {
+    return new Promise(function (done, fail) {
+      var image = new Image();
+      // `crossOrigin` не ставим нарочно: атласы лежат в бакете, CORS на
+      // нём не настроен, а обычной картинке он и не нужен — нужен был
+      // бы только для чтения пикселей, чего сцена не делает
+      image.onload = function () {
+        done(image);
+      };
+      image.onerror = function () {
+        fail(new Error("не приехала картинка " + url));
+      };
+      image.src = url;
+    });
+  };
   var statics = settings.statics || "static/fight/";
 
   var scene = null;
@@ -192,6 +214,19 @@ function fightAssets(options) {
 
     atlas: function (line, name) {
       return manifests[line] ? atlases[atlasUrl(line, name)] : undefined;
+    },
+
+    // Картинка фона. Лежит отдельно от наборов: она одна на бой и
+    // нарезки у неё нет
+    backdrop: function () {
+      return scene ? atlases[base + scene.asset] : undefined;
+    },
+
+    // Описание набора без кадров: сколько в нём рядов и столбцов.
+    // Рендереру нужны столбцы — по ним он считает номер кадра
+    sheet: function (line, name) {
+      var book = manifests[line];
+      return book && book.sets ? book.sets[name] : undefined;
     },
 
     // Сколько атласов уже в памяти. По нему видно, что кэш работает

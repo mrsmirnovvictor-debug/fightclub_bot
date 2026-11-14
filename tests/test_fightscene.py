@@ -41,6 +41,16 @@ def test_the_fight_scene_adapter_keeps_its_contract():
     run_suite("fightscene.test.js", "адаптера")
 
 
+def test_the_fight_scene_renderer_keeps_its_contract():
+    """Раскадровка и отрисовка на настоящих манифестах и фоне.
+
+    Ходы в этих проверках идут через настоящий `fightQueue`, а не
+    выдуманные события: иначе проверялась бы договорённость адаптера с
+    самим собой, а не то, что сцена покажет в игре.
+    """
+    run_suite("fightrender.test.js", "раскадровки")
+
+
 def test_the_fight_scene_loader_keeps_its_contract():
     """Загрузчик читает настоящие манифесты из статики приложения.
 

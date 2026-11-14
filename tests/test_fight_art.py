@@ -128,3 +128,57 @@ def test_the_page_tells_the_scene_where_its_pictures_are():
     assert f'data-combat="{combat_base()}"' in page
     assert "{{combat}}" not in page, "слот подставлен"
     assert "r2.dev" not in (STATIC_DIR / "card.html").read_text(encoding="utf-8")
+
+
+# ---------- линия образов в выдаче ----------
+
+
+def test_the_payload_names_the_art_folder_for_every_class():
+    """Сцена не должна угадывать папку образов по коду класса.
+
+    Имя папки не всегда равно коду: `rogue` рисуется как `trickster`.
+    Соответствие живёт в `bot.game.art`, и выдача присылает готовое
+    имя — иначе в браузере завелась бы вторая копия карты, они бы
+    разошлись, и сцена молча начала грузить образы не того бойца.
+    """
+    for code in FIGHTER_CLASSES:
+        line = ART_LINES[code]
+        assert (FIGHT_DIR / line / "manifest.json").exists(), (
+            f"у класса {code} нет папки образов {line}"
+        )
+
+    assert ART_LINES["rogue"] == "trickster", (
+        "трикстер рисуется из своей папки, а не из папки с кодом класса"
+    )
+
+
+def test_the_payload_carries_the_art_line_next_to_the_class_code():
+    """В выдаче бойца есть и код класса, и имя папки образов."""
+    from bot.game.battle import Fighter
+    from bot.webapp.fight import fighter_payload
+
+    one = FIGHTER_CLASSES["rogue"]
+    fighter = Fighter(
+        user_id=1, name="Боец", fclass=one, stats=one.base_stats
+    )
+    out = fighter_payload(fighter, ready=True, you=True)
+    assert out["class_code"] == "rogue"
+    assert out["art_line"] == ART_LINES["rogue"] == "trickster"
+    # Название класса локализовано, по нему выбирать нельзя
+    assert out["fclass"] != out["art_line"]
+
+
+def test_the_scene_is_wired_only_to_modes_the_game_really_has():
+    """Режимы, которые идут сценой, должны существовать в движке."""
+    import re
+
+    from bot.game.modes import FightMode
+    from bot.webapp.server import STATIC_DIR
+
+    card = (STATIC_DIR / "card.js").read_text(encoding="utf-8")
+    found = re.search(r"const SCENE_MODES = \[([^\]]*)\]", card)
+    assert found, "список режимов сцены не найден в card.js"
+    codes = re.findall(r'"([^"]+)"', found.group(1))
+    assert codes, "сцена не включена ни для одного режима"
+    real = {mode.value for mode in FightMode}
+    assert set(codes) <= real, f"выдуманные режимы: {set(codes) - real}"

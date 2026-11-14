@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from bot.duel_service import Challenge, DuelService, DuelSession
+from bot.game import art
 from bot.game.clock import club_date
 from bot.game.classes import ALL_ZONES, BLOCK_WIDTH, block_button, block_combos
 from bot.game.equipment import BARE_HANDS_ICON
@@ -110,6 +111,12 @@ def fighter_payload(fighter: Fighter, ready: bool, you: bool) -> dict[str, Any]:
         # молча развалится. Для показа остаётся `fclass`, для выбора —
         # этот код
         "class_code": fighter.fclass.code,
+        # Какую папку образов брать сцене боя. Имя папки не всегда
+        # равно коду класса — `rogue` рисуется как `trickster`, — и это
+        # соответствие живёт в одном месте, `bot.game.art`. Присылаем
+        # готовое имя, чтобы в браузере не завелась вторая копия карты:
+        # разойдутся, и сцена молча начнёт грузить не того бойца
+        "art_line": art.ART_LINES.get(fighter.fclass.code, fighter.fclass.code),
         "hp": fighter.hp,
         "max_hp": fighter.max_hp,
         "percent": round(fighter.hp_percent * 100),

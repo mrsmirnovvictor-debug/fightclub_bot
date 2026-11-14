@@ -5935,3 +5935,70 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   margin: 8px 0 14px;
 }
 .car-here-acts .btn { flex: 1 1 0; }
+
+/* ---------- сцена кулачного боя ---------- */
+
+.fight-scene {
+  position: relative;
+  margin: 10px 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #0e0f14;
+}
+
+.fight-canvas {
+  display: block;
+  width: 100%;
+  /* Соотношение ставит скрипт по фону: держать его ещё и здесь значит
+     завести второй источник правды, и однажды они разойдутся */
+  height: auto;
+}
+
+/* Прелоадер: пока едет графика, человек видит прогресс, а не пустоту */
+.fight-veil {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: #0e0f14;
+  transition: opacity 220ms ease;
+}
+
+.fight-veil.gone {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.fight-veil-word {
+  margin: 0;
+  font-size: 13px;
+  color: #8a8d98;
+}
+
+.fight-veil-track {
+  width: 60%;
+  max-width: 220px;
+  height: 4px;
+  border-radius: 2px;
+  background: #22242e;
+  overflow: hidden;
+}
+
+.fight-veil-bar {
+  width: 0;
+  height: 100%;
+  border-radius: 2px;
+  background: #c8a24a;
+  transition: width 120ms linear;
+}
+
+/* Человек попросил систему не анимировать — убираем и наши переходы */
+@media (prefers-reduced-motion: reduce) {
+  .fight-veil,
+  .fight-veil-bar {
+    transition: none;
+  }
+}

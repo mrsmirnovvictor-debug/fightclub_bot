@@ -4163,7 +4163,16 @@ function duelPanel(data) {
     }
     board.appendChild(fighterSide(fighter));
   });
-  box.appendChild(board);
+
+  // Кулачный бой идёт сценой, остальные режимы — табло. Табло никуда
+  // не делось: оно же откат, если графика не приехала
+  const code = duel.mode ? duel.mode.code : null;
+  if (duel.started && SCENE_MODES.indexOf(code) >= 0) {
+    box.appendChild(fightSceneBox(data, board));
+  } else {
+    fightShowStop();
+    box.appendChild(board);
+  }
 
   if (duel.finished) {
     box.appendChild(finishCard(duel));
@@ -4185,6 +4194,254 @@ function duelPanel(data) {
 
   if (duel.log.length) box.appendChild(fightLog(duel));
   return box;
+}
+
+// ---------- сцена кулачного боя ----------
+
+// Показ живёт вне панели: панель пересобирается на каждом опросе, а
+// сцена не должна из-за этого начинаться заново
+var fightShow = null;
+
+// Сцена пока нарисована только для кулаков. Остальные режимы остаются
+// на табло, и это не заглушка: у ножа и биты своя анимация, своих
+// атласов для них нет
+const SCENE_MODES = ["fist"];
+
+function fightShowStop() {
+  if (!fightShow) return;
+  if (fightShow.frame) cancelAnimationFrame(fightShow.frame);
+  fightShow = null;
+}
+
+// Свой боец всегда слева — так просил владелец. Зрителю слева тот, кто
+// вызвал: иначе одна и та же пара выглядела бы по-разному у разных
+// зрителей
+function fightSides(duel) {
+  const sides = (duel.fighters || []).slice(0, 2);
+  if (sides.length === 2 && sides[1].you) {
+    return [sides[1], sides[0]];
+  }
+  return sides;
+}
+
+function fightShowTick(now) {
+  const show = fightShow;
+  if (!show) return;
+  // Панель могли закрыть или сменить вкладку. Рисовать в отцепленное
+  // полотно некому, а кадры при этом считаются каждые 16 миллисекунд
+  if (show.box && !show.box.isConnected) {
+    fightShowStop();
+    return;
+  }
+  // Первый кадр задаёт отсчёт: иначе сцена стартовала бы с большого
+  // времени и всё расписание оказалось бы в прошлом
+  if (show.started === null) show.started = now;
+  show.stage.at(now - show.started + show.skip);
+  try {
+    drawStage(show.ctx, show.stage, show.assets, show.scene);
+  } catch (error) {
+    // Падать на кадре нельзя: лучше вернуть табло, чем замерший canvas
+    fightShowFail(show, error);
+    return;
+  }
+  show.frame = requestAnimationFrame(fightShowTick);
+}
+
+function fightShowFail(show, error) {
+  console.warn("сцена боя не поднялась, возвращаем табло", error);
+  if (show.box && show.fallback && show.box.parentNode) {
+    show.box.parentNode.replaceChild(show.fallback, show.box);
+  }
+  fightShowStop();
+}
+
+// Прелоадер: пока едет графика участников, человек видит прогресс, а
+// не пустую сцену. Открываем по готовности критического пути
+function fightShowOpen(show) {
+  const veil = show.veil;
+  const bar = show.bar;
+  let alive = true;
+  const watch = setInterval(() => {
+    if (!alive) return;
+    bar.style.width = Math.round(show.assets.progress() * 100) + "%";
+  }, 80);
+
+  return show.assets
+    .prepare()
+    .then(() => {
+      clearInterval(watch);
+      alive = false;
+      bar.style.width = "100%";
+      veil.classList.add("gone");
+      // Увороты догружаются при уже открытой сцене: первый уворот
+      // случается не на первом ходу
+      show.assets.finish().catch((error) => {
+        console.warn("увороты догрузить не удалось", error);
+      });
+      show.frame = requestAnimationFrame(fightShowTick);
+    })
+    .catch((error) => {
+      clearInterval(watch);
+      alive = false;
+      fightShowFail(show, error);
+    });
+}
+
+// Новые ходы из опроса — в очередь, очередь — в раскадровку
+function fightShowFeed(duel) {
+  const show = fightShow;
+  if (!show) return;
+  const turns = duel.log || [];
+  for (let i = 0; i < turns.length; i += 1) {
+    show.queue.push(turns[i]);
+  }
+  // Раскадровки может ещё не быть: манифесты едут, а опрос уже принёс
+  // следующий ход. В очередь он уже лёг, а разбирать очередь некому —
+  // разберём, когда раскадровка появится. Опустошить её сейчас значило
+  // бы потерять этот ход: второй раз очередь его не примет
+  if (!show.stage) return;
+  const fresh = show.queue.drain();
+  if (!fresh.length) return;
+  show.stage.feed(fresh);
+  if (show.skip === null) {
+    // Панель могли открыть на десятом ходу. Проигрывать весь бой
+    // заново нечестно: это живая сцена, а не запись. Уже случившееся
+    // досматриваем мгновенно, дальше идём в реальном времени
+    show.skip = show.stage.length();
+    show.started = null;
+  }
+}
+
+function fightSceneBox(data, fallback) {
+  const duel = data.duel;
+
+  // Опрос приходит каждые пару секунд, и панель собирается заново. Если
+  // сцена уже идёт и это тот же бой — отдаём её как есть, только
+  // подкладываем новые ходы. Иначе бой начинался бы с первого удара
+  // каждые две секунды
+  if (fightShow && fightShow.duelId === duel.id) {
+    fightShow.fallback = fallback;
+    fightShowFeed(duel);
+    return fightShow.box;
+  }
+
+  const box = document.createElement("div");
+  box.className = "fight-scene";
+
+  const canvas = document.createElement("canvas");
+  canvas.className = "fight-canvas";
+  box.appendChild(canvas);
+
+  const veil = document.createElement("div");
+  veil.className = "fight-veil";
+  const word = document.createElement("p");
+  word.className = "fight-veil-word";
+  word.textContent = "Бойцы выходят…";
+  veil.appendChild(word);
+  const track = document.createElement("div");
+  track.className = "fight-veil-track";
+  const bar = document.createElement("div");
+  bar.className = "fight-veil-bar";
+  track.appendChild(bar);
+  veil.appendChild(track);
+  box.appendChild(veil);
+
+  const sides = fightSides(duel);
+  const lines = [];
+  for (let i = 0; i < sides.length; i += 1) {
+    if (!sides[i].art_line) {
+      // Без имени папки образов грузить нечего. Это не повод падать:
+      // старое табло на месте
+      return fallback;
+    }
+    if (lines.indexOf(sides[i].art_line) < 0) lines.push(sides[i].art_line);
+  }
+
+  const assets = fightAssets({ base: document.body.dataset.combat || "" });
+  // Человек попросил систему не анимировать — уважаем: позы остаются,
+  // плавность и покачивание уходят
+  const calm = window.matchMedia
+    ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    : false;
+
+  fightShowStop();
+  const show = {
+    duelId: duel.id,
+    box: box,
+    fallback: fallback,
+    canvas: canvas,
+    ctx: null,
+    veil: veil,
+    bar: bar,
+    assets: assets,
+    scene: null,
+    queue: fightQueue().reset(duel.id),
+    stage: null,
+    started: null,
+    skip: null,
+    frame: null,
+  };
+  fightShow = show;
+
+  assets
+    .open(lines)
+    .then((scene) => {
+      if (fightShow !== show) return null;
+      show.scene = scene;
+      const ratio = Math.min(
+        window.devicePixelRatio || 1,
+        scene.rendering.maximumDevicePixelRatio,
+      );
+      canvas.width = scene.logicalSize.width * ratio;
+      canvas.height = scene.logicalSize.height * ratio;
+      canvas.style.aspectRatio =
+        scene.logicalSize.width + " / " + scene.logicalSize.height;
+      show.ctx = canvas.getContext("2d");
+      // Рисуем в логических единицах сцены: все числа в манифестах и
+      // фоне заданы в них, и пересчитывать их в пиксели устройства
+      // в каждом кадре значило бы развести два набора координат
+      show.ctx.scale(ratio, ratio);
+      show.stage = fightStage({
+        timing: fightTimings(assets, lines[0]),
+        calm: calm,
+      });
+      show.stage.cast(
+        fightCastOf(sides[0], "left"),
+        fightCastOf(sides[1], "right"),
+      );
+      fightShowFeed(duel);
+      return fightShowOpen(show);
+    })
+    .catch((error) => {
+      if (fightShow === show) fightShowFail(show, error);
+    });
+
+  return box;
+}
+
+// Тайминги берём у манифеста того, кто слева: наборы нарезаны одной
+// длительностью, и держать два расписания незачем
+function fightTimings(assets, line) {
+  const names = [
+    "approach", "attack", "contact", "hitReaction", "breakHold",
+    "dodge", "retreat", "counterRetreat", "ko", "swayPeriod",
+  ];
+  const out = {};
+  for (let i = 0; i < names.length; i += 1) {
+    out[names[i]] = assets.timing(line, names[i]);
+  }
+  return out;
+}
+
+function fightCastOf(fighter, side) {
+  return {
+    id: fighter.user_id,
+    name: fighter.name,
+    line: fighter.art_line,
+    hp: fighter.hp,
+    maxHp: fighter.max_hp,
+    side: side,
+  };
 }
 
 function standoff(duel) {

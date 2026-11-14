@@ -60,3 +60,27 @@ def test_level_adds_nothing_to_health_by_itself():
     assert derive(one, same).max_hp == HP_BASE + 4 * HP_PER_ENDURANCE
     # И единственное, что ещё входит в запас, — вещи и выпитое
     assert derive(one, same, 25).max_hp == HP_BASE + 4 * HP_PER_ENDURANCE + 25
+
+
+def test_the_readme_table_of_scene_files_matches_what_the_page_serves():
+    """Описание сцены в README называет те файлы, что страница и грузит.
+
+    Таблица в README — не украшение: по ней человек понимает, в какой
+    из четырёх файлов идти. Разойдётся с `ASSETS`, и она начнёт
+    отправлять не туда, причём молча.
+    """
+    import re
+    from pathlib import Path
+
+    from bot.webapp.server import ASSETS
+
+    readme = Path(__file__).resolve().parent.parent / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    start = text.index("### Сцена кулачного боя")
+    part = text[start : text.index("### ", start + 10)]
+
+    named = set(re.findall(r"`(\w+\.js)`", part))
+    assert named, "в описании сцены не названо ни одного файла"
+    served = {name for name in ASSETS if name.endswith(".js")}
+    assert named <= served, f"README называет то, чего страница не грузит: {named - served}"
+    assert named == served, f"страница грузит, а README молчит: {served - named}"

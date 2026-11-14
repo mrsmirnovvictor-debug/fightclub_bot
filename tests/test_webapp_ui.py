@@ -19467,3 +19467,128 @@ async def test_opening_a_move_card_tells_the_server(server, db):
         assert seen[0]["catalog"] == "dojo"
         assert seen[0]["code"], "код приёма не доехал"
         await browser.close()
+
+
+# ---------- сцена кулачного боя ----------
+
+
+def ring_with_scene(mode="fist"):
+    """Ринг, у бойцов которого есть папка образов — значит, будет сцена.
+
+    В `ring_with_duel` её нарочно нет: там проверяют табло, и включать
+    им сцену значило бы переписать два десятка чужих проверок. Здесь
+    поле есть, и панель показывает сцену.
+    """
+    fights = ring_with_duel()
+    fights["duel"]["mode"] = {"code": mode, "title": "бой", "emoji": "🥊"}
+    lines = ("warrior", "assassin")
+    for fighter, line in zip(fights["duel"]["fighters"], lines):
+        fighter["class_code"] = line
+        fighter["art_line"] = line
+    return fights
+
+
+async def open_scene(pw, server, fights, atlases=True):
+    """Ринг со сценой. Атласы подменяем: до бакета из тестов не дотянуться."""
+    asked: list[str] = []
+
+    browser, page = await open_page(
+        pw, server, build_card(make_player(), TOKEN, viewer_id=42), fights=fights
+    )
+
+    async def serve(route):
+        asked.append(route.request.url)
+        if atlases:
+            await route.fulfill(status=200, content_type="image/png", body=PIXEL)
+        else:
+            # Так выглядит непришедшая картинка: сцена обязана отдать
+            # панель назад, а не остаться пустым прямоугольником
+            await route.abort()
+
+    await page.route("**/combat/**", serve)
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await page.evaluate("openClub()")
+    await page.wait_for_selector("#club:not(.hidden)")
+    await page.wait_for_function("() => fightsData !== null")
+    return browser, page, asked
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_the_fist_duel_is_shown_as_a_scene_with_a_preloader(server):
+    """Кулачный бой идёт сценой, и перед ней человек видит прогресс."""
+    async with async_playwright() as pw:
+        browser, page, asked = await open_scene(pw, server, ring_with_scene())
+
+        await page.wait_for_selector(".fight-scene canvas.fight-canvas")
+        # Прелоадер есть и уходит сам, когда критический путь приехал
+        await page.wait_for_selector(".fight-veil")
+        await page.wait_for_selector(".fight-veil.gone", timeout=10000)
+
+        # Табло уступило место сцене, а не встало рядом
+        assert await page.locator(".fight-board").count() == 0
+        # Полотно размечено по фону, а не нулевое
+        size = await page.evaluate(
+            "() => { const c = document.querySelector('.fight-canvas');"
+            " return [c.width, c.height]; }"
+        )
+        assert size[0] > 0 and size[1] > 0, size
+
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_the_scene_takes_only_the_two_fighters_graphics(server):
+    """Грузятся образы участников и фон — не все четыре класса."""
+    async with async_playwright() as pw:
+        browser, page, asked = await open_scene(pw, server, ring_with_scene())
+        await page.wait_for_selector(".fight-veil.gone", timeout=10000)
+
+        base = await page.evaluate("() => document.body.dataset.combat")
+        assert base, "страница не знает, откуда брать графику"
+        for url in asked:
+            assert url.startswith(base), f"адрес не от базы: {url}"
+        # Образы бойцов этого боя — да, остальных классов — нет
+        assert any("/warrior/" in url for url in asked), asked
+        assert any("/assassin/" in url for url in asked), asked
+        for stranger in ("/trickster/", "/tank/"):
+            assert not any(stranger in url for url in asked), stranger
+        assert any("background" in url for url in asked), asked
+        # Увороты догружаются после открытия сцены, а не до
+        assert any("dodge" in url for url in asked), asked
+
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_the_board_comes_back_when_the_graphics_do_not(server):
+    """Не приехала графика — человек видит табло, а не пустую сцену."""
+    async with async_playwright() as pw:
+        browser, page, asked = await open_scene(
+            pw, server, ring_with_scene(), atlases=False
+        )
+        await page.wait_for_selector(".fight-board", timeout=10000)
+
+        board = await page.locator(".fight-board").inner_text()
+        assert "Растафарайчик" in board and "Марла" in board
+        assert await page.locator(".fight-canvas").count() == 0
+
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_other_weapons_keep_the_board_until_they_are_drawn(server):
+    """Сцена пока только для кулаков: у ножа и биты своих атласов нет."""
+    async with async_playwright() as pw:
+        browser, page, asked = await open_scene(
+            pw, server, ring_with_scene(mode="knife")
+        )
+        await page.wait_for_selector(".fight-board")
+
+        assert await page.locator(".fight-canvas").count() == 0
+        assert not asked, f"графику боя качать было незачем: {asked}"
+
+        await browser.close()

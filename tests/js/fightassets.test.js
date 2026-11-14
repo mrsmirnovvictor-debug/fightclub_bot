@@ -195,13 +195,26 @@ run.push(
 );
 
 run.push(
-  check("адрес атласа складывается из базы и пути манифеста", async () => {
+  check("адрес атласа складывается из базы, а не из baseUrl манифеста", async () => {
+    // Берём воина нарочно: в его манифесте лежит `baseUrl` с адресом
+    // бакета. Читать его нельзя — все адреса картинок в игре живут в
+    // одном месте, `bot.game.art`, и версию бакета меняют там. Начни
+    // загрузчик слушать манифест, и один боец грузился бы из старой
+    // версии, а остальные из новой
     const it = stand();
-    await it.assets.open(["tank"]);
+    const book = JSON.parse(
+      fs.readFileSync(path.join(STATIC, "warrior", "manifest.json"), "utf8"),
+    );
+    ok(book.baseUrl, "в манифесте воина baseUrl есть — иначе проверка пустая");
+    await it.assets.open(["warrior"]);
     await it.assets.prepare();
     ok(
-      it.asked.indexOf(BASE + "runtime/tank/attack.webp") >= 0,
+      it.asked.indexOf(BASE + "runtime/warrior/attack.webp") >= 0,
       "адрес собран по правилу: " + it.asked.join(" "),
+    );
+    ok(
+      it.asked.every((url) => url.indexOf(book.baseUrl) < 0),
+      "и ни один адрес не взят из манифеста",
     );
   }),
 );
