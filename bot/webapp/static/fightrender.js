@@ -91,6 +91,10 @@ function fightStage(options) {
   var drops = [];
   var badges = [];
   var fallen = {};
+  // Когда боец остался с нулём здоровья. От этого мига и падает, а не
+  // от конца хода: после смертельного удара в ходу стоят ещё пропуски
+  // и прочее, и ждать их — значит показывать, как убитый стоит с нулём
+  var downAt = {};
   var finished = false;
 
   // Какое здоровье показываем в этот момент. Вынесено отдельно: тем же
@@ -135,6 +139,9 @@ function fightStage(options) {
   }
 
   function drop(at, side, hp, damage, critical, healing) {
+    if (hp <= 0 && downAt[side] === undefined) {
+      downAt[side] = at;
+    }
     drops.push({
       at: at, side: side, hp: hp, damage: damage, critical: !!critical,
       // Лечение — такое же изменение здоровья, как урон, и показывать
@@ -274,8 +281,12 @@ function fightStage(options) {
           }
         } else if (event.kind === "skip") {
           flush();
-          badge(cursor, sideOf(event.attacker), "пропуск");
-          cursor += ms("approach");
+          // Бой уже решён: кто-то на полу. Пропуск хода в этот момент
+          // — не событие, а остаток журнала, и ждать его незачем
+          if (downAt.left === undefined && downAt.right === undefined) {
+            badge(cursor, sideOf(event.attacker), "пропуск");
+            cursor += ms("approach");
+          }
         } else if (event.kind === "text") {
           flush();
           badge(cursor, sideOf(event.attacker), "удар", true);
@@ -305,9 +316,18 @@ function fightStage(options) {
               loser = other(sideOf(event.winner));
             }
             if (loser) {
-              lay(loser, cursor, cursor + ms("ko"), "move", KO_ROW);
-              fallen[loser] = cursor + ms("ko");
-              cursor += ms("ko");
+              // Падение начинается от удара, который уронил, а не от
+              // конца хода. Разом бьющие — исключение: там общее
+              // контактное окно и согласованный итог, и нокаут
+              // ставится на завершение группы, иначе второй удар
+              // отменился бы визуально более ранним падением
+              var struck = event.together ? undefined : downAt[loser];
+              var from = struck === undefined
+                ? cursor
+                : struck + ms("hitReaction");
+              lay(loser, from, from + ms("ko"), "move", KO_ROW);
+              fallen[loser] = from + ms("ko");
+              cursor = Math.max(cursor, from + ms("ko"));
             }
           }
         }

@@ -307,6 +307,103 @@ check("ход, пришедший после кулдауна, не проигр
   same(it.hp("right"), 70, "и снялось в контакт второго");
 });
 
+// ---------- нокаут не ждёт конца хода ----------
+
+check("после смертельного удара боец падает сразу, а не ждёт пропуска", () => {
+  // В ходу за смертельным ударом стоит пропуск: убитому нечем
+  // отвечать. Пока нокаут клали на конец хода, сцена честно
+  // отыгрывала этот пропуск, и мёртвый стоял с нулём на шкале
+  const quick = stage(
+    turn([strike({ damage: 100, hp_after: 0 })], {
+      finished: true, winner_id: ME,
+    }),
+  );
+  const waited = stage(
+    turn(
+      [
+        strike({ damage: 100, hp_after: 0 }),
+        strike({ attacker_id: FOE, defender_id: ME, outcome: "skip" }),
+      ],
+      { finished: true, winner_id: ME },
+    ),
+  );
+
+  // Падение начинается в один и тот же миг, был пропуск или нет
+  const falls = (it) => {
+    for (let ms = 0; ms < 6000; ms += 5) {
+      it.at(ms);
+      if (it.look("right", 6).row === "ko") return ms;
+    }
+    return -1;
+  };
+  const a = falls(quick);
+  const b = falls(waited);
+  ok(a > 0, "падение нашлось");
+  ok(
+    Math.abs(a - b) < 20,
+    "пропуск не отодвигает падение: " + a + " против " + b,
+  );
+  // И пропуска на экране нет ни в один миг: бой решён, ждать нечего.
+  // Смотреть надо всю ленту: подпись живёт восемьсот миллисекунд и в
+  // одной наугад взятой точке её легко не застать
+  for (let ms = 0; ms < waited.length() + 1000; ms += 25) {
+    waited.at(ms);
+    for (const side of ["left", "right"]) {
+      const said = waited.badge(side);
+      ok(
+        !said || said.text !== "пропуск",
+        "о пропуске объявили на " + ms + " мс",
+      );
+    }
+  }
+});
+
+check("падение идёт сразу за реакцией на удар", () => {
+  const it = stage(
+    turn([strike({ damage: 100, hp_after: 0 })], {
+      finished: true, winner_id: ME,
+    }),
+  );
+  const contact = T.approach + T.contact;
+  it.at(contact + T.hitReaction - 20);
+  same(it.look("right", 6).set, "hit", "ещё отыгрывает попадание");
+  it.at(contact + T.hitReaction + 20);
+  same(it.look("right", 6).row, "ko", "и сразу валится");
+});
+
+check("разом бьющие: падение ждёт обоих", () => {
+  // Общее контактное окно и согласованный итог: вторую атаку нельзя
+  // отменить из-за визуально более раннего нокаута
+  const it = stage(
+    turn(
+      [
+        strike({ damage: 100, hp_after: 0 }),
+        strike({ attacker_id: FOE, defender_id: ME, damage: 7, hp_after: 93 }),
+      ],
+      { finished: true, winner_id: ME, resolution: "simultaneous" },
+    ),
+  );
+  let fell = -1;
+  for (let ms = 0; ms < 8000; ms += 5) {
+    it.at(ms);
+    if (it.look("right", 6).row === "ko") { fell = ms; break; }
+  }
+  ok(fell > 0, "падение нашлось");
+  it.at(fell - 10);
+  same(it.hp("left"), 93, "ответный удар успел дойти до падения");
+});
+
+check("победитель на полу не оказывается", () => {
+  const it = stage(
+    turn([strike({ damage: 100, hp_after: 0 })], {
+      finished: true, winner_id: ME,
+    }),
+  );
+  it.at(it.length() + 500);
+  ok(it.look("right", 6).fallen, "проигравший лежит");
+  ok(!it.look("left", 6).fallen, "победитель стоит");
+});
+
 // ---------- здоровье мимо ударов: лечение ----------
 
 check("лечение между разменами доезжает до полосы", () => {
