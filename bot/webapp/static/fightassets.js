@@ -33,7 +33,11 @@ function fightAssets(options) {
   // проверяется без браузера. По умолчанию работают настоящие
   // fetch и Image: подменять их обязан только стенд, не игра
   var fetchJson = settings.fetchJson || function (url) {
-    return fetch(url).then(function (answer) {
+    // `no-cache` не значит «не кэшировать»: значит «спроси сервер, не
+    // изменилось ли». Манифест весит полсотни килобайт и описывает
+    // мегабайты картинок — лишняя проверка дешевле разъехавшейся
+    // разбивки
+    return fetch(url, { cache: "no-cache" }).then(function (answer) {
       if (!answer.ok) {
         throw new Error("не отдали " + url + ": " + answer.status);
       }
@@ -59,9 +63,33 @@ function fightAssets(options) {
 
   var scene = null;
   var manifests = {};
+  // Отпечаток манифеста. Им подписаны адреса его атласов: манифест и
+  // картинки едут парой, и когда меняется разбивка, обязаны смениться
+  // и адреса. Иначе выходит худшее из возможного — старая картинка,
+  // разобранная по новым координатам: боец не исчезает, а едет
+  // кусками, и причину в этом не угадать
+  var stamps = {};
   var atlases = {};
   var waiting = {};
   var wanted = [];
+
+  // Короткий отпечаток текста. Не криптография: нужно лишь, чтобы он
+  // менялся при любой правке манифеста
+  function stampOf(text) {
+    var hash = 5381;
+    for (var i = 0; i < text.length; i += 1) {
+      hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
+    }
+    return hash.toString(36);
+  }
+
+  function signed(url, stamp) {
+    return stamp ? url + "?v=" + stamp : url;
+  }
+
+  function sceneUrl() {
+    return signed(base + scene.asset, stamps["\u0444\u043e\u043d"]);
+  }
 
   function once(url, make) {
     // Один адрес — одна загрузка. Вторая попытка ждёт первую, а не
@@ -91,8 +119,10 @@ function fightAssets(options) {
   function atlasUrl(line, name) {
     var set = manifests[line].sets[name];
     // Путь в манифесте относительный нарочно: адрес бакета живёт в
-    // `bot.game.art`, и база приходит оттуда
-    return base + set.url;
+    // `bot.game.art`, и база приходит оттуда. Отпечаток манифеста —
+    // подпись к этому адресу: перерисовали бойца, сменился манифест,
+    // сменился и адрес его картинок
+    return signed(base + set.url, stamps[line]);
   }
 
   function loadSets(line, names) {
@@ -126,8 +156,10 @@ function fightAssets(options) {
       }
       return Promise.all(jobs).then(function (answers) {
         scene = answers[0];
+        stamps["\u0444\u043e\u043d"] = stampOf(JSON.stringify(scene));
         for (var j = 0; j < wanted.length; j += 1) {
           manifests[wanted[j]] = answers[j + 1];
+          stamps[wanted[j]] = stampOf(JSON.stringify(answers[j + 1]));
         }
         return scene;
       });
@@ -137,8 +169,8 @@ function fightAssets(options) {
     // открываем по готовности именно этого
     prepare: function () {
       var jobs = [
-        once(base + scene.asset, function () {
-          return loadImage(base + scene.asset);
+        once(sceneUrl(), function () {
+          return loadImage(sceneUrl());
         }),
       ];
       for (var i = 0; i < wanted.length; i += 1) {
@@ -159,7 +191,7 @@ function fightAssets(options) {
     // Доля готовности для прелоадера: фон плюс критические наборы обоих
     progress: function () {
       var need = 1 + wanted.length * CRITICAL_SETS.length;
-      var have = scene && atlases[base + scene.asset] ? 1 : 0;
+      var have = scene && atlases[sceneUrl()] ? 1 : 0;
       for (var i = 0; i < wanted.length; i += 1) {
         if (!manifests[wanted[i]]) {
           continue;
@@ -219,7 +251,7 @@ function fightAssets(options) {
     // Картинка фона. Лежит отдельно от наборов: она одна на бой и
     // нарезки у неё нет
     backdrop: function () {
-      return scene ? atlases[base + scene.asset] : undefined;
+      return scene ? atlases[sceneUrl()] : undefined;
     },
 
     // Описание набора без кадров: сколько в нём рядов и столбцов.

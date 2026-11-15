@@ -209,7 +209,8 @@ run.push(
     await it.assets.open(["warrior"]);
     await it.assets.prepare();
     ok(
-      it.asked.indexOf(BASE + "runtime/warrior/attack.webp") >= 0,
+      it.asked.some((url) =>
+        url.indexOf(BASE + "runtime/warrior/attack.webp?v=") === 0),
       "адрес собран по правилу: " + it.asked.join(" "),
     );
     ok(
@@ -227,6 +228,62 @@ run.push(
       said = error.message;
     });
     ok(said.length > 0, "отказ, а не пустая сцена");
+  }),
+);
+
+run.push(
+  check("перерисовали бойца — сменился и адрес его картинок", async () => {
+    // Худшее из возможного — старая картинка, разобранная по новым
+    // координатам: боец не исчезает, а едет кусками, и причину в этом
+    // не угадать. Поэтому адрес подписан отпечатком манифеста
+    const first = stand();
+    await first.assets.open(["warrior"]);
+    await first.assets.prepare();
+
+    const second = stand();
+    second.assets = fightAssets({
+      base: BASE,
+      statics: "static/fight/",
+      fetchJson(url) {
+        const file = url.replace("static/fight/", "").split("?")[0];
+        const book = JSON.parse(
+          fs.readFileSync(path.join(STATIC, file), "utf8"),
+        );
+        // Перерисовали: та же картинка, другая разбивка
+        if (book.sets) {
+          book.sets.attack.frames[0].rect.x += 7;
+        }
+        return Promise.resolve(book);
+      },
+      loadImage(url) {
+        second.asked.push(url);
+        return Promise.resolve({ url: url });
+      },
+    });
+    await second.assets.open(["warrior"]);
+    await second.assets.prepare();
+
+    const was = first.asked.find((url) => url.indexOf("attack.webp") >= 0);
+    const now = second.asked.find((url) => url.indexOf("attack.webp") >= 0);
+    ok(was && now, "атлас запрошен в обоих случаях");
+    ok(was !== now, "адрес сменился: " + was + " и " + now);
+    same(was.split("?")[0], now.split("?")[0], "сам путь прежний");
+  }),
+);
+
+run.push(
+  check("не трогали манифест — адрес прежний", async () => {
+    const one = stand();
+    const two = stand();
+    await one.assets.open(["tank"]);
+    await one.assets.prepare();
+    await two.assets.open(["tank"]);
+    await two.assets.prepare();
+    same(
+      one.asked.find((url) => url.indexOf("attack.webp") >= 0),
+      two.asked.find((url) => url.indexOf("attack.webp") >= 0),
+      "подпись не скачет сама по себе",
+    );
   }),
 );
 

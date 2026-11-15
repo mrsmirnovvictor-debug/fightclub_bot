@@ -19558,6 +19558,17 @@ async def test_the_scene_takes_only_the_two_fighters_graphics(server):
         # Увороты догружаются после открытия сцены, а не до
         assert any("dodge" in url for url in asked), asked
 
+        # Каждый адрес подписан отпечатком своего манифеста. Атласы
+        # лежат в бакете по неизменным путям и уже дважды менялись на
+        # месте: без подписи вебвью отдаёт старую картинку, а разбирают
+        # её по новым координатам — боец едет кусками
+        for url in asked:
+            assert re.search(r"\.webp\?v=\w+$", url), f"без подписи: {url}"
+        marks = {re.search(r"v=(\w+)$", url).group(1) for url in asked}
+        assert len(marks) >= 3, (
+            f"у фона и у каждого бойца своя подпись, а не одна на всех: {marks}"
+        )
+
         await browser.close()
 
 
