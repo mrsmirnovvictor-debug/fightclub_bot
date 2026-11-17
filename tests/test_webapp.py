@@ -365,7 +365,7 @@ def test_the_version_changes_with_the_files(tmp_path, monkeypatch):
     """
     import bot.webapp.server as server
 
-    for name in ("card.html", *server.ASSETS):
+    for name in (*server.PAGES, *server.ASSETS):
         (tmp_path / name).write_text("было", encoding="utf-8")
     monkeypatch.setattr(server, "STATIC_DIR", tmp_path)
 
@@ -374,7 +374,7 @@ def test_the_version_changes_with_the_files(tmp_path, monkeypatch):
     assert server.asset_stamp() != before
 
 
-def test_the_page_and_the_version_list_name_the_same_files():
+def test_every_page_and_the_version_list_name_the_same_files():
     """Что страница грузит — то и попадает в метку версии, и наоборот.
 
     Это две разные беды, и обе уже случались. Файл на странице, но не в
@@ -387,15 +387,25 @@ def test_the_page_and_the_version_list_name_the_same_files():
 
     import bot.webapp.server as server
 
-    page = (server.STATIC_DIR / "card.html").read_text(encoding="utf-8")
-    # Берём только свои файлы: telegram-web-app.js приходит со стороны
-    # и метку версии от нас не получает
-    on_page = set(re.findall(r'(?:src|href)="static/([^"?]+)"', page))
+    seen: set[str] = set()
+    for name, listed in server.PAGES.items():
+        page = (server.STATIC_DIR / name).read_text(encoding="utf-8")
+        # Берём только свои файлы: telegram-web-app.js приходит со
+        # стороны и метку версии от нас не получает
+        on_page = set(re.findall(r'(?:src|href)="static/([^"?]+)"', page))
+        assert on_page == set(listed), (
+            f"{name} и её список разошлись: "
+            f"только на странице {sorted(on_page - set(listed))}, "
+            f"только в списке {sorted(set(listed) - on_page)}"
+        )
+        seen |= on_page
 
-    assert on_page == set(server.ASSETS), (
-        "страница и список версий разошлись: "
-        f"только на странице {sorted(on_page - set(server.ASSETS))}, "
-        f"только в ASSETS {sorted(set(server.ASSETS) - on_page)}"
+    # Метка версии считается по ASSETS: файл, которого там нет, после
+    # выката останется в вебвью вчерашним
+    assert seen == set(server.ASSETS), (
+        "страницы и ASSETS разошлись: "
+        f"только на страницах {sorted(seen - set(server.ASSETS))}, "
+        f"только в ASSETS {sorted(set(server.ASSETS) - seen)}"
     )
 
 

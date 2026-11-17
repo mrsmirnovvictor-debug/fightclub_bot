@@ -27,7 +27,7 @@ from bot.models import Player
 from bot.game.locations import Service
 from bot.webapp.card import build_card, build_magic, build_shop, build_topup
 from bot.webapp.server import create_app
-from tests.test_webapp import TOKEN
+from tests.test_webapp import TOKEN, make_init_data
 
 async_playwright = pytest.importorskip(
     "playwright.async_api", reason="playwright не установлен"
@@ -19742,4 +19742,104 @@ async def test_healing_lifts_the_bar_in_the_scene(server):
         assert shown and shown["healing"], shown
         assert shown["damage"] == 22, shown
 
+        await browser.close()
+
+
+# ---------- стенд сцены боя ----------
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_the_bench_plays_a_staged_exchange(server):
+    """Стенд гоняет настоящий конвейер, а не свою копию сцены.
+
+    Ход приходит от сервера, собранный движком; разбирает его тот же
+    адаптер, рисует та же раскадровка. Поэтому увиденное на стенде —
+    это ровно то, что увидит игрок, и ради этого стенд и заводился.
+    """
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            executable_path=CHROMIUM, args=["--no-proxy-server"]
+        )
+        page = await browser.new_page(viewport={"width": 420, "height": 900})
+        said = []
+        page.on("pageerror", lambda error: said.append(str(error)))
+
+        asked = []
+
+        async def serve(route):
+            asked.append(route.request.url)
+            await route.fulfill(
+                status=200, content_type="image/png", body=PIXEL
+            )
+
+        await page.route("**/combat/**", serve)
+        # Настоящая подпись: стенд ходит на сервер той же дверью, что
+        # и карточка, и без неё его отказ был бы честным
+        signed = make_init_data()
+        await page.add_init_script(
+            'window.Telegram = { WebApp: { initData: ' + repr(signed)
+            + ', ready() {}, expand() {},'
+            ' HapticFeedback: { impactOccurred() {} } } };'
+        )
+        await page.goto(f"{server.make_url('/scene')}")
+
+        # Справочники приехали от движка, а не выписаны в странице
+        await page.wait_for_function(
+            "() => document.querySelectorAll('#left-class option').length >= 4",
+            timeout=10000,
+        )
+        zones = await page.locator(".bench-strike").first.locator(
+            ".bench-zone option"
+        ).count()
+        assert zones == 5, zones
+
+        # Задаём размен: слева бьют в голову, справа уходят в уворот
+        rows = page.locator(".bench-strike")
+        # Исход выбираем первым: у «не бил» зоны нет вовсе, и поле
+        # заперто — порядок тут не придирка, а правило формы
+        # Уворачивается защищающийся, поэтому «справа уходит» задаётся
+        # ударом слева с исходом «уворот»
+        await rows.nth(0).locator(".bench-outcome").select_option("hit")
+        await rows.nth(0).locator(".bench-who").select_option("left")
+        await rows.nth(0).locator(".bench-zone").select_option("head")
+        await rows.nth(1).locator(".bench-outcome").select_option("dodge")
+        await rows.nth(1).locator(".bench-who").select_option("left")
+        await rows.nth(1).locator(".bench-zone").select_option("belly")
+
+        await page.click("#play")
+        await page.wait_for_selector(".fight-veil.gone", timeout=15000)
+        await page.wait_for_function(
+            "() => bench.stage && bench.stage.length() > 0", timeout=10000
+        )
+
+        # Графика поехала, и адреса подписаны отпечатком манифеста
+        assert asked, "атласы не запрашивались"
+        assert all(re.search(r"\.webp\?v=\w+$", url) for url in asked), asked
+
+        # Уворот доехал до раскадровки. Ищем позу по всей ленте, а не
+        # в наугад взятый миг: когда именно она выпадет — дело таймингов
+        # манифеста, и зашивать их в проверку значит сторожить не то
+        poses = await page.evaluate(
+            """() => {
+              const seen = new Set();
+              for (let ms = 0; ms < bench.stage.length() + 500; ms += 20) {
+                bench.stage.at(ms);
+                seen.add(bench.stage.look('right', 6).set);
+              }
+              return [...seen];
+            }"""
+        )
+        assert "dodge" in poses, poses
+        # И удар по нему тоже отыгран
+        assert "hit" in poses, poses
+
+        # И судья сказал про ЭТОТ ход, а не отделался заглушкой:
+        # в строках должны быть имена бойцов стенда
+        lines = await page.locator(".bench-line").all_inner_texts()
+        assert lines, "строк судьи нет вовсе"
+        assert not any("промолчал" in text for text in lines), lines
+        assert any("Слева" in text or "Справа" in text for text in lines), lines
+
+        assert not said, said
         await browser.close()

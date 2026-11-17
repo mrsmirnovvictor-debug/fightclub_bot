@@ -6002,3 +6002,129 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
     transition: none;
   }
 }
+
+/* ---------- стенд сцены боя ---------- */
+
+body.bench {
+  padding: 0;
+  overflow-y: auto;
+}
+
+.bench-wrap {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.bench-title {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.bench-note,
+.bench-sub {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.bench-sub {
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.bench-scene {
+  margin: 0 0 14px;
+}
+
+.bench-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.bench-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.bench-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 140px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.bench-strikes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Строка размена: на телефоне поля переносятся, а не сжимаются в
+   нечитаемые — выбирать зону из трёхбуквенного поля невозможно */
+.bench-strike {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.bench-strike select,
+.bench-strike input,
+.bench-field select {
+  flex: 1 1 96px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+/* Выключенное поле не прячем: по нему видно, что у этого исхода его
+   не бывает, — а исчезнувшее поле читается как сбой вёрстки */
+.bench-strike .off {
+  opacity: 0.35;
+}
+
+.bench-drop {
+  flex: 0 0 auto;
+  width: 32px;
+  padding: 7px 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.bench-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bench-line {
+  margin: 0;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: var(--panel);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.bench-line.quiet {
+  color: var(--muted);
+  background: transparent;
+  padding-left: 0;
+}

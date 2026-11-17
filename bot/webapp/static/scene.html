@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Стенд сцены боя</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="static/card.css">
+</head>
+<!-- Адрес графики тот же, что у карточки: страница бакета не знает -->
+<body data-combat="{{combat}}" class="bench">
+  <main class="bench-wrap">
+    <h1 class="bench-title">Стенд сцены боя</h1>
+    <p class="bench-note">
+      Ход собирает сервер настоящим движком и тем же сериализатором, что
+      и бой. Сцена разбирает его тем же адаптером. Значит, что видно
+      здесь — то и увидит игрок.
+    </p>
+
+    <div class="fight-scene bench-scene">
+      <canvas class="fight-canvas"></canvas>
+      <div class="fight-veil">
+        <p class="fight-veil-word">Бойцы выходят…</p>
+        <div class="fight-veil-track"><div class="fight-veil-bar"></div></div>
+      </div>
+    </div>
+
+    <section class="bench-form">
+      <div class="bench-row">
+        <label class="bench-field">
+          <span>Слева</span>
+          <select id="left-class"></select>
+        </label>
+        <label class="bench-field">
+          <span>Справа</span>
+          <select id="right-class"></select>
+        </label>
+        <label class="bench-field">
+          <span>Очередь</span>
+          <select id="resolution">
+            <option value="sequential">подряд</option>
+            <option value="simultaneous">разом</option>
+          </select>
+        </label>
+      </div>
+
+      <div id="strikes" class="bench-strikes"></div>
+
+      <div class="bench-row">
+        <button type="button" class="btn secondary" id="add">+ удар</button>
+        <button type="button" class="btn wide" id="play">▶ Играть</button>
+      </div>
+    </section>
+
+    <section class="bench-said">
+      <h2 class="bench-sub">Что сказал судья</h2>
+      <div id="said" class="bench-lines"></div>
+    </section>
+  </main>
+
+  <script src="static/fightassets.js"></script>
+  <script src="static/fightscene.js"></script>
+  <script src="static/fightrender.js"></script>
+  <script src="static/scene.js"></script>
+</body>
+</html>

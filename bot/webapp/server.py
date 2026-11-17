@@ -6,6 +6,7 @@ import contextlib
 import time
 import hashlib
 import logging
+import random
 from pathlib import Path
 
 from aiohttp import web
@@ -19,7 +20,11 @@ from bot.game.art import LOADING, combat_base
 from bot.battle_service import BattleError
 from bot.duel_service import DuelError
 from bot.raid_service import RaidError
-from bot.game.classes import ALL_STATS, Stat
+from bot.game.classes import ALL_STATS, ALL_ZONES, FIGHTER_CLASSES, Stat, Zone
+from bot.game.combat import Fighter, Outcome, RoundResult, Strike
+from bot.game.fightlog import OUTCOME_TITLES, turn_payload
+from bot.game.narrator import strike_lines
+from bot.webapp.fight import fighter_payload
 from bot.game.equipment import Slot
 from bot.game.modes import mode_of
 from bot.game.potions import get_potion
@@ -252,7 +257,22 @@ ASSETS = (
     "fightscene.js",
     "fightrender.js",
     "card.js",
+    "scene.js",
 )
+
+# Какая страница какие файлы подключает. Страниц две: карточка и стенд
+# сцены. Общего у них вся сцена боя — стенд на то и стенд, чтобы гонять
+# тот же код, а не его копию
+PAGES = {
+    "card.html": (
+        "card.css", "fightassets.js", "fightscene.js", "fightrender.js",
+        "card.js",
+    ),
+    "scene.html": (
+        "card.css", "fightassets.js", "fightscene.js", "fightrender.js",
+        "scene.js",
+    ),
+}
 
 # Место в странице, куда встаёт адрес картинки экрана загрузки
 LOADING_SLOT = "{{loading}}"
@@ -339,10 +359,12 @@ def asset_stamp() -> str:
     digest = hashlib.sha1()
     for name in ASSETS:
         digest.update((STATIC_DIR / name).read_bytes())
+    for name in sorted(PAGES):
+        digest.update((STATIC_DIR / name).read_bytes())
     return digest.hexdigest()[:8]
 
 
-def stamped_page(stamp: str) -> str:
+def stamped_page(stamp: str, page: str = "card.html") -> str:
     """Страница со ссылками вида static/card.css?v=метка.
 
     Telegram держит мини-апп в вебвью и кеширует стили со скриптами намертво:
@@ -355,11 +377,19 @@ def stamped_page(stamp: str) -> str:
     json поздно, а прописывать бакет в вёрстке нельзя: все адреса
     картинок в игре живут в одном месте, `bot.game.art`.
     """
-    html = (STATIC_DIR / "card.html").read_text(encoding="utf-8")
-    for name in ASSETS:
+    html = (STATIC_DIR / page).read_text(encoding="utf-8")
+    for name in PAGES[page]:
         html = html.replace(f"static/{name}", f"static/{name}?v={stamp}")
     html = html.replace(LOADING_SLOT, LOADING)
     return html.replace(COMBAT_SLOT, combat_base())
+
+
+async def scene_page(request: web.Request) -> web.Response:
+    """Стенд сцены боя. Отдаётся всем: внутри только синтетика."""
+    return web.Response(
+        text=stamped_page(request.app[STAMP_KEY], "scene.html"),
+        content_type="text/html",
+    )
 
 
 async def index(request: web.Request) -> web.Response:
@@ -4036,6 +4066,138 @@ async def travel_guard(request: web.Request, handler):
         return web.json_response({"error": str(error)}, status=409)
 
 
+# ---------- стенд сцены боя ----------
+
+
+# Стенд собирает ход настоящим движком и настоящим сериализатором. Так
+# и задумано: показывать сцене выдуманный json значило бы проверять её
+# против моего представления о сервере, а не против сервера. Расходится
+# форма — стенд ломается первым, а не игрок в бою.
+SCENE_LEFT = 1
+SCENE_RIGHT = 2
+# Урон по умолчанию, если не задан. Числа взяты правдоподобные, чтобы
+# шкала двигалась заметно, а бой не кончался с первого удара
+SCENE_DAMAGE = {
+    "hit": 19,
+    "crit": 36,
+    "break": 24,
+    "counter": 14,
+}
+
+
+def _scene_fighter(user_id: int, name: str, code: str) -> Fighter:
+    """Боец стенда: настоящий класс, его же базовые характеристики."""
+    one = FIGHTER_CLASSES[code]
+    fighter = Fighter(user_id=user_id, name=name, fclass=one, stats=one.base_stats)
+    fighter.hp = fighter.max_hp
+    return fighter
+
+
+def _scene_strike(
+    asked: dict[str, Any], fighters: dict[int, Fighter], hp: dict[int, int]
+) -> Strike:
+    """Один удар стенда. Исход выбирает человек, остальное — движок."""
+    by_left = asked.get("by", "left") == "left"
+    attacker = SCENE_LEFT if by_left else SCENE_RIGHT
+    defender = SCENE_RIGHT if by_left else SCENE_LEFT
+    outcome = Outcome(asked.get("outcome", "hit"))
+    zone_code = asked.get("zone") or "chest"
+    zone = None if outcome is Outcome.SKIP else Zone(zone_code)
+
+    damage = int(asked.get("damage") or SCENE_DAMAGE.get(outcome.value, 0))
+    if outcome in (Outcome.BLOCK, Outcome.DODGE, Outcome.SKIP, Outcome.COUNTER):
+        damage = 0
+    counter = (
+        int(asked.get("counter") or SCENE_DAMAGE["counter"])
+        if outcome is Outcome.COUNTER
+        else 0
+    )
+
+    hp[defender] = max(0, hp[defender] - damage)
+    hp[attacker] = max(0, hp[attacker] - counter)
+    return Strike(
+        attacker_id=attacker,
+        defender_id=defender,
+        zone=zone,
+        outcome=outcome,
+        block=(Zone(zone_code),) if outcome is not Outcome.SKIP else (),
+        damage=damage,
+        counter_damage=counter,
+        ability=str(asked.get("ability") or ""),
+        defence_ability=str(asked.get("defence_ability") or ""),
+        missed_turn=outcome is Outcome.SKIP,
+        defender_hp_after=hp[defender],
+        attacker_hp_after=hp[attacker],
+    )
+
+
+async def api_scene(request: web.Request) -> web.Response:
+    """Ход для стенда сцены: собран движком, сериализован как в бою."""
+    # Та же дверь, что у остального мини-аппа: стенд не заводит
+    # отдельного входа без проверки
+    await _viewer(request)
+    asked = await request.json()
+
+    left_code = str(asked.get("left") or "warrior")
+    right_code = str(asked.get("right") or "tank")
+    if left_code not in FIGHTER_CLASSES or right_code not in FIGHTER_CLASSES:
+        raise web.HTTPBadRequest(text="нет такого класса", content_type="text/plain")
+
+    fighters = {
+        SCENE_LEFT: _scene_fighter(SCENE_LEFT, str(asked.get("left_name") or "Слева"), left_code),
+        SCENE_RIGHT: _scene_fighter(SCENE_RIGHT, str(asked.get("right_name") or "Справа"), right_code),
+    }
+    before = {uid: one.hp for uid, one in fighters.items()}
+    hp = dict(before)
+
+    strikes: list[Strike] = []
+    for one in asked.get("strikes") or []:
+        try:
+            strikes.append(_scene_strike(one, fighters, hp))
+        except ValueError as error:  # чужая зона или исход
+            raise web.HTTPBadRequest(
+                text=str(error), content_type="text/plain"
+            ) from error
+
+    for uid, one in fighters.items():
+        one.hp = hp[uid]
+
+    dead = [uid for uid, left in hp.items() if left <= 0]
+    result = RoundResult(
+        number=int(asked.get("number") or 1),
+        strikes=strikes,
+        hp_after=dict(hp),
+        hp_before=before,
+        simultaneous=asked.get("resolution") == "simultaneous",
+        finished=bool(dead),
+        winner_id=(
+            next((uid for uid in hp if uid not in dead), None) if dead else None
+        ),
+    )
+    said = strike_lines(result, fighters, random.Random(7))
+    return web.json_response(
+        {
+            "fighters": [
+                fighter_payload(one, ready=True, you=uid == SCENE_LEFT)
+                for uid, one in fighters.items()
+            ],
+            "turn": turn_payload(result, said),
+            "zones": [
+                {"code": zone.value, "title": zone.title} for zone in ALL_ZONES
+            ],
+            "classes": [
+                {"code": code, "title": one.title, "emoji": one.emoji}
+                for code, one in FIGHTER_CLASSES.items()
+            ],
+            "outcomes": [
+                {"code": outcome.value, "title": OUTCOME_TITLES[outcome][1],
+                 "emoji": OUTCOME_TITLES[outcome][0]}
+                for outcome in Outcome
+            ],
+        }
+    )
+
+
 def create_app(
     bot,
     db: Database,
@@ -4076,6 +4238,10 @@ def create_app(
     app.add_routes(
         [
             web.get("/", index),
+            # Стенд сцены боя: выбрать бойцов, задать размен и увидеть,
+            # как его покажет игра. Тот же конвейер, что в бою
+            web.get("/scene", scene_page),
+            web.post("/api/scene", api_scene),
             web.get("/api/card", api_card),
             web.get("/api/map", api_map),
             web.post("/api/travel", api_travel),
