@@ -19748,6 +19748,98 @@ async def test_healing_lifts_the_bar_in_the_scene(server):
 # ---------- стенд сцены боя ----------
 
 
+async def open_bench(pw, srv):
+    """Стенд в браузере с подменёнными атласами."""
+    browser = await pw.chromium.launch(
+        executable_path=CHROMIUM, args=["--no-proxy-server"]
+    )
+    page = await browser.new_page(viewport={"width": 430, "height": 1000})
+    broke = []
+    page.on("pageerror", lambda error: broke.append(str(error)))
+    asked = []
+
+    async def serve(route):
+        asked.append(route.request.url)
+        await route.fulfill(status=200, content_type="image/png", body=PIXEL)
+
+    await page.route("**/combat/**", serve)
+    await page.add_init_script(
+        "window.Telegram = { WebApp: { initData: " + repr(make_init_data())
+        + ", ready() {}, expand() {}, colorScheme: 'dark',"
+        " onEvent() {} } };"
+    )
+    await page.goto(f"{srv.make_url('/scene')}")
+    await page.wait_for_function(
+        "() => document.querySelectorAll('#left-class option').length >= 4",
+        timeout=10000,
+    )
+    return browser, page, asked, broke
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_every_ready_made_exchange_plays(server):
+    """Готовые размены — для тех, кто движка не знает.
+
+    Тестировщику не обязательно понимать, что у движка семь исходов и
+    пять зон: он жмёт «Контрудар» и смотрит, похоже ли это на
+    контрудар. Значит каждая кнопка обязана доиграть до конца, а не
+    только заполнить форму.
+    """
+    async with async_playwright() as pw:
+        browser, page, asked, broke = await open_bench(pw, server)
+
+        names = await page.locator("#ready .bench-ready").all_inner_texts()
+        assert len(names) >= 8, names
+        for want in ("Удар", "Крит", "Блок", "Уворот", "Контрудар", "Нокаут"):
+            assert want in names, (want, names)
+
+        for name in names:
+            # Сбрасываем раскадровку сами: иначе ожидание срабатывает на
+            # предыдущем сценарии, который ещё стоит, и проверка
+            # поздравляет себя с чужой работой
+            await page.evaluate("() => { bench.stage = null; }")
+            await page.click(f"#ready .bench-ready:text-is('{name}')")
+            await page.wait_for_function(
+                "() => bench.stage && bench.stage.length() > 0", timeout=10000
+            )
+            length = await page.evaluate("() => bench.stage.length()")
+            assert length > 0, name
+            # Форма показывает, из чего собран размен: кнопка не
+            # чёрный ящик
+            rows = await page.locator(".bench-strike").count()
+            assert rows >= 1, name
+
+        assert not broke, broke
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_the_knockout_scenario_puts_a_fighter_down(server):
+    """«Нокаут» обязан валить: иначе кнопка врёт своим названием."""
+    async with async_playwright() as pw:
+        browser, page, asked, broke = await open_bench(pw, server)
+        await page.evaluate("() => { bench.stage = null; }")
+        await page.click("#ready .bench-ready:text-is('Нокаут')")
+        await page.wait_for_function(
+            "() => bench.stage && bench.stage.over()", timeout=10000
+        )
+        poses = await page.evaluate(
+            """() => {
+              const seen = new Set();
+              for (let ms = 0; ms < bench.stage.length() + 500; ms += 20) {
+                bench.stage.at(ms);
+                seen.add(bench.stage.look('right', 6).row);
+              }
+              return [...seen];
+            }"""
+        )
+        assert "ko" in poses, poses
+        assert await page.evaluate("() => bench.stage.hp('right')") == 0
+        await browser.close()
+
+
 @pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
 @pytest.mark.asyncio
 async def test_the_bench_plays_a_staged_exchange(server):
@@ -19789,6 +19881,11 @@ async def test_the_bench_plays_a_staged_exchange(server):
             "() => document.querySelectorAll('#left-class option').length >= 4",
             timeout=10000,
         )
+        # Ручной сбор свёрнут: он нужен не всем, и развёрнутым занимал
+        # бы экран целиком, пряча сцену
+        assert not await page.locator(".bench-hand").get_attribute("open")
+        await page.click(".bench-hand > summary")
+
         zones = await page.locator(".bench-strike").first.locator(
             ".bench-zone option"
         ).count()

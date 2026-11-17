@@ -44,6 +44,60 @@ function benchAsk(body) {
   });
 }
 
+// Готовые размены. Тестировщику не обязательно знать, что у движка
+// семь исходов и пять зон: он жмёт «Контрудар» и смотрит, похоже ли
+// это на контрудар. Ручной сбор остаётся ниже — для тех, кому нужен
+// именно свой случай
+var SCENARIOS = [
+  {
+    title: "Удар",
+    strikes: [{ by: "left", zone: "chest", outcome: "hit" }],
+  },
+  {
+    title: "Крит",
+    strikes: [{ by: "left", zone: "head", outcome: "crit" }],
+  },
+  {
+    title: "Блок",
+    strikes: [{ by: "left", zone: "belly", outcome: "block" }],
+  },
+  {
+    title: "Пробитый блок",
+    strikes: [{ by: "left", zone: "belt", outcome: "break" }],
+  },
+  {
+    title: "Уворот",
+    strikes: [{ by: "left", zone: "legs", outcome: "dodge" }],
+  },
+  {
+    title: "Контрудар",
+    strikes: [{ by: "left", zone: "head", outcome: "counter" }],
+  },
+  {
+    title: "Пропуск",
+    strikes: [{ by: "left", zone: "chest", outcome: "skip" }],
+  },
+  {
+    title: "Размен",
+    strikes: [
+      { by: "left", zone: "head", outcome: "hit" },
+      { by: "right", zone: "belly", outcome: "hit" },
+    ],
+  },
+  {
+    title: "Разом",
+    resolution: "simultaneous",
+    strikes: [
+      { by: "left", zone: "chest", outcome: "hit" },
+      { by: "right", zone: "chest", outcome: "hit" },
+    ],
+  },
+  {
+    title: "Нокаут",
+    strikes: [{ by: "left", zone: "head", outcome: "crit", damage: 999 }],
+  },
+];
+
 var bench = {
   assets: null,
   stage: null,
@@ -233,6 +287,28 @@ function benchTimings(line) {
   return out;
 }
 
+// Разложить готовый размен по строкам формы: человек видит, из чего
+// он собран, и может доправить. Иначе кнопка была бы чёрным ящиком
+function benchFill(script) {
+  var box = document.getElementById("strikes");
+  box.textContent = "";
+  document.getElementById("resolution").value =
+    script.resolution || "sequential";
+  script.strikes.forEach(function (one) {
+    var row = benchStrikeRow();
+    row.querySelector(".bench-outcome").value = one.outcome;
+    // Запертость зоны и урона зависит от исхода, поэтому пересчитываем
+    // её после того, как исход выбран, а не до
+    row.querySelector(".bench-outcome").dispatchEvent(new Event("change"));
+    row.querySelector(".bench-who").value = one.by;
+    row.querySelector(".bench-zone").value = one.zone;
+    if (one.damage) {
+      row.querySelector(".bench-damage").value = String(one.damage);
+    }
+    box.appendChild(row);
+  });
+}
+
 async function benchPlay() {
   var left = document.getElementById("left-class").value;
   var right = document.getElementById("right-class").value;
@@ -285,8 +361,28 @@ async function benchStart() {
   });
 
   var strikes = document.getElementById("strikes");
+  var ready = document.getElementById("ready");
+  SCENARIOS.forEach(function (script) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn secondary bench-ready";
+    button.textContent = script.title;
+    button.addEventListener("click", function () {
+      benchFill(script);
+      benchPlay().catch(function (error) {
+        benchSay(["Не вышло: " + error.message]);
+      });
+    });
+    ready.appendChild(button);
+  });
+
   document.getElementById("add").addEventListener("click", function () {
     strikes.appendChild(benchStrikeRow());
+  });
+  document.getElementById("again").addEventListener("click", function () {
+    benchPlay().catch(function (error) {
+      benchSay(["Не вышло: " + error.message]);
+    });
   });
   document.getElementById("play").addEventListener("click", function () {
     benchPlay().catch(function (error) {
@@ -294,12 +390,10 @@ async function benchStart() {
     });
   });
 
-  // Пара ударов для начала, чтобы было что нажать сразу
-  strikes.appendChild(benchStrikeRow());
-  strikes.appendChild(benchStrikeRow());
-  strikes.querySelectorAll(".bench-strike")[1].querySelector(
-    ".bench-who",
-  ).value = "right";
+  // Открываемся на обычном размене: пустой стенд пришлось бы сперва
+  // заполнять, а первое, что хочет увидеть тестировщик, — что тут
+  // вообще происходит
+  benchFill(SCENARIOS[7]);
 }
 
 // Тема — по тому же правилу, что у карточки. Без этого стенд выходил

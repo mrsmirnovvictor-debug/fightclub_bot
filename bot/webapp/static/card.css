@@ -6128,3 +6128,38 @@ body.bench {
   background: transparent;
   padding-left: 0;
 }
+
+/* Готовые размены: тестировщик жмёт название и смотрит, похоже ли */
+.bench-ready-wrap {
+  margin-bottom: 14px;
+}
+
+.bench-ready-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bench-ready {
+  flex: 0 1 auto;
+  width: auto;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+/* Ручной сбор свёрнут: он нужен не всем, а развёрнутым занимал экран
+   целиком и прятал сцену */
+.bench-hand {
+  margin-bottom: 12px;
+}
+
+.bench-hand > summary {
+  padding: 9px 0;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.bench-again {
+  margin-bottom: 18px;
+}

@@ -12,9 +12,10 @@
   <main class="bench-wrap">
     <h1 class="bench-title">Стенд сцены боя</h1>
     <p class="bench-note">
-      Ход собирает сервер настоящим движком и тем же сериализатором, что
-      и бой. Сцена разбирает его тем же адаптером. Значит, что видно
-      здесь — то и увидит игрок.
+      Жмите готовый размен — смотрите, похоже ли происходящее на своё
+      название. Ход собирает сервер настоящим движком и тем же
+      сериализатором, что и бой, а сцена разбирает его тем же
+      адаптером: что видно здесь, то увидит и игрок.
     </p>
 
     <div class="fight-scene bench-scene">
@@ -25,6 +26,13 @@
       </div>
     </div>
 
+    <section class="bench-ready-wrap">
+      <h2 class="bench-sub">Готовые размены</h2>
+      <div id="ready" class="bench-ready-row"></div>
+    </section>
+
+    <details class="bench-hand">
+      <summary>Собрать свой размен</summary>
     <section class="bench-form">
       <div class="bench-row">
         <label class="bench-field">
@@ -51,6 +59,11 @@
         <button type="button" class="btn wide" id="play">▶ Играть</button>
       </div>
     </section>
+    </details>
+
+    <button type="button" class="btn wide bench-again" id="again">
+      ↻ Повторить
+    </button>
 
     <section class="bench-said">
       <h2 class="bench-sub">Что сказал судья</h2>
