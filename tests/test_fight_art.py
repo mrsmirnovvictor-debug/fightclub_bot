@@ -265,3 +265,53 @@ def test_a_fighter_in_his_stance_keeps_to_his_half_of_the_scene():
                 f"на половину соперника"
             )
             # Правый зеркален, поэтому достаточно проверить одного
+
+
+# ---------- падение кончается лёжа ----------
+
+
+def ko_frames(line: str) -> list[dict]:
+    """Кадры ряда падения по порядку."""
+    book = json.loads((FIGHT_DIR / line / "manifest.json").read_text("utf-8"))
+    row = book["rowMap"]["move"].index("ko")
+    return sorted(
+        (one for one in book["sets"]["move"]["frames"] if one["row"] == row),
+        key=lambda one: one["frame"],
+    )
+
+
+@pytest.mark.parametrize("line", sorted(set(ART_LINES.values())))
+def test_a_knocked_out_fighter_ends_up_lying(line):
+    """Последний кадр падения — лежачий, и это не придирка к рисунку.
+
+    Сцена держит бойца на последнем кадре всё время, пока бой не
+    закрыли: это его поза до конца. Окажись она стоячей — и побеждённый
+    так и простоит над собственным поражением.
+    """
+    last = ko_frames(line)[-1]["drawSize"]
+    assert last["w"] > last["h"], (
+        f"{line}: последний кадр падения {last['w']:.0f}x{last['h']:.0f} — "
+        f"боец на нём стоит, а должен лежать"
+    )
+
+
+@pytest.mark.parametrize("line", sorted(set(ART_LINES.values())))
+def test_a_fall_never_lifts_the_body_back_up(line):
+    """Тело по ходу падения только оседает.
+
+    Высота кадра — это высота силуэта: пока боец валится, она обязана
+    убывать. Выросшая посередине высота значит, что тело подкинуло, и
+    падение читается как прыжок.
+    """
+    heights = [one["drawSize"]["h"] for one in ko_frames(line)]
+    grown = [
+        (number, heights[number], heights[number + 1])
+        for number in range(len(heights) - 1)
+        if heights[number + 1] > heights[number]
+    ]
+    assert not grown, (
+        f"{line}: тело поднимается обратно {grown}, все высоты {heights}"
+    )
+    assert heights[-1] < heights[0] / 2, (
+        f"{line}: тело почти не осело — {heights[0]:.0f} → {heights[-1]:.0f}"
+    )
