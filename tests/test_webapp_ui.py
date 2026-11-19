@@ -1037,6 +1037,7 @@ async def open_page(
     court=None, blackout=None, casino=None, ladder=None,
     images=False,
     broken=None,
+    real=None,
     telegram="",
     loader_wait=False,
 ):
@@ -1130,6 +1131,12 @@ async def open_page(
     # разбирает правила с конца, и общее `IMAGES` иначе забирает её себе
     if broken:
         await page.route(broken, lambda route: route.fulfill(status=404))
+    # А это — картинки, которые надо взять с настоящего сервера, из
+    # статики приложения. Правило тоже последнее и по той же причине:
+    # общее `IMAGES` подменяет всё подряд пикселем, а тут проверяют
+    # как раз то, что лежит в репозитории
+    if real:
+        await page.route(real, lambda route: route.continue_())
     await page.goto(f"{server.make_url('/')}{query}")
     return browser, page
 
@@ -20420,6 +20427,43 @@ async def test_a_desk_without_its_backdrop_opens_all_the_same(server):
         )
         assert await page.locator("#club-top").is_hidden(), "пустая рамка над меню"
         assert await page.locator(".ladder-row").count() == 4
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_the_four_icons_in_the_repository_really_draw(server):
+    """Четыре файла из статики открываются браузером и встают в панель.
+
+    Эмодзи остаётся запасным значком, и в этом его беда: положи кто
+    угодно битый или пустой webp — панель молча вернётся к эмодзи, и
+    прогон останется зелёным. Поэтому здесь картинки берутся не
+    пикселем-подменой, а настоящие, из репозитория, и у каждой
+    спрашивается её собственная ширина: у незагрузившейся она ноль.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(make_player(), TOKEN, viewer_id=42),
+            real="**/static/nav/*.webp",
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        for tab in ("club", "map", "bag", "hero"):
+            # Пять секунд, а не тридцать по умолчанию: файл лежит на
+            # этой же машине, и ждать его полминуты незачем — а
+            # сломанный файл иначе держит прогон на пустом месте
+            try:
+                await page.wait_for_selector(
+                    f"#tab-{tab} .bar-icon img.bar-pic", timeout=5000
+                )
+            except Exception:
+                raise AssertionError(f"значок «{tab}» не открылся браузером")
+            size = await page.locator(f"#tab-{tab} .bar-pic").evaluate(
+                "o => [o.naturalWidth, o.naturalHeight]"
+            )
+            assert size[0] > 0 and size[1] > 0, (tab, size)
+            # Квадрат: `contain` не обрежет, но вытянутый значок рядом с
+            # тремя квадратными виден сразу
+            assert size[0] == size[1], (tab, size)
         await browser.close()
 
 
