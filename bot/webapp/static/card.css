@@ -6315,6 +6315,42 @@ body.dark .bubbles.segments .chip.on {
   outline-offset: -2px;
 }
 
+/* ---------- подложка справочной ---------- */
+
+/* Картинка идёт во всю ширину экрана, поэтому вылезает из отступов
+   страницы отрицательными полями. Пропорция близка к 3:1 — такой
+   нарисован файл; высоту сверх этого не тянем, иначе на узком экране
+   подложка съедает пол-страницы до первой строки рейтинга */
+.club-top {
+  margin: -14px -14px 10px;
+  position: relative;
+  overflow: hidden;
+  aspect-ratio: 3 / 1;
+  max-height: 190px;
+}
+
+.club-top-pic {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* `cover` с центром: файл широкий, а экран бывает узким, и обрезать
+     его по краям честнее, чем сплющивать лица в середине */
+  object-fit: cover;
+  object-position: center;
+}
+
+/* Низ подложки растворяется в фоне страницы: без этого её край режет
+   экран ровной линией поперёк, и меню под ней выглядит приклеенным */
+.club-top::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 58%;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0), var(--bg));
+}
+
 /* ---------- кликабельная строка бойца и подиум рейтинга ---------- */
 
 /* Строка-кнопка должна остаться строкой: сбрасываем всё, что браузер
@@ -6386,12 +6422,33 @@ body.dark .ladder-top-1 {
 body.dark .ladder-top-2 { border-color: rgba(198, 206, 219, 0.5); }
 body.dark .ladder-top-3 { border-color: rgba(205, 127, 50, 0.5); }
 
-/* Медаль занимает колонку места: знак крупнее цифры и стоит по
-   центру — у эмодзи нет цифрового «хвоста» справа, и прижатая вправо
-   медаль выглядела бы съехавшей от своей строки */
-.fighter-medal {
-  font-size: 15px;
+/* Медаль занимает колонку места целиком. Ширину колонка получает
+   только вместе с картинкой: не доехала — остаётся обычный номер в
+   своих двадцати двух пикселях, и список не зияет пустыми колонками.
+   Исходник у медали 1254 px, и ставить его в CSS нельзя: на экране
+   она в двадцать раз меньше */
+.fighter-place.has-rank {
+  --rank-size: clamp(30px, 10vw, 44px);
+  min-width: var(--rank-size);
   text-align: center;
+}
+
+/* Размер едет по ширине экрана. На полноразмерном телефоне медаль
+   такая, как просит макет; на трёхстах двадцати она ужимается —
+   иначе от имени призёра остаётся первая буква с многоточием, а
+   имя в строке рейтинга важнее размера значка */
+.rank-pic {
+  --rank-size: clamp(30px, 10vw, 44px);
+  display: block;
+  width: var(--rank-size);
+  height: var(--rank-size);
+  object-fit: contain;
+}
+
+/* Первое место крупнее второго и третьего — они между собой равны */
+.ladder-top-1 .fighter-place.has-rank,
+.ladder-top-1 .rank-pic {
+  --rank-size: clamp(38px, 13vw, 56px);
 }
 
 /* Первое место крупнее остальных, но не на полэкрана: вырастает
@@ -6399,7 +6456,6 @@ body.dark .ladder-top-3 { border-color: rgba(205, 127, 50, 0.5); }
 .ladder-top-1 { padding: 9px 10px; }
 .ladder-top-1 .fighter-name { font-size: 15px; }
 .ladder-top-1 .fighter-place { font-size: 15px; }
-.ladder-top-1 .fighter-medal { font-size: 17px; }
 
 @media (prefers-reduced-motion: reduce) {
   .fighter-pick { transition: none; }

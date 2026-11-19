@@ -10687,6 +10687,39 @@ async def test_there_is_no_work_button_where_you_do_not_work(server):
         await browser.close()
 
 
+async def test_the_work_button_never_hangs_over_the_information_desk(server):
+    """Баг: боец читал рейтинг, а над ним висела кнопка его смены.
+
+    Кнопка «Работа» встаёт в шапку того дома, где боец стоит, и
+    означает «ты на своём рабочем месте». Справочная — не дом: в неё не
+    приходят ногами, её открывает кнопка внизу. Шапку она, однако,
+    делит со зданием клуба, и кнопка доставалась обеим.
+    """
+    player = make_player("fight_club")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["work"] = {"here": True, "on_shift": False, "code": "trainer"}
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player),
+            ladder=ladder_state(), club=a_rating(),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        # Справочная — кнопки нет
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-ladder:not(.hidden)")
+        assert await page.locator("#club .work-entry").count() == 0
+
+        # Здание клуба на карте — та же шапка, и кнопка на месте
+        await page.evaluate("openClub()")
+        await page.wait_for_selector("#club-fights:not(.hidden)")
+        entry = page.locator("#club .work-entry")
+        assert await entry.count() == 1
+        assert await entry.inner_text() == "💼 Работа"
+        await browser.close()
+
+
 async def test_the_work_button_lights_up_during_a_shift(server):
     player = make_player("strength_gym")
     card = build_card(player, TOKEN, viewer_id=player.user_id)
@@ -16018,9 +16051,17 @@ async def test_the_raid_house_keeps_the_raid_button_in_the_header(server):
         assert await page.locator("#club .raid-entry").count() == 0
         assert await page.locator("#bag .screen-head").count() == 0
 
-        # Вернулись в клуб — и кнопка снова в шапке, и снова горит
+        # Кнопка внизу ведёт в справочную, а справочная — не дом:
+        # кнопок дома у неё нет и шапки тоже. Искать рейд над чужим
+        # рейтингом никто не станет, а невидимая кнопка в спрятанной
+        # шапке хуже, чем её отсутствие
         await page.locator("#tab-club").click()
-        await page.wait_for_selector("#club:not(.hidden)")
+        await page.wait_for_selector("#club-ladder:not(.hidden)")
+        assert await page.locator("#club .raid-entry").count() == 0
+
+        # Вернулись в казино ногами — и кнопка снова в шапке, и горит
+        await page.evaluate("openRaidHouse('casino')")
+        await page.wait_for_selector("#club-raid:not(.hidden)")
         assert "on" in (
             await page.locator(".raid-entry").get_attribute("class")
         )
@@ -20228,37 +20269,94 @@ async def test_the_bottom_bar_fits_every_phone(server, width):
         await browser.close()
 
 
+FOUR_RANKS = (
+    ladder_rank(1, a_rated(43, "Марла", 7, 1480), fights=14),
+    ladder_rank(2, a_rated(44, "Тайлер", 5, 1390), fights=13),
+    ladder_rank(3, a_rated(45, "Боб", 6, 1320), fights=12),
+    ladder_rank(4, a_rated(46, "Анджела", 4, 1270), fights=11),
+)
+
+
 @pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
 @pytest.mark.asyncio
 async def test_the_top_three_wear_their_medals(server):
-    """Призёрам вместо цифры — медаль, четвёртому снова цифра.
+    """Призёрам — нарисованная медаль вместо номера, четвёртому номер.
 
-    Медаль заменяет цифру, а не приписывается к ней: иначе колонка
-    места у призёров шире, чем у всех остальных, и столбец имён
-    ломается ровно на тройке, которую смотрят первой.
+    Медаль встаёт НА место цифры, а не рядом с ней: колонка места одна
+    на весь список, и значок сбоку развалил бы столбец имён ровно на
+    тройке, которую смотрят первой. Первая медаль крупнее второй и
+    третьей, а эти две — одного размера.
     """
     async with async_playwright() as pw:
         browser, page = await open_desk_at(
-            pw, server, 375,
-            ladder=ladder_state(
-                ladder_rank(1, a_rated(43, "Марла", 7, 1480), fights=14),
-                ladder_rank(2, a_rated(44, "Тайлер", 5, 1390), fights=13),
-                ladder_rank(3, a_rated(45, "Боб", 6, 1320), fights=12),
-                ladder_rank(4, a_rated(46, "Анджела", 4, 1270), fights=11),
-            ),
-            club=a_rating(),
+            pw, server, 375, images=True,
+            ladder=ladder_state(*FOUR_RANKS), club=a_rating(),
         )
+        await page.wait_for_selector(".ladder-row .rank-pic")
+        pics = page.locator(".ladder-row .rank-pic")
+        assert await pics.count() == 3, "медаль досталась кому-то четвёртому"
+
+        # Четвёртое место — по-прежнему номер
+        fourth = page.locator(".ladder-row .fighter-place").nth(3)
+        assert (await fourth.inner_text()).strip() == "4"
+        assert await fourth.locator("img").count() == 0
+
+        # Медали декоративны: место уже сказано рамкой и порядком строк,
+        # и второй раз диктору его читать незачем
+        assert await pics.first.get_attribute("alt") == ""
+
+        sizes = []
+        for number in range(3):
+            box = await pics.nth(number).bounding_box()
+            sizes.append(round(box["width"]))
+        assert sizes[0] > sizes[1], f"первое место не крупнее: {sizes}"
+        assert sizes[1] == sizes[2], f"второе и третье разного размера: {sizes}"
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_a_medal_never_eats_the_name_it_belongs_to(server):
+    """На самом узком экране медаль ужимается, а имя остаётся именем.
+
+    Макетный размер медали — под полноразмерный телефон. На трёхстах
+    двадцати тот же размер съедал строку призёра до первой буквы с
+    многоточием, и рейтинг переставал отвечать на свой единственный
+    вопрос: кто там наверху.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_desk_at(
+            pw, server, 320, images=True,
+            ladder=ladder_state(*FOUR_RANKS), club=a_rating(),
+        )
+        await page.wait_for_selector(".ladder-row .rank-pic")
+        room = await page.locator(
+            ".ladder-row .fighter-name"
+        ).first.bounding_box()
+        assert room["width"] >= 40, f"имени призёра осталось {room['width']}"
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_a_rating_without_medals_still_counts_from_one(server):
+    """Медали не приехали — в строках обычные номера, и всё работает.
+
+    Запасной вариант тут не эмодзи, а именно номер: медаль заменяет
+    его собой, и если заменить нечем, список обязан остаться списком с
+    местами, а строка — открывать карточку.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_desk_at(
+            pw, server, 375, images=True, broken="**/static/club/rank_*.webp",
+            ladder=ladder_state(*FOUR_RANKS), club=a_rating(),
+        )
+        await page.wait_for_selector(".ladder-row")
         places = await page.locator(".ladder-row .fighter-place").all_inner_texts()
-        assert places == ["🥇", "🥈", "🥉", "4"], places
+        assert [one.strip() for one in places] == ["1", "2", "3", "4"], places
+        assert await page.locator(".ladder-row .rank-pic").count() == 0
 
-        # Медаль — картинка, и у неё должно быть имя: диктор читает
-        # «1 место», а не молчит на незнакомом знаке
-        said = await page.locator(".ladder-row .fighter-place").first.get_attribute(
-            "aria-label"
-        )
-        assert said == "1 место", said
-
-        # Колонка места у призёра и у четвёртого одной ширины
+        # Колонка места не разъехалась: без картинок она у всех одна
         wide = []
         for number in range(4):
             box = await page.locator(
@@ -20266,6 +20364,62 @@ async def test_the_top_three_wear_their_medals(server):
             ).nth(number).bounding_box()
             wide.append(round(box["width"]))
         assert len(set(wide)) == 1, f"колонка места разъехалась: {wide}"
+
+        await page.locator(".ladder-row").first.click()
+        await page.wait_for_selector(".sheet-doll")
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_the_desk_keeps_nothing_above_its_menu(server):
+    """Над меню справочной только подложка — ни шапки, ни заголовка.
+
+    Заголовок на подложке был бы вторым: логотип нарисован в самой
+    картинке. А в здании клуба всё наоборот — там шапка нужна, в ней
+    живёт кнопка на карту, и её редизайн справочной не трогает.
+    """
+    async with async_playwright() as pw:
+        # Список игроков непустой нарочно: счётчик «N бойцов» живёт в
+        # шапке, и с пустым списком шапка сама по себе нулевой высоты —
+        # спрятана она или нет, со стороны не видно
+        browser, page = await open_desk_at(
+            pw, server, 375, images=True,
+            ladder=ladder_state(*FOUR_RANKS),
+            club=a_rating(a_rated(43, "Марла", 7, 1480)),
+        )
+        head = page.locator("#club-head")
+        assert await head.evaluate("o => o.classList.contains('hidden')")
+        assert await head.is_hidden()
+        assert await page.locator("#club-title").is_hidden()
+        await page.wait_for_selector("#club-top:not(.hidden)")
+
+        # Подложка лежит над меню, а не под ним
+        top = await page.locator("#club-top").bounding_box()
+        menu = await page.locator("#club-sections").bounding_box()
+        assert top["y"] + top["height"] <= menu["y"] + 1, (top, menu)
+
+        # В здании клуба шапка и заголовок на месте, подложки нет
+        await page.evaluate("openClub()")
+        await page.wait_for_selector("#club-fights:not(.hidden)")
+        assert await page.locator("#club-head").is_visible()
+        assert await page.locator("#club-title").is_visible()
+        assert await page.locator("#club-top").is_hidden()
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_a_desk_without_its_backdrop_opens_all_the_same(server):
+    """Подложка не приехала — над меню просто ничего, и это рабочий вид."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk_at(
+            pw, server, 375, images=True,
+            broken="**/static/club/club_header.webp",
+            ladder=ladder_state(*FOUR_RANKS), club=a_rating(),
+        )
+        assert await page.locator("#club-top").is_hidden(), "пустая рамка над меню"
+        assert await page.locator(".ladder-row").count() == 4
         await browser.close()
 
 

@@ -2311,6 +2311,41 @@ const TAB_ICONS = {
   hero: "static/nav/hero.webp",
 };
 
+// Нарисованное убранство справочной: широкая подложка над меню и три
+// медали призёров. Лежит там же, где иконки панели, — в статике
+// приложения, и грузится по тем же правилам: картинка появляется
+// только после успешной загрузки, а до неё и вместо неё страница
+// работает сама по себе. У подложки «вместо неё» — пусто, у медалей —
+// обычный номер места
+const CLUB_ART = {
+  top: "static/club/club_header.webp",
+  1: "static/club/rank_1.webp",
+  2: "static/club/rank_2.webp",
+  3: "static/club/rank_3.webp",
+};
+
+// Приехала ли подложка. Пока нет — её фигуру не показываем вовсе:
+// пустая рамка в три к одному над меню хуже, чем ничего
+let clubTopReady = false;
+
+function dressClub() {
+  const pic = el("club-top-pic");
+  if (!pic) return;
+  pic.addEventListener("load", () => {
+    clubTopReady = true;
+    // Справочную могли открыть раньше, чем картинка доехала
+    paintClubTop();
+  });
+  pic.src = CLUB_ART.top;
+}
+
+/** Показать подложку там, где ей место: в справочной и только с картинкой. */
+function paintClubTop() {
+  const top = el("club-top");
+  if (!top) return;
+  top.classList.toggle("hidden", !(clubHouse === "info" && clubTopReady));
+}
+
 function dressTabs() {
   TABS.forEach((tab) => {
     const where = TAB_ICONS[tab];
@@ -3738,13 +3773,21 @@ function openRaidHouse(code) {
 function renderClubSections() {
   const box = el("club-sections");
   box.textContent = "";
+  const desk = clubHouse === "info";
   // В справочной переключатель один на три раздела и должен влезать в
   // одну строку на самом узком экране: там он сегментированный, а не
   // россыпью пузырьков, как в остальных домах
-  box.classList.toggle("segments", clubHouse === "info");
+  box.classList.toggle("segments", desk);
   el("club-title").textContent = CLUB_HOUSES[clubHouse].title;
+  // Над меню справочной не остаётся ничего: шапка со счётчиком и
+  // заголовок уезжают, их место занимает подложка. Заголовок на ней
+  // был бы вторым — логотип нарисован в самой картинке. В доме всё
+  // наоборот: там шапка нужна, в неё возвращается кнопка на карту
+  el("club-title").classList.toggle("hidden", desk);
+  el("club-head").classList.toggle("hidden", desk);
+  paintClubTop();
   // В справочную не входили — значит, и выходить из неё на карту некуда
-  el("club-back").classList.toggle("hidden", clubHouse === "info");
+  el("club-back").classList.toggle("hidden", desk);
   // А вид изнутри перерисовываем целиком: он зависит и от дома, в
   // котором боец стоит, и от того, справочная перед ним или здание
   paintInterior();
@@ -6497,9 +6540,31 @@ function renderLadderPrizes(prizes) {
   box.appendChild(list);
 }
 
-// Металл призёров: золото, серебро, бронза. Четвёртого места в этом
-// списке нет и не будет — дальше идут обычные строки с цифрой
-const MEDALS = { 1: "🥇", 2: "🥈", 3: "🥉" };
+/** Медаль призёра вместо номера места.
+ *
+ * Медаль встаёт НА место цифры, а не рядом с ней: колонка места одна
+ * на весь список, и значок сбоку развалил бы столбец имён ровно на
+ * тройке, которую смотрят первой.
+ *
+ * Цифра остаётся запасным вариантом и исчезает только тогда, когда
+ * картинка действительно загрузилась: не доехала — в строке обычный
+ * номер, и ни строка, ни переход в карточку от этого не страдают.
+ * Имени у медали нет (`alt=""`): место уже сказано рамкой и порядком
+ * строк, и диктор, читающий «первое место» дважды, помогает меньше,
+ * чем кажется.
+ */
+function dressRank(place, number) {
+  if (!place || !CLUB_ART[number]) return;
+  const pic = new Image();
+  pic.addEventListener("load", () => {
+    pic.className = "rank-pic";
+    pic.alt = "";
+    place.textContent = "";
+    place.classList.add("has-rank");
+    place.appendChild(pic);
+  });
+  pic.src = CLUB_ART[number];
+}
 
 /** Строка рейтинга недели: всё то же плюс бои за неделю и награда. */
 function ladderRow(one) {
@@ -6510,17 +6575,7 @@ function ladderRow(one) {
   // второй странице золота не будет — и правильно
   if (one.place >= 1 && one.place <= 3) {
     box.classList.add("ladder-top", "ladder-top-" + one.place);
-    // Медаль встаёт на место цифры, а не рядом: колонка остаётся той
-    // же ширины, и строка призёра не разъезжается против остальных.
-    // Цифра при этом не теряется — диктору медаль ничего не говорит,
-    // и место он читает с подписи
-    const place = box.querySelector(".fighter-place");
-    if (place) {
-      place.textContent = MEDALS[one.place];
-      place.setAttribute("role", "img");
-      place.setAttribute("aria-label", one.place + " место");
-      place.classList.add("fighter-medal");
-    }
+    dressRank(box.querySelector(".fighter-place"), one.place);
   }
   const fights = document.createElement("span");
   fights.className = "ladder-fights";
@@ -9948,6 +10003,11 @@ function strangerBox(data) {
 function paintWorkEntry(screen) {
   document.querySelectorAll(".work-entry").forEach((one) => one.remove());
   if (screen === "work" || screen === "hr") return;
+  // Справочная — не дом, в неё не приходят ногами: её открывает кнопка
+  // внизу, и стоять в ней нельзя. Кнопка «Работа» означает «ты сейчас
+  // на своём рабочем месте», и в справочной она говорила неправду —
+  // боец читал рейтинг, а над рейтингом висела чужая смена
+  if (screen === "club" && clubHouse === "info") return;
   if (!cardData || !cardData.work || !cardData.work.here) return;
   const head = el(screen) && el(screen).querySelector(".screen-head");
   if (!head) return;
@@ -9973,6 +10033,11 @@ function paintWorkEntry(screen) {
  */
 function paintRaidEntry(screen) {
   document.querySelectorAll(".raid-entry").forEach((one) => one.remove());
+  // Справочная — не дом, и кнопки дома ей не положены, ровно как
+  // «Работа». Над её меню вообще ничего нет: там подложка, а шапка
+  // уехала целиком — кнопка в ней осталась бы невидимой и
+  // ненажимаемой, что хуже, чем её отсутствие
+  if (screen === "club" && clubHouse === "info") return;
   if (!inRaidHouse()) return;
   const head = el(screen) && el(screen).querySelector(".screen-head");
   if (!head) return;
@@ -20945,6 +21010,8 @@ watchInteriors();
 
 // Нарисованные иконки подменяют эмодзи, если приехали
 dressTabs();
+// Подложка справочной — туда же: приедет, покажем
+dressClub();
 // Панель могла стать выше: пересчитываем отступ страницы под неё
 window.addEventListener("resize", fitBar);
 

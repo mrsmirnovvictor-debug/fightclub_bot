@@ -43,7 +43,15 @@
       <img class="interior-pic" id="club-pic" alt="">
     </figure>
 
-    <header class="screen-head">
+    <!-- Подложка справочной. Показывается, только если картинка
+         действительно загрузилась: без неё над меню просто ничего нет,
+         и страница остаётся страницей. Своего имени ей не нужно —
+         логотип на ней повторяет подпись вкладки внизу -->
+    <figure class="club-top hidden" id="club-top">
+      <img class="club-top-pic" id="club-top-pic" alt="">
+    </figure>
+
+    <header class="screen-head" id="club-head">
       <button type="button" class="back" id="club-back">← На карту</button>
       <span class="screen-count" id="club-count"></span>
     </header>
