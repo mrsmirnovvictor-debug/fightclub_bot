@@ -15,6 +15,12 @@
   --dmg: #1a63c4;
   --dmg-crit: #cc2f22;
   --gold: #b8860b;
+  /* Холодная пара редизайна: голубой и фиолетовый. Ими горит открытая
+     вкладка панели, выбранный раздел справочной и шкала опыта — один
+     язык «это твоё, это сейчас» на весь апп. На светлой теме они
+     темнее: те же, что в тёмной, на белом не читаются */
+  --cyan: #1f6fc4;
+  --violet: #6b45c0;
   /* Фон рамки бойца. Не из темы: машины сняты в студии на ровном сером,
      и рамка обязана быть того же серого — иначе полоса машины висит
      заплаткой на фоне другого цвета. Цвет снят с самих фотографий, и по
@@ -41,6 +47,8 @@ body.dark {
   --dmg: #6cb6ff;
   --dmg-crit: #ff6a5c;
   --gold: #e8c04a;
+  --cyan: #58a6ff;
+  --violet: #a27bff;
 }
 
 /* Цвета ступеней модификации. Один список на все места, где ступень
@@ -1553,6 +1561,14 @@ body.dark .bar-tab.active .bar-icon {
   white-space: nowrap;
 }
 .fighter-level { color: var(--muted); font-weight: 700; font-size: 13px; }
+
+/* В списке игроков уровень стоит вплотную к нику, а не у правого
+   края: «Victor [1]» читается как одно целое, тогда как уровень,
+   уехавший к рейтингу, читался как часть рейтинга. Имя поэтому
+   перестаёт растягиваться на всё свободное место, а рейтинг
+   отодвигается вправо сам */
+.club-row .fighter-name { flex: 0 1 auto; }
+.club-row .fighter-elo { margin-left: auto; }
 
 /* ---------- рейтинг игроков ----------
 
@@ -4161,12 +4177,19 @@ body.dark .bar-tab.active .bar-icon {
 
    Колонки растут сами: кнопок бывает две (календаря ещё нет) и три, и в
    обоих случаях они делят строку ровно. */
+/* Разделы персонажа — такой же сегментированный переключатель, как
+   разделы справочной: не россыпь кнопок, а одна дорожка, по которой
+   ездит выбранное. Расположение прежнее — четыре в два этажа по две */
 .hero-acts {
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
-  gap: 6px;
+  gap: 3px;
   margin: 10px 0 12px;
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--slot);
+  border: 1px solid var(--line);
 }
 /* Три кнопки встают в ряд и читаются с одного взгляда. Четвёртая ряд
    ломает: на четверть телефона «Характеристики» не влезают и обрезаются
@@ -4182,10 +4205,14 @@ body.dark .bar-tab.active .bar-icon {
   justify-content: center;
   gap: 5px;
   min-width: 0;
-  padding: 9px 8px;
-  border: 1px solid var(--slot-line);
-  border-radius: 999px;
-  background: var(--slot);
+  /* Сорок четыре на сорок четыре не выходит: кнопок четыре, и две
+     полосы такой высоты заняли бы треть экрана. Тридцать шесть —
+     нижняя граница, на которой палец ещё не промахивается */
+  min-height: 36px;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
   color: var(--ink);
   font: inherit;
   font-size: 12px;
@@ -4193,14 +4220,32 @@ body.dark .bar-tab.active .bar-icon {
   line-height: 1.2;
   cursor: pointer;
 }
-/* Выбранный раздел горит так же, как выбранный пузырь на других экранах:
+/* Выбранный раздел горит так же, как выбранный раздел справочной:
    один язык на весь апп, чтобы «выбрано» нигде не переучивалось */
 .hero-act.on {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  color: var(--ink);
+  background: #fff;
+  border-color: var(--slot-line);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.12);
+}
+
+body.dark .hero-act.on {
+  color: #eaf4ff;
+  border-color: rgba(120, 200, 255, 0.35);
+  background:
+    linear-gradient(180deg, rgba(90, 170, 255, 0.18), rgba(140, 110, 255, 0.12));
+  box-shadow: 0 0 10px rgba(90, 170, 255, 0.18) inset;
+}
+
+.hero-act:focus-visible {
+  outline: 2px solid rgba(120, 200, 255, 0.9);
+  outline-offset: -2px;
 }
 .hero-act:active { transform: scale(0.97); }
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-act:active { transform: none; }
+}
 .hero-act-text {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5756,7 +5801,7 @@ body.dark .bar-tab.active .bar-icon {
   flex: 0 0 auto;
   min-width: 58px;
   padding-right: 14px;
-  border-right: 2px solid var(--hp-red);
+  border-right: 2px solid var(--cyan);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -5815,8 +5860,8 @@ body.dark .bar-tab.active .bar-icon {
 .xp-fill {
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, #d4571a, #f0922a);
-  box-shadow: 0 0 10px rgba(226, 100, 31, 0.4);
+  background: linear-gradient(90deg, var(--cyan), var(--violet));
+  box-shadow: 0 0 10px rgba(90, 170, 255, 0.4);
 }
 .xp-mark {
   position: absolute;
@@ -5843,16 +5888,19 @@ body.dark .bar-tab.active .bar-icon {
   font-size: 10px;
   line-height: 1;
 }
+/* Взятый апгрейд залит голубым, следующий уровень впереди — обведён
+   фиолетовым: та же пара, что и везде. Золото тут было лишним — оно
+   осталось за призёрами рейтинга, и больше нигде его нет */
 .xp-mark.taken .xp-gem {
-  border-color: var(--hp-yellow);
-  background: var(--hp-yellow);
-  color: #2a1a05;
+  border-color: var(--cyan);
+  background: var(--cyan);
+  color: #06121f;
 }
 .xp-mark-level .xp-gem {
   width: 22px;
   height: 22px;
-  border-color: var(--hp-red);
-  color: var(--hp-red);
+  border-color: var(--violet);
+  color: var(--violet);
 }
 .xp-mark-level .xp-gem i { font-size: 11px; }
 /* Флажок с номером апгрейда стоит над ромбом — как в макете, стрелкой
@@ -5882,10 +5930,10 @@ body.dark .bar-tab.active .bar-icon {
   border-top-color: var(--slot-line);
 }
 .xp-mark.taken .xp-flag {
-  background: var(--hp-yellow);
-  color: #2a1a05;
+  background: var(--cyan);
+  color: #06121f;
 }
-.xp-mark.taken .xp-flag::after { border-top-color: var(--hp-yellow); }
+.xp-mark.taken .xp-flag::after { border-top-color: var(--cyan); }
 .xp-at {
   position: absolute;
   left: 50%;
@@ -6468,9 +6516,13 @@ body.dark .ladder-top-3 { border-color: rgba(205, 127, 50, 0.5); }
    пикселях пять штук в ряд не читаются, а перенос сам разложит их по
    две-три. `auto-fit` с минимумом в 92 пикселя — это и есть «столько,
    сколько влезло» */
+/* Ровно три плитки в ряду, а не «сколько влезло»: доли стоят под
+   своими числами только тогда, когда ширина ряда не гуляет от экрана
+   к экрану. На четырёх столбцах «% побед» уезжало в первый ряд и
+   оказывалось под «боями» */
 .tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
   margin-bottom: 10px;
 }
@@ -6479,7 +6531,9 @@ body.dark .ladder-top-3 { border-color: rgba(205, 127, 50, 0.5); }
   display: flex;
   flex-direction: column;
   gap: 1px;
-  padding: 8px 10px;
+  /* На трёхстах двадцати на плитку остаётся девяносто семь точек, и
+     «% поражений» в них помещается только с этими полями */
+  padding: 8px clamp(5px, 2.2vw, 10px);
   border-radius: 9px;
   border: 1px solid var(--line);
   background: var(--panel);
@@ -6511,18 +6565,41 @@ body.dark .tile-loss .tile-value { color: #e4594b; }
 body.dark .tile-draw .tile-value { color: #c9ced8; }
 body.dark .tile-raid .tile-value { color: #8fb6ff; }
 
-/* Полоса долей — на всю ширину сетки. Показывает ровно то, из чего
-   сложен счёт, и ничего сверх него */
-.tiles-bar {
-  grid-column: 1 / -1;
+/* ---------- заголовок открытого боя ---------- */
+
+.fight-head {
   display: flex;
-  height: 6px;
-  border-radius: 3px;
-  overflow: hidden;
-  background: var(--hp-track);
+  align-items: center;
+  gap: 9px;
 }
 
-.tiles-part { display: block; height: 100%; }
-.tiles-win { background: #4cbf52; }
-.tiles-loss { background: #e04b3f; }
-.tiles-draw { background: #8a8d98; }
+/* Компактная, но не мелкая: тридцать шесть точек — та граница, на
+   которой палец ещё не промахивается мимо стрелки, а строка всё ещё
+   читается строкой, а не панелью кнопок */
+.fight-back {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  border: 1px solid var(--slot-line);
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.fight-back:active { transform: scale(0.95); }
+
+.fight-back:focus-visible {
+  outline: 2px solid rgba(120, 200, 255, 0.9);
+  outline-offset: 1px;
+}
+
+.fight-head-text { min-width: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .fight-back:active { transform: none; }
+}

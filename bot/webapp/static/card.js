@@ -6173,6 +6173,14 @@ function renderStatsSum(data, people, raids) {
   box.appendChild(tile(counts.win, "побед", "win"));
   box.appendChild(tile(counts.loss, "поражений", "loss"));
   box.appendChild(tile(counts.draw, "ничьих", "draw"));
+  // Доли встают ровно под своими числами: в ряду всегда три плитки,
+  // и четвёртая с пятой ложатся во второй столбец и в третий — под
+  // «побед» и «поражений». Считаем от боёв с людьми: рейды в счёт
+  // побед и поражений не идут
+  if (people) {
+    box.appendChild(shareTile(counts.win, people, "% побед", "win"));
+    box.appendChild(shareTile(counts.loss, people, "% поражений", "loss"));
+  }
   // Рейды — отдельной плиткой и только если они были: ноль из нуля
   // ничего не говорит, а место занимает
   if (raids.total) {
@@ -6181,24 +6189,19 @@ function renderStatsSum(data, people, raids) {
     );
   }
 
-  if (!people) return;
-  const bar = document.createElement("div");
-  bar.className = "tiles-bar";
-  bar.setAttribute("role", "img");
-  bar.setAttribute(
-    "aria-label",
-    "Из " + people + " боёв: побед " + counts.win
-      + ", поражений " + counts.loss + ", ничьих " + counts.draw
-  );
-  [["win", counts.win], ["loss", counts.loss], ["draw", counts.draw]]
-    .forEach(([mark, value]) => {
-      if (!value) return;
-      const part = document.createElement("span");
-      part.className = "tiles-part tiles-" + mark;
-      part.style.width = (value / people) * 100 + "%";
-      bar.appendChild(part);
-    });
-  box.appendChild(bar);
+}
+
+/** Плитка доли: то же, что и обычная, но число в процентах.
+ *
+ * Проценты целые. Десятая доля процента в счёте из полутора десятков
+ * боёв — это не точность, а шум: она меняется от каждого боя и читать
+ * её всё равно никто не будет.
+ */
+function shareTile(value, total, label, mark) {
+  const box = tile(0, label, mark);
+  box.querySelector(".tile-value").textContent =
+    Math.round((value / total) * 100) + "%";
+  return box;
 }
 
 function prettyDay(date) {
@@ -6236,21 +6239,39 @@ function fightRow(fight) {
   return row;
 }
 
+/** Заголовок открытого боя со стрелкой назад.
+ *
+ * Стрелка стоит в самой строке заголовка, а не отдельной широкой
+ * кнопкой над ней: кнопка во всю ширину занимала первый экран и
+ * кричала громче того, ради чего в бой и заходят, — его разбора.
+ * Стрелка без подписи, поэтому имя ей задано словами: диктору
+ * «стрелка влево» не говорит ничего.
+ */
+function fightHead(caption) {
+  const head = document.createElement("p");
+  head.className = "fight-line fight-head";
+
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "fight-back";
+  back.textContent = "←";
+  back.title = "К списку боёв";
+  back.setAttribute("aria-label", "К списку боёв");
+  back.addEventListener("click", () => renderHistory(statsData));
+
+  const said = document.createElement("span");
+  said.className = "fight-head-text";
+  said.textContent = caption;
+
+  head.append(back, said);
+  return head;
+}
+
 function renderRaidRow(fight) {
   const body = el("stats-body");
   body.textContent = "";
 
-  const back = document.createElement("button");
-  back.type = "button";
-  back.className = "btn secondary wide";
-  back.textContent = "← К списку боёв";
-  back.addEventListener("click", () => renderHistory(statsData));
-  body.appendChild(back);
-
-  const head = document.createElement("p");
-  head.className = "fight-line";
-  head.textContent = fight.emoji + " " + fight.caption;
-  body.appendChild(head);
+  body.appendChild(fightHead(fight.emoji + " " + fight.caption));
 
   const rows = document.createElement("div");
   rows.className = "boss-rows";
@@ -6297,18 +6318,9 @@ function renderFightLog(data) {
   const body = el("stats-body");
   body.textContent = "";
 
-  const back = document.createElement("button");
-  back.type = "button";
-  back.className = "btn secondary wide";
-  back.textContent = "← К списку боёв";
-  back.addEventListener("click", () => renderHistory(statsData));
-  body.appendChild(back);
-
-  const head = document.createElement("p");
-  head.className = "fight-line";
-  head.textContent =
-    data.fight.emoji + " " + data.fight.caption + ", " + data.fight.mode.title;
-  body.appendChild(head);
+  body.appendChild(fightHead(
+    data.fight.emoji + " " + data.fight.caption + ", " + data.fight.mode.title
+  ));
 
   if (!data.has_log) {
     const empty = document.createElement("p");
@@ -6341,9 +6353,14 @@ function renderClub(data) {
 
   const list = el("club-list");
   list.textContent = "";
-  data.fighters.forEach((fighter) =>
-    list.appendChild(fighterRow(fighter, showFighter))
-  );
+  // В списке игроков вход в карточку — значок, а не вся строка: строка
+  // тут длиннее рейтинговой, уровень стоит вплотную к нику, и нажатие
+  // на неё целиком пришлось бы делить с чтением
+  data.fighters.forEach((fighter) => {
+    const row = fighterRow(fighter);
+    row.classList.add("club-row");
+    list.appendChild(row);
+  });
   pagerOf("club", data);
 }
 

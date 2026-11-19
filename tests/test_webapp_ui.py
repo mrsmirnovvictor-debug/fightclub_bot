@@ -2865,8 +2865,33 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         assert levels == ["[5]", "[7]"]
         assert await page.locator(".fighter.me .fighter-name").inner_text() == names[0]
 
-        # Строка целиком — кнопка: отдельного значка в ней больше нет
-        await page.locator(".fighter").nth(1).click()
+        # Уровень стоит вплотную к нику, а значок — сразу за уровнем:
+        # «Марла [7] ℹ️» читается слева направо одной мыслью
+        order = await page.locator(".fighter").nth(1).evaluate(
+            "o => [...o.children].map(one => one.className)"
+        )
+        assert order.index("fighter-level") == order.index("fighter-name") + 1
+        assert order.index("fighter-info") == order.index("fighter-level") + 1
+
+        # Порядка в разметке мало: имя, растянутое на всё свободное
+        # место, уводит уровень к самому рейтингу — порядок при этом
+        # прежний, а читается строка иначе. Меряем просвет между ними
+        # Меряем рамку имени против самого текста: `scrollWidth` тут
+        # бесполезен — он никогда не меньше рамки, и растянутую рамку
+        # им не поймать
+        room = await page.locator(".fighter").nth(1).locator(
+            ".fighter-name"
+        ).evaluate(
+            "o => { const cut = document.createRange();"
+            "       cut.selectNodeContents(o);"
+            "       return [o.clientWidth, cut.getBoundingClientRect().width]; }"
+        )
+        assert room[0] <= room[1] + 4, (
+            f"имя растянуто на {room[0]} при тексте в {room[1]}: "
+            "уровень уедет к рейтингу"
+        )
+
+        await page.locator(".fighter").nth(1).locator(".fighter-info").click()
         await page.wait_for_selector(".sheet-doll")
 
         assert "Марла [7]" in await page.locator("#sheet-title").inner_text()
@@ -2894,14 +2919,16 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
 
 
 async def test_a_fighter_row_has_one_way_in_and_it_is_the_card(server):
-    """Вход в строке один, и это вся строка. Статистика живёт в карточке.
+    """В строке списка игроков одна кнопка — значок ℹ️, и он ведёт в карточку.
 
     Кнопок на строке было две, и они её делили: значок вёл в карточку,
     таблица — сразу в статистику. Выбирать приходилось, ни разу не
-    увидев бойца. Потом остался один значок — но целиться пальцем в
-    полтора сантиметра на краю строки всё равно приходилось. Теперь
-    нажимается строка целиком, и вложенной кнопки в ней нет: кнопка
-    внутри кнопки — невалидная вёрстка, и диктор читает её дважды.
+    увидев бойца, а список от этого был вдвое длиннее.
+
+    Строка целиком кнопкой тут не становится: в отличие от рейтинга,
+    где смотрят места, в списке игроков строку читают — ник, уровень,
+    рейтинг, — и нажатие на неё целиком пришлось бы делить с чтением.
+    Вся строка нажимается в рейтинге недели, и это проверяет свой тест.
     """
     me = make_player()
     rival = make_player()
@@ -2919,13 +2946,13 @@ async def test_a_fighter_row_has_one_way_in_and_it_is_the_card(server):
         await page.wait_for_selector(".fighter")
 
         row = page.locator(".fighter").first
-        assert await row.evaluate("o => o.tagName") == "BUTTON"
-        assert await row.locator("button").count() == 0, "кнопка внутри кнопки"
-        assert await page.locator(".fighter-info").count() == 0
+        assert await row.evaluate("o => o.tagName") == "DIV"
+        assert await row.locator("button").count() == 1
+        assert await row.locator(".fighter-info").inner_text() == "ℹ️"
         assert await page.locator(".fighter-stats").count() == 0
 
-        # И нажатие по строке открывает именно карточку
-        await row.click()
+        # И открывает карточку именно он
+        await row.locator(".fighter-info").click()
         await page.wait_for_selector(".sheet-doll")
 
         # и строки стоят плотно: список читают, а не листают
@@ -2963,7 +2990,10 @@ async def test_a_fighter_card_shows_health_and_leads_to_the_stats(server):
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
         await pick_desk(page, "players")
-        await page.locator(".fighter").nth(1).click()
+        # В списке игроков в карточку ведёт значок, а не вся строка:
+        # строку тут читают, и нажатие на неё целиком делило бы её с
+        # чтением. Вся строка нажимается в рейтинге недели
+        await page.locator(".fighter").nth(1).locator(".fighter-info").click()
         await page.wait_for_selector(".sheet-doll")
 
         bar = page.locator("#sheet-list .hp")
@@ -5667,6 +5697,87 @@ async def test_the_statistics_section_lists_fights_by_day(server):
         await browser.close()
 
 
+async def test_the_summary_counts_the_shares_itself(server):
+    """Под победами и поражениями — их доли, посчитанные из тех же чисел.
+
+    Полоса долей отсюда ушла: цветной столбик показывал то же самое,
+    но прочитать по нему «сколько процентов» было нельзя — только
+    «чего больше», а это и так видно по двум числам над ним.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_stats(pw, server, HISTORY)
+        await page.wait_for_selector("#stats-sum:not(.hidden)")
+
+        assert await page.locator(".tiles-bar").count() == 0, "полоса вернулась"
+
+        tiles = await page.evaluate(
+            "() => [...document.querySelectorAll('#stats-sum .tile')].map(o => ["
+            "  o.querySelector('.tile-label').textContent,"
+            "  o.querySelector('.tile-value').textContent])"
+        )
+        labels = [one[0] for one in tiles]
+        said = dict(tiles)
+        assert "% побед" in said and "% поражений" in said, tiles
+
+        # Доли не выдуманы: проверяем арифметикой по соседним плиткам.
+        # Первая плитка — счёт боёв, от неё и считают
+        people = int(tiles[0][1])
+        wins = int(said["побед"])
+        losses = int(said["поражений"])
+        assert said["% побед"] == str(round(wins / people * 100)) + "%"
+        assert said["% поражений"] == str(round(losses / people * 100)) + "%"
+
+        # И стоят они ровно под своими числами: в ряду три плитки
+        places = {}
+        for label in ("побед", "% побед", "поражений", "% поражений"):
+            box = await page.locator("#stats-sum .tile").nth(
+                labels.index(label)
+            ).bounding_box()
+            places[label] = (round(box["x"]), round(box["y"]))
+        assert places["побед"][0] == places["% побед"][0], places
+        assert places["поражений"][0] == places["% поражений"][0], places
+        assert places["% побед"][1] > places["побед"][1], places
+
+        # И на самом узком экране подписи целы: «% поражений» — самая
+        # длинная из них, и три столбца на 320 точках ей как раз впору
+        await page.set_viewport_size({"width": 320, "height": 780})
+        cut = await page.evaluate(
+            "() => [...document.querySelectorAll('#stats-sum .tile-label')]"
+            ".map(o => [o.textContent, o.scrollWidth, o.clientWidth])"
+        )
+        for name, want, got in cut:
+            assert want <= got + 1, f"«{name}» обрезано: {want} > {got}"
+        await browser.close()
+
+
+async def test_the_open_fight_goes_back_by_an_arrow_in_its_title(server):
+    """Назад из разбора — стрелкой в строке заголовка, не плашкой над ним.
+
+    Кнопка во всю ширину занимала первый экран и кричала громче того,
+    ради чего в бой и заходят. Стрелка без подписи, поэтому имя ей
+    задано словами: диктору «стрелка влево» не говорит ничего.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_stats(pw, server, HISTORY, FIGHT_LOG)
+        await page.locator(".fight-row").first.click()
+        await page.wait_for_selector(".log-line")
+
+        back = page.locator(".fight-back")
+        assert await back.get_attribute("aria-label") == "К списку боёв"
+
+        # Компактная, но не мелкая, и в одной строке с заголовком
+        arrow = await back.bounding_box()
+        said = await page.locator(".fight-head-text").bounding_box()
+        assert arrow["width"] <= 48, "стрелка шириной " + str(arrow["width"])
+        assert arrow["width"] >= 32, "в неё не попасть: " + str(arrow["width"])
+        middle = abs(
+            (arrow["y"] + arrow["height"] / 2) - (said["y"] + said["height"] / 2)
+        )
+        assert middle <= 4, (arrow, said)
+        assert arrow["x"] < said["x"], "стрелка не перед заголовком"
+        await browser.close()
+
+
 async def test_a_fight_opens_into_the_words_of_the_judge(server):
     """Тап по бою проваливает в разбор — теми же словами, что были в ветке."""
     async with async_playwright() as pw:
@@ -5680,8 +5791,9 @@ async def test_a_fight_opens_into_the_words_of_the_judge(server):
         assert "вязнет в блоке" in log
         assert "Раунд 1" not in log
 
-        # и обратно к списку
-        await page.get_by_role("button", name="← К списку боёв").click()
+        # и обратно к списку — стрелкой в строке заголовка. Широкой
+        # кнопки над разбором больше нет, но имя у стрелки есть
+        await page.get_by_role("button", name="К списку боёв").click()
         await page.wait_for_selector(".fight-row")
         assert await page.locator(".fight-row").count() == 4
         await browser.close()
@@ -6890,7 +7002,10 @@ async def test_the_info_card_says_where_the_fighter_is_walking(server):
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
         await pick_desk(page, "players")
-        await page.locator(".fighter").nth(1).click()
+        # В списке игроков в карточку ведёт значок, а не вся строка:
+        # строку тут читают, и нажатие на неё целиком делило бы её с
+        # чтением. Вся строка нажимается в рейтинге недели
+        await page.locator(".fighter").nth(1).locator(".fighter-info").click()
         await page.wait_for_selector(".sheet-doll")
 
         line = await page.locator("#sheet-list .sheet-place").inner_text()
@@ -20187,7 +20302,7 @@ DESK_INK = """
     }
     return [255, 255, 255];
   }
-  const chip = document.querySelector('#club-sections .chip.on');
+  const chip = document.querySelector(SELECTOR);
   const ink = lum(rgb(getComputedStyle(chip).color));
   const back = lum(behind(chip));
   const hi = Math.max(ink, back);
@@ -20223,7 +20338,9 @@ async def test_the_open_section_stays_readable_in_both_themes(server, dark):
         for section in ("ladder", "players", "stats"):
             if section != "ladder":
                 await pick_desk(page, section)
-            ratio = await page.evaluate(DESK_INK)
+            ratio = await page.evaluate(
+                DESK_INK.replace("SELECTOR", "'#club-sections .chip.on'")
+            )
             assert ratio >= 4.5, f"{тема}, {section}: контраст {ratio:.2f}"
         await browser.close()
 
@@ -20502,6 +20619,101 @@ async def test_a_missing_icon_leaves_its_tab_working(server):
         # И вкладка по-прежнему открывает инвентарь
         await page.locator("#tab-bag").click()
         await page.wait_for_selector("#bag:not(.hidden)")
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dark", [False, True])
+async def test_the_open_section_of_the_character_stays_readable(server, dark):
+    """Разделы персонажа — тот же переключатель, и та же ловушка.
+
+    Дорожка забирает у выбранной кнопки заливку, а белый цвет текста
+    от прежней заливки остаётся: на светлой теме надпись становится
+    белой на белом. Ровно это уже случилось в справочной, и здесь
+    переключатель сделан по её образцу — значит, и проверяется так же.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(make_player(), TOKEN, viewer_id=42)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        if dark:
+            await page.evaluate("() => document.body.classList.add('dark')")
+        ratio = await page.evaluate(
+            DESK_INK.replace("SELECTOR", "'#hero-tabs .hero-act.on'")
+        )
+        assert ratio >= 4.5, f"{'тёмная' if dark else 'светлая'}: {ratio:.2f}"
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_the_character_sections_stay_two_by_two(server):
+    """Четыре раздела — два этажа по две, как и было.
+
+    «Характеристики» в четверть телефона не влезают и обрезаются
+    многоточием, поэтому четыре в ряд не ставятся. Переключатель
+    сменил вид, расположение осталось прежним.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    # Четвёртая кнопка — «Награды», и она есть только тогда, когда есть
+    # что показать в календаре: без него разделов три, и складывать
+    # нечего
+    card["daily"] = daily_state(days=2, waiting=False, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.set_viewport_size({"width": 375, "height": 780})
+        await page.wait_for_selector("#hero-tabs .hero-act")
+        acts = page.locator("#hero-tabs .hero-act")
+        assert await acts.count() == 4, await acts.all_inner_texts()
+
+        tops = []
+        for number in range(4):
+            box = await acts.nth(number).bounding_box()
+            tops.append(round(box["y"]))
+        assert len(set(tops)) == 2, f"этажей не два: {tops}"
+        assert tops[0] == tops[1] and tops[2] == tops[3], tops
+
+        # И ни одно слово не обрублено
+        cut = await page.evaluate(
+            "() => [...document.querySelectorAll('#hero-tabs .hero-act-text')]"
+            ".map(o => [o.textContent, o.scrollWidth, o.clientWidth])"
+        )
+        for name, want, got in cut:
+            assert want <= got + 1, f"«{name}» обрезано: {want} > {got}"
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_the_experience_bar_runs_in_the_cold_colours(server):
+    """Шкала опыта залита холодным, а не оранжевым.
+
+    Цвет тут не украшение: голубым с фиолетовым в апе горит всё, что
+    значит «это твоё, это сейчас» — открытая вкладка панели, выбранный
+    раздел. Оранжевая шкала посреди этого читалась как чужая.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(make_player(), TOKEN, viewer_id=42)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.evaluate("() => document.body.classList.add('dark')")
+        # Заливку ждём «прикреплённой», а не видимой: на нулевом опыте
+        # её ширина ноль, и видимой она не станет никогда
+        await page.wait_for_selector(".xp-fill", state="attached")
+
+        paint = await page.locator(".xp-fill").evaluate(
+            "o => getComputedStyle(o).backgroundImage"
+        )
+        stops = re.findall(r"rgb\((\d+), (\d+), (\d+)\)", paint)
+        assert len(stops) >= 2, paint
+        for red, green, blue in stops:
+            red, green, blue = int(red), int(green), int(blue)
+            assert blue - red >= 40, f"не холодный: rgb({red}, {green}, {blue})"
         await browser.close()
 
 
