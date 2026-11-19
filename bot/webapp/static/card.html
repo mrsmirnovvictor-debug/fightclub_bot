@@ -141,6 +141,10 @@
       </div>
       <div class="seek-found hidden" id="stats-found"></div>
       <p class="screen-note" id="stats-note"></p>
+      <!-- Ключевые числа плитками, под ними полоса долей. Считается
+           всё из того, что прислал сервер: выдуманных показателей тут
+           нет, и пустых декоративных диаграмм тоже -->
+      <div class="tiles hidden" id="stats-sum"></div>
       <div id="stats-body"></div>
     </section>
   </main>
@@ -1020,7 +1024,11 @@
     </p>
   </main>
 
-  <nav class="bar hidden" id="bar">
+  <!-- Нижняя навигация. Значок в ячейке — эмодзи, и он же остаётся,
+       если нарисованная иконка не приехала: панель обязана работать и
+       без картинок. Подменяет его `dressTabs` в card.js, и только на
+       успешную загрузку -->
+  <nav class="bar hidden" id="bar" aria-label="Разделы">
     <button type="button" class="bar-tab" id="tab-club">
       <span class="bar-icon">🥊</span><span class="bar-label">Клуб</span>
     </button>

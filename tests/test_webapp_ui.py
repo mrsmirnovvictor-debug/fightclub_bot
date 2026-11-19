@@ -52,6 +52,25 @@ def find_chromium() -> str | None:
 
 
 CHROMIUM = find_chromium()
+
+# Как подписаны разделы справочной клуба. Рейтинг идёт первым и
+# открывается по умолчанию: его смотрят чаще остального, он меняется
+# каждый день. Подписи в одном месте — иначе переименование раздела
+# ловится не проверкой, а глазами, по десятку строк враздробь
+DESK_TABS = {
+    "ladder": "👑 Рейтинг недели",
+    "players": "Список игроков",
+    "stats": "Статистика",
+}
+
+
+async def pick_desk(page, section):
+    """Переключить справочную на раздел и дождаться его."""
+    await page.locator("#club-sections .chip").get_by_text(
+        DESK_TABS[section], exact=True
+    ).click()
+    await page.wait_for_selector(f"#club-{section}:not(.hidden)")
+
 # Всё, что рисуется картинкой: у лавки клуба jpeg, у мага png, у
 # столов казино webp. Пропустить расширение нельзя: пропущенное идёт в
 # настоящую сеть, не доходит и выглядит как «картинки нет»
@@ -1017,6 +1036,7 @@ async def open_page(
     cars=None, keys=None, dorm=None, charge=None, dojo=None, barber=None,
     court=None, blackout=None, casino=None, ladder=None,
     images=False,
+    broken=None,
     telegram="",
     loader_wait=False,
 ):
@@ -1106,6 +1126,10 @@ async def open_page(
         ))
     else:
         await page.route(IMAGES, lambda route: route.abort())
+    # Одна картинка, которой нет. Правило ставится последним: Playwright
+    # разбирает правила с конца, и общее `IMAGES` иначе забирает её себе
+    if broken:
+        await page.route(broken, lambda route: route.fulfill(status=404))
     await page.goto(f"{server.make_url('/')}{query}")
     return browser, page
 
@@ -2822,8 +2846,8 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
-        # Кнопка внизу открывает справочную, и открывается она сразу на
-        # рейтинге: списку бойцов больше не надо искать свой раздел
+        # Справочная открывается рейтингом, а список бойцов — рядом
+        await pick_desk(page, "players")
         await page.wait_for_selector(".fighter")
 
         assert await page.locator(".fighter").count() == 2
@@ -2834,7 +2858,8 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         assert levels == ["[5]", "[7]"]
         assert await page.locator(".fighter.me .fighter-name").inner_text() == names[0]
 
-        await page.locator(".fighter").nth(1).locator(".fighter-info").click()
+        # Строка целиком — кнопка: отдельного значка в ней больше нет
+        await page.locator(".fighter").nth(1).click()
         await page.wait_for_selector(".sheet-doll")
 
         assert "Марла [7]" in await page.locator("#sheet-title").inner_text()
@@ -2862,11 +2887,14 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
 
 
 async def test_a_fighter_row_has_one_way_in_and_it_is_the_card(server):
-    """В строке списка одна кнопка — значок ℹ️. Статистика живёт в карточке.
+    """Вход в строке один, и это вся строка. Статистика живёт в карточке.
 
-    Раньше кнопок было две, и они делили строку: значок вёл в карточку,
-    таблица — сразу в статистику. Выбирать между ними приходилось, ни
-    разу не увидев бойца, а список от этого был вдвое длиннее.
+    Кнопок на строке было две, и они её делили: значок вёл в карточку,
+    таблица — сразу в статистику. Выбирать приходилось, ни разу не
+    увидев бойца. Потом остался один значок — но целиться пальцем в
+    полтора сантиметра на краю строки всё равно приходилось. Теперь
+    нажимается строка целиком, и вложенной кнопки в ней нет: кнопка
+    внутри кнопки — невалидная вёрстка, и диктор читает её дважды.
     """
     me = make_player()
     rival = make_player()
@@ -2880,12 +2908,18 @@ async def test_a_fighter_row_has_one_way_in_and_it_is_the_card(server):
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
+        await pick_desk(page, "players")
         await page.wait_for_selector(".fighter")
 
         row = page.locator(".fighter").first
-        assert await row.locator("button").count() == 1
-        assert await row.locator(".fighter-info").inner_text() == "ℹ️"
+        assert await row.evaluate("o => o.tagName") == "BUTTON"
+        assert await row.locator("button").count() == 0, "кнопка внутри кнопки"
+        assert await page.locator(".fighter-info").count() == 0
         assert await page.locator(".fighter-stats").count() == 0
+
+        # И нажатие по строке открывает именно карточку
+        await row.click()
+        await page.wait_for_selector(".sheet-doll")
 
         # и строки стоят плотно: список читают, а не листают
         first = await page.locator(".fighter").nth(0).bounding_box()
@@ -2921,7 +2955,8 @@ async def test_a_fighter_card_shows_health_and_leads_to_the_stats(server):
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
-        await page.locator(".fighter").nth(1).locator(".fighter-info").click()
+        await pick_desk(page, "players")
+        await page.locator(".fighter").nth(1).click()
         await page.wait_for_selector(".sheet-doll")
 
         bar = page.locator("#sheet-list .hp")
@@ -3589,16 +3624,19 @@ async def test_the_club_button_opens_the_information_desk(server):
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
-        await page.wait_for_selector("#club-players:not(.hidden)")
+        await page.wait_for_selector("#club-ladder:not(.hidden)")
 
         assert (
             await page.locator("#club-title").inner_text()
             == "ℹ️ Информация о клубе"
         )
         chips = await page.locator("#club-sections .chip").all_inner_texts()
+        # Порядок задан редизайном: рейтинг первым, он же открывается
         assert chips == [
-            "Список игроков", "Рейтинг недели", "Статистика игрока"
+            DESK_TABS["ladder"], DESK_TABS["players"], DESK_TABS["stats"]
         ]
+        # Дальше смотрим список: счётчик записанных живёт над ним
+        await pick_desk(page, "players")
         # Ни панорамы, ни выхода на карту
         assert await page.locator("#club-interior").is_hidden()
         assert await page.locator("#club-back").is_hidden()
@@ -3628,6 +3666,7 @@ async def test_the_rating_row_shows_the_place_and_the_elo(server):
         browser, page = await open_page(pw, server, card, club=crowd)
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
+        await pick_desk(page, "players")
         await page.wait_for_selector(".fighter")
 
         places = await page.locator(".fighter-place").all_inner_texts()
@@ -3682,6 +3721,7 @@ async def test_the_rating_turns_pages_of_fifty(server):
         await page.route("**/api/club*", give)
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
+        await pick_desk(page, "players")
         await page.wait_for_selector("#club-pager:not(.hidden)")
 
         where = await page.locator("#club-where").inner_text()
@@ -3709,6 +3749,7 @@ async def test_a_club_of_one_page_has_no_arrows(server):
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
+        await pick_desk(page, "players")
         await page.wait_for_selector(".fighter")
 
         assert await page.locator("#club-pager").is_hidden()
@@ -3747,7 +3788,7 @@ async def test_the_stats_search_finds_a_fighter_and_opens_his_fights(server):
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
         await page.get_by_role(
-            "button", name="Статистика игрока", exact=True
+            "button", name=DESK_TABS["stats"], exact=True
         ).click()
         await page.wait_for_selector("#club-stats:not(.hidden)")
 
@@ -3799,7 +3840,7 @@ async def test_one_letter_does_not_send_the_search_anywhere(server):
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
         await page.get_by_role(
-            "button", name="Статистика игрока", exact=True
+            "button", name=DESK_TABS["stats"], exact=True
         ).click()
         await page.wait_for_selector("#club-stats:not(.hidden)")
 
@@ -3831,7 +3872,8 @@ async def test_the_fight_club_is_a_house_on_the_map_like_any_other(server):
 
         # Кнопка внизу ведёт в справочную — там и горит «Клуб»
         await page.locator("#tab-club").click()
-        await page.wait_for_selector("#club-players:not(.hidden)")
+        await page.wait_for_selector("#club-ladder:not(.hidden)")
+        await pick_desk(page, "players")
         assert "active" in await page.locator("#tab-club").get_attribute("class")
         assert "active" not in await page.locator("#tab-map").get_attribute("class")
 
@@ -3878,7 +3920,8 @@ async def test_the_club_building_keeps_the_view_from_inside(server):
 
         # Сперва справочная: там вида изнутри быть не должно
         await page.locator("#tab-club").click()
-        await page.wait_for_selector("#club-players:not(.hidden)")
+        await page.wait_for_selector("#club-ladder:not(.hidden)")
+        await pick_desk(page, "players")
         assert await page.locator("#club-interior").is_hidden()
 
         # Теперь само здание — и картинка на месте, без перерисовки карточки
@@ -3893,7 +3936,8 @@ async def test_the_club_building_keeps_the_view_from_inside(server):
 
         # И обратно в справочную — снова без интерьера
         await page.locator("#tab-club").click()
-        await page.wait_for_selector("#club-players:not(.hidden)")
+        await page.wait_for_selector("#club-ladder:not(.hidden)")
+        await pick_desk(page, "players")
         assert await page.locator("#club-interior").is_hidden()
         await browser.close()
 
@@ -5588,7 +5632,7 @@ async def open_stats(pw, server, history=None, fight_log=None):
     )
     await page.wait_for_selector("#hero:not(.hidden)")
     await page.locator("#tab-club").click()
-    await page.get_by_role("button", name="Статистика игрока", exact=True).click()
+    await page.get_by_role("button", name=DESK_TABS["stats"], exact=True).click()
     await page.wait_for_selector("#club-stats:not(.hidden)")
     # История приходит запросом: ждём, пока «Открываем...» сменится ответом
     await page.wait_for_function(
@@ -6838,7 +6882,8 @@ async def test_the_info_card_says_where_the_fighter_is_walking(server):
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
-        await page.locator(".fighter").nth(1).locator(".fighter-info").click()
+        await pick_desk(page, "players")
+        await page.locator(".fighter").nth(1).click()
         await page.wait_for_selector(".sheet-doll")
 
         line = await page.locator("#sheet-list .sheet-place").inner_text()
@@ -14047,8 +14092,8 @@ async def test_the_club_list_wears_the_marks_of_the_family(server):
         browser, page = await open_page(pw, server, card, club=club)
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
-        # Кнопка внизу открывает справочную, и открывается она сразу на
-        # рейтинге: списку бойцов больше не надо искать свой раздел
+        # Справочная открывается рейтингом, а список бойцов — рядом
+        await pick_desk(page, "players")
         await page.wait_for_selector(".fighter")
 
         mine = page.locator(".fighter", has_text="Растафарайчик")
@@ -18994,11 +19039,12 @@ async def open_desk(pw, server, section="players", **kwargs):
     )
     await page.wait_for_selector("#hero:not(.hidden)")
     await page.locator("#tab-club").click()
-    await page.wait_for_selector("#club-players:not(.hidden)")
-    if section != "players":
-        await page.locator(f"#club-sections .chip").get_by_text(
-            {"ladder": "Рейтинг недели", "stats": "Статистика игрока"}[section],
-            exact=True,
+    # Открывается справочная на рейтинге недели, что бы ни просили
+    # дальше: остальное — переключением
+    await page.wait_for_selector("#club-ladder:not(.hidden)")
+    if section != "ladder":
+        await page.locator("#club-sections .chip").get_by_text(
+            DESK_TABS[section], exact=True
         ).click()
         await page.wait_for_selector(f"#club-{section}:not(.hidden)")
     return browser, page
@@ -19050,7 +19096,8 @@ async def test_choosing_a_level_asks_the_server_from_the_first_page(server):
         browser, page = await open_page(pw, server, card)
         await page.route("**/api/club*", give)
         await page.locator("#tab-club").click()
-        await page.wait_for_selector("#club-players:not(.hidden)")
+        await page.wait_for_selector("#club-ladder:not(.hidden)")
+        await pick_desk(page, "players")
         await page.wait_for_function("clubData !== null")
 
         await page.select_option("#club-level", "7")
@@ -19210,11 +19257,9 @@ async def test_a_broken_weekly_rating_offers_to_try_again(server):
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card)
         await page.route("**/api/ladder*", give)
+        # Справочная открывается рейтингом — первый же запрос и
+        # срывается, переключать для этого ничего не нужно
         await page.locator("#tab-club").click()
-        await page.wait_for_selector("#club-players:not(.hidden)")
-        await page.locator("#club-sections .chip").get_by_text(
-            "Рейтинг недели", exact=True
-        ).click()
         await page.wait_for_selector("#ladder-oops:not(.hidden)")
 
         assert "не открылся" in await page.locator("#ladder-oops-note").inner_text()
@@ -19330,9 +19375,10 @@ async def test_the_weekly_rating_turns_pages_of_fifty(server):
         browser, page = await open_page(pw, server, card)
         await page.route("**/api/ladder*", give)
         await page.locator("#tab-club").click()
-        await page.wait_for_selector("#club-players:not(.hidden)")
+        await page.wait_for_selector("#club-ladder:not(.hidden)")
+        await pick_desk(page, "players")
         await page.locator("#club-sections .chip").get_by_text(
-            "Рейтинг недели", exact=True
+            DESK_TABS["ladder"], exact=True
         ).click()
         await page.wait_for_function("ladderData !== null")
 
@@ -19373,15 +19419,14 @@ async def test_reopening_the_tab_asks_the_server_again(server):
         browser, page = await open_page(pw, server, card)
         await page.route("**/api/ladder*", give)
         await page.locator("#tab-club").click()
-        await page.wait_for_selector("#club-players:not(.hidden)")
-        chips = page.locator("#club-sections .chip")
-        await chips.get_by_text("Рейтинг недели", exact=True).click()
+        # Справочная открывается рейтингом: первый запрос уходит сам
         await page.wait_for_function("ladderData !== null")
         assert len(asked) == 1
+        chips = page.locator("#club-sections .chip")
 
-        await chips.get_by_text("Список игроков", exact=True).click()
+        await chips.get_by_text(DESK_TABS["players"], exact=True).click()
         await page.wait_for_selector("#club-players:not(.hidden)")
-        await chips.get_by_text("Рейтинг недели", exact=True).click()
+        await chips.get_by_text(DESK_TABS["ladder"], exact=True).click()
         await page.wait_for_function("ladderData && ladderData.mine.fights === 2")
         assert len(asked) == 2
         await browser.close()
@@ -19939,4 +19984,362 @@ async def test_the_bench_plays_a_staged_exchange(server):
         assert any("Слева" in text or "Справа" in text for text in lines), lines
 
         assert not said, said
+        await browser.close()
+
+
+# ---------- редизайн: нижняя панель и справочная ----------
+
+
+async def open_desk_at(pw, server, width, **kwargs):
+    """Справочная на заданной ширине экрана.
+
+    Ширину меняем после открытия: общий `open_page` ставит своё окно,
+    а заводить рядом второй способ поднимать страницу значит иметь две
+    немного разные страницы и однажды проверять не ту.
+    """
+    browser, page = await open_page(
+        pw, server, build_card(make_player(), TOKEN, viewer_id=42), **kwargs
+    )
+    await page.set_viewport_size({"width": width, "height": 780})
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await page.locator("#tab-club").click()
+    await page.wait_for_selector("#club-ladder:not(.hidden)")
+    return browser, page
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_the_bottom_bar_keeps_its_tabs_and_marks_the_open_one(server):
+    """Панель осталась собой: те же вкладки, тот же порядок.
+
+    Редизайн был про вид, и проверка следит именно за этим: переименуй
+    кто-нибудь вкладку или переставь местами — переходы в приложении
+    перестанут вести туда, куда вели.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(make_player(), TOKEN, viewer_id=42)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        ids = await page.evaluate(
+            "() => [...document.querySelectorAll('#bar .bar-tab')].map(o => o.id)"
+        )
+        assert ids == ["tab-club", "tab-map", "tab-bag", "tab-hero"], ids
+        labels = await page.locator("#bar .bar-label").all_inner_texts()
+        assert labels == ["Клуб", "Карта", "Инвентарь", "Персонаж"], labels
+
+        # Открытая вкладка помечена не только подсветкой: диктор её не
+        # видит, и ему нужно слово
+        assert await page.locator("#tab-hero").get_attribute("aria-current") == "page"
+        assert await page.locator("#tab-club").get_attribute("aria-current") is None
+        await page.locator("#tab-club").click()
+        assert await page.locator("#tab-club").get_attribute("aria-current") == "page"
+        assert await page.locator("#tab-hero").get_attribute("aria-current") is None
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_every_tab_is_big_enough_for_a_finger(server):
+    """Сорок четыре на сорок четыре — и нажимается вся ячейка."""
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(make_player(), TOKEN, viewer_id=42)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        for tab in ("club", "map", "bag", "hero"):
+            box = await page.locator("#tab-" + tab).bounding_box()
+            assert box["height"] >= 44, (tab, box)
+            assert box["width"] >= 44, (tab, box)
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_the_bar_never_covers_the_last_line_of_a_screen(server):
+    """Нижний отступ страницы не меньше настоящей высоты панели.
+
+    Высоту меряет сам код и кладёт в `--bar-h`: подобранное руками
+    число однажды разойдётся с панелью — подпись станет крупнее, —
+    и последняя строка списка уедет под неё.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(make_player(), TOKEN, viewer_id=42)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        high = await page.evaluate(
+            "() => document.getElementById('bar').getBoundingClientRect().height"
+        )
+        under = await page.evaluate(
+            "() => parseFloat(getComputedStyle(document.body).paddingBottom)"
+        )
+        assert high > 0, "панель не показалась"
+        assert under >= high, f"панель {high} накроет контент: отступ {under}"
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("width", [320, 375, 430])
+async def test_the_desk_fits_the_narrowest_phone(server, width):
+    """Три вкладки в одну строку, без переноса и бокового скролла."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk_at(
+            pw, server, width, ladder=ladder_state(), club=a_rating()
+        )
+        chips = page.locator("#club-sections .chip")
+        assert await chips.count() == 3
+
+        # Одна строка: верхние края всех трёх совпадают
+        tops = []
+        for number in range(3):
+            box = await chips.nth(number).bounding_box()
+            tops.append(round(box["y"]))
+        assert len(set(tops)) == 1, f"вкладки перенеслись: {tops}"
+
+        # И вся страница не шире экрана
+        wide = await page.evaluate(
+            "() => document.documentElement.scrollWidth"
+        )
+        assert wide <= width, f"боковой скролл: {wide} при {width}"
+
+        # Названия целые: «Рейтинг нед…» — это не уместившаяся вкладка,
+        # а обрезанная. Многоточие прячет разницу между «влезло» и
+        # «не влезло», и на глаз в прогоне её не видно
+        cut = await page.evaluate(
+            "() => [...document.querySelectorAll('#club-sections .chip')]"
+            ".map(o => [o.textContent, o.scrollWidth, o.clientWidth])"
+        )
+        for name, want, got in cut:
+            assert want <= got + 1, f"«{name}» обрезано при {width}: {want} > {got}"
+        await browser.close()
+
+
+# Насколько надпись отличается от того, что под ней: отношение
+# яркостей по WCAG. Считаем в браузере, потому что фон у выбранного
+# раздела свой не всегда — прозрачную плашку видно насквозь, и
+# настоящая подложка лежит выше по дереву
+DESK_INK = """
+() => {
+  function rgb(text) { return text.match(/[\\d.]+/g).map(Number).slice(0, 3); }
+  function lum(colour) {
+    const parts = colour.map(v => {
+      v /= 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2];
+  }
+  function behind(node) {
+    for (let box = node; box; box = box.parentElement) {
+      const back = getComputedStyle(box).backgroundColor;
+      const parts = back.match(/[\\d.]+/g);
+      if (parts && (parts.length < 4 || Number(parts[3]) > 0.5)) return rgb(back);
+    }
+    return [255, 255, 255];
+  }
+  const chip = document.querySelector('#club-sections .chip.on');
+  const ink = lum(rgb(getComputedStyle(chip).color));
+  const back = lum(behind(chip));
+  const hi = Math.max(ink, back);
+  const lo = Math.min(ink, back);
+  return (hi + 0.05) / (lo + 0.05);
+}
+"""
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dark", [False, True])
+async def test_the_open_section_stays_readable_in_both_themes(server, dark):
+    """Выбранный раздел читается и на тёмной теме, и на светлой.
+
+    Выбранная вкладка красится отдельно от остальных пузырей, и
+    общий `.chip.on` подсовывает ей белый текст под свою заливку.
+    Заливку дорожка у него забирает — и на светлой теме надпись
+    становится белой на белом: раздел открыт, а подписи не видно.
+    Порог 4.5 — требование WCAG к обычному тексту.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(make_player(), TOKEN, viewer_id=42),
+            ladder=ladder_state(), club=a_rating(),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        if dark:
+            await page.evaluate("() => document.body.classList.add('dark')")
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-ladder:not(.hidden)")
+        тема = "тёмная" if dark else "светлая"
+        for section in ("ladder", "players", "stats"):
+            if section != "ladder":
+                await pick_desk(page, section)
+            ratio = await page.evaluate(DESK_INK)
+            assert ratio >= 4.5, f"{тема}, {section}: контраст {ratio:.2f}"
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("width", [320, 375, 430])
+async def test_the_bottom_bar_fits_every_phone(server, width):
+    """Четыре вкладки в строку, подписи целые, значки не обрезаны."""
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(make_player(), TOKEN, viewer_id=42)
+        )
+        await page.set_viewport_size({"width": width, "height": 780})
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        tops = []
+        for tab in ("club", "map", "bag", "hero"):
+            box = await page.locator("#tab-" + tab).bounding_box()
+            tops.append(round(box["y"]))
+        assert len(set(tops)) == 1, f"панель перенеслась при {width}: {tops}"
+
+        # Подпись целиком и в одну строку. Меряем двумя способами
+        # сразу: подписи стоят `nowrap` с многоточием, и не влезшая
+        # ложится не второй строкой, а обрезком с «…» — ширина это
+        # ловит, а число строк ловит перенос, если `nowrap` однажды
+        # снимут
+        rows = await page.evaluate(
+            "() => [...document.querySelectorAll('#bar .bar-label')].map(o => {"
+            "  const cut = document.createRange();"
+            "  cut.selectNodeContents(o);"
+            "  return [o.textContent, cut.getClientRects().length,"
+            "          o.scrollWidth, o.clientWidth];"
+            "})"
+        )
+        for name, lines, want, got in rows:
+            assert lines == 1, f"«{name}» в две строки при {width}"
+            assert want <= got + 1, f"«{name}» обрезана при {width}: {want} > {got}"
+
+        # Значок виден целиком: своего размера и внутри своей ячейки
+        for tab in ("club", "map", "bag", "hero"):
+            cell = await page.locator("#tab-" + tab).bounding_box()
+            sign = await page.locator(f"#tab-{tab} .bar-icon").bounding_box()
+            assert sign["width"] >= 20 and sign["height"] >= 20, (tab, sign)
+            assert sign["x"] >= cell["x"] - 0.5, (tab, sign, cell)
+            assert sign["x"] + sign["width"] <= cell["x"] + cell["width"] + 0.5
+
+        wide = await page.evaluate("() => document.documentElement.scrollWidth")
+        assert wide <= width, f"боковой скролл: {wide} при {width}"
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_the_top_three_wear_their_medals(server):
+    """Призёрам вместо цифры — медаль, четвёртому снова цифра.
+
+    Медаль заменяет цифру, а не приписывается к ней: иначе колонка
+    места у призёров шире, чем у всех остальных, и столбец имён
+    ломается ровно на тройке, которую смотрят первой.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_desk_at(
+            pw, server, 375,
+            ladder=ladder_state(
+                ladder_rank(1, a_rated(43, "Марла", 7, 1480), fights=14),
+                ladder_rank(2, a_rated(44, "Тайлер", 5, 1390), fights=13),
+                ladder_rank(3, a_rated(45, "Боб", 6, 1320), fights=12),
+                ladder_rank(4, a_rated(46, "Анджела", 4, 1270), fights=11),
+            ),
+            club=a_rating(),
+        )
+        places = await page.locator(".ladder-row .fighter-place").all_inner_texts()
+        assert places == ["🥇", "🥈", "🥉", "4"], places
+
+        # Медаль — картинка, и у неё должно быть имя: диктор читает
+        # «1 место», а не молчит на незнакомом знаке
+        said = await page.locator(".ladder-row .fighter-place").first.get_attribute(
+            "aria-label"
+        )
+        assert said == "1 место", said
+
+        # Колонка места у призёра и у четвёртого одной ширины
+        wide = []
+        for number in range(4):
+            box = await page.locator(
+                ".ladder-row .fighter-place"
+            ).nth(number).bounding_box()
+            wide.append(round(box["width"]))
+        assert len(set(wide)) == 1, f"колонка места разъехалась: {wide}"
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_a_missing_icon_leaves_its_tab_working(server):
+    """Пропавший значок не ломает вкладку: на его месте остаётся смайл.
+
+    Значки лежат в статике, но сеть бывает медленной, а файл —
+    недоложенным. Вкладка от этого не должна ни опустеть, ни перестать
+    нажиматься: смайл в разметке и есть запасной значок, картинка
+    заменяет его только после того, как действительно загрузилась.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(make_player(), TOKEN, viewer_id=42),
+            images=True, broken="**/static/nav/bag.webp",
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        # Соседям картинка досталась — значит, подмена вообще работает
+        for tab in ("club", "map", "hero"):
+            await page.wait_for_selector(f"#tab-{tab} .bar-icon img.bar-pic")
+
+        slot = page.locator("#tab-bag .bar-icon")
+        assert await slot.locator("img").count() == 0, "картинки нет, а она есть"
+        assert (await slot.inner_text()).strip() == "🎒"
+
+        # И вкладка по-прежнему открывает инвентарь
+        await page.locator("#tab-bag").click()
+        await page.wait_for_selector("#bag:not(.hidden)")
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_the_desk_opens_on_the_weekly_rating(server):
+    """Рейтинг недели первым и открывается сразу."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk_at(
+            pw, server, 375, ladder=ladder_state(), club=a_rating()
+        )
+        names = await page.locator("#club-sections .chip").all_inner_texts()
+        assert names == [
+            DESK_TABS["ladder"], DESK_TABS["players"], DESK_TABS["stats"]
+        ], names
+        assert await page.locator("#club-ladder").is_visible()
+        assert await page.locator("#club-players").is_hidden()
+        await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_a_whole_row_opens_the_fighter_card(server):
+    """Строка целиком — кнопка, и отдельного значка в ней нет.
+
+    Две цели на одной строке заставляли целиться, а на телефоне это
+    проигрышная игра.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_desk_at(
+            pw, server, 375,
+            ladder=ladder_state(
+                ladder_rank(1, a_rated(43, "Марла", 7, 1400), fights=14),
+                ladder_rank(2, a_rated(42, "Тайлер", 4, 1100), fights=10),
+            ),
+            club=a_rating(),
+        )
+        await page.wait_for_selector("#ladder-list .fighter")
+        row = page.locator("#ladder-list .fighter").first
+        assert await row.evaluate("one => one.tagName") == "BUTTON"
+        assert await row.locator(".fighter-info").count() == 0
+        said = await row.get_attribute("aria-label")
+        assert said and "Карточка бойца" in said, said
+
+        await row.click()
+        await page.wait_for_selector(".sheet-doll")
         await browser.close()

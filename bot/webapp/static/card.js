@@ -2295,13 +2295,67 @@ function litTab(name) {
   return OPENED_FROM[name] || name;
 }
 
+// Нарисованные иконки нижней панели. Лежат в статике приложения: во
+// время боя и так качаются атласы, и ещё одна зависимость от бакета
+// панели ни к чему.
+//
+// Эмодзи в ячейке — не заглушка на время, а честный запасной вариант.
+// Картинка может не приехать: медленная сеть, пустая папка, опечатка в
+// имени, — и панель обязана остаться работоспособной. Поэтому эмодзи
+// стоит в вёрстке, а картинка подменяет его ТОЛЬКО после успешной
+// загрузки: ошибка не меняет ничего, и человек даже не узнает о ней
+const TAB_ICONS = {
+  club: "static/nav/club.webp",
+  map: "static/nav/map.webp",
+  bag: "static/nav/bag.webp",
+  hero: "static/nav/hero.webp",
+};
+
+function dressTabs() {
+  TABS.forEach((tab) => {
+    const where = TAB_ICONS[tab];
+    const box = el("tab-" + tab);
+    if (!where || !box) return;
+    const slot = box.querySelector(".bar-icon");
+    if (!slot) return;
+    const pic = new Image();
+    pic.addEventListener("load", () => {
+      pic.className = "bar-pic";
+      // Значок — украшение рядом с подписью, и своего имени ему не
+      // нужно: подпись под ним уже всё сказала
+      pic.alt = "";
+      slot.textContent = "";
+      slot.appendChild(pic);
+    });
+    pic.src = where;
+  });
+}
+
+// Сколько места занимает панель на самом деле. Нижний отступ страницы
+// считается от этого числа: иначе он живёт своей жизнью, и однажды
+// панель накрывает последнюю строку списка
+function fitBar() {
+  const bar = el("bar");
+  if (!bar || bar.classList.contains("hidden")) return;
+  const high = Math.round(bar.getBoundingClientRect().height);
+  if (high > 0) {
+    document.documentElement.style.setProperty("--bar-h", high + "px");
+  }
+}
+
 function showTab(name) {
   SCREENS.forEach((screen) => {
     el(screen).classList.toggle("hidden", screen !== name);
   });
   const lit = litTab(name);
   TABS.forEach((tab) => {
-    el("tab-" + tab).classList.toggle("active", tab === lit);
+    const box = el("tab-" + tab);
+    const here = tab === lit;
+    box.classList.toggle("active", here);
+    // Класса мало: экранному диктору нужно сказать словами, где
+    // человек сейчас стоит, а подсветку он не видит
+    if (here) box.setAttribute("aria-current", "page");
+    else box.removeAttribute("aria-current");
   });
   el("topup").classList.add("hidden");
   lastTab = name;
@@ -3282,9 +3336,32 @@ async function buyRelic(item) {
 
 let clubData = null;
 
-function fighterRow(fighter) {
-  const box = document.createElement("div");
-  box.className = "fighter" + (fighter.is_self ? " me" : "");
+/** Строка бойца в списке.
+ *
+ * `open` — что делает нажатие на всю строку. Задан: строка становится
+ * настоящей кнопкой, и отдельного значка внутри нет — две цели на
+ * одной строке заставляли целиться, а на телефоне это проигрышная
+ * игра. Не задан: строка остаётся блоком со значком, как и была, —
+ * так ходит поиск статистики, где нажатие на строку означает другое
+ * (открыть чужую историю), и значок там единственный путь в карточку.
+ */
+function fighterRow(fighter, open) {
+  const box = document.createElement(open ? "button" : "div");
+  box.className =
+    "fighter" + (fighter.is_self ? " me" : "") + (open ? " fighter-pick" : "");
+  if (open) {
+    box.type = "button";
+    // Диктору нужно название целиком: «Марла, 7 уровень» понятнее, чем
+    // «кнопка» над россыпью значков и цифр
+    box.setAttribute(
+      "aria-label",
+      "Карточка бойца " + fighter.nickname + ", " + fighter.level + " уровень"
+    );
+    box.addEventListener("click", () => {
+      haptic((feedback) => feedback.selectionChanged());
+      open(fighter);
+    });
+  }
 
   // Место в рейтинге считает сервер: на второй странице первая строка —
   // это пятьдесят первое место, и страница, считающая места сама,
@@ -3312,25 +3389,27 @@ function fighterRow(fighter) {
   level.className = "fighter-level";
   level.textContent = "[" + fighter.level + "]";
 
-  // Один вход на строку: значок ведёт в карточку, а статистика живёт
-  // уже там. Две кнопки на строку делали список выше и заставляли
-  // выбирать между ними, ни разу не показав, что за боец внутри
-  const info = document.createElement("button");
-  info.type = "button";
-  info.className = "fighter-info";
-  info.textContent = "ℹ️";
-  info.title = "Карточка бойца";
-  info.setAttribute("aria-label", "Карточка бойца " + fighter.nickname);
-  info.addEventListener("click", () => showFighter(fighter));
-
-  box.append(
+  // Значок нужен только там, где нажатие на строку занято другим
+  // делом. Кнопка внутри кнопки — невалидная вёрстка, и целиться в
+  // неё пальцем всё равно никто не хотел
+  const parts = [
     face,
     ...clanMarks(fighter.clan),
     ...serviceMarks(fighter.service),
     name,
     level,
-    info
-  );
+  ];
+  if (!open) {
+    const info = document.createElement("button");
+    info.type = "button";
+    info.className = "fighter-info";
+    info.textContent = "ℹ️";
+    info.title = "Карточка бойца";
+    info.setAttribute("aria-label", "Карточка бойца " + fighter.nickname);
+    info.addEventListener("click", () => showFighter(fighter));
+    parts.push(info);
+  }
+  box.append(...parts);
 
   // ELO справа, у самого края: по нему список отсортирован, и прятать
   // число, которое и решает порядок, было бы странно
@@ -3583,7 +3662,7 @@ function sayNoFightsHere(name) {
 // карте, и только она. Драться можно там, где стоишь, и нигде больше —
 // поэтому бои живут в здании, а не под кнопкой.
 const CLUB_HOUSES = {
-  info: { title: "ℹ️ Информация о клубе", start: "players" },
+  info: { title: "ℹ️ Информация о клубе", start: "ladder" },
   club: { title: "🥊 Бойцовский клуб", start: "fights" },
   casino: { title: "🎲 Казино", start: "raid" },
   // Второй рейдовый дом. Экран тот же, что у казино, — какой именно
@@ -3620,10 +3699,13 @@ function clubSections() {
   // раздела в одном месте путали одно с другим: бойца звали драться
   // там же, где он читал чужую статистику
   if (clubHouse === "info") {
+    // Рейтинг недели первым и по умолчанию: он меняется каждый день и
+    // смотрят его чаще остального. Список и статистика — туда, куда
+    // идут с вопросом, а не из любопытства
     return [
+      ["ladder", "👑 Рейтинг недели"],
       ["players", "Список игроков"],
-      ["ladder", "Рейтинг недели"],
-      ["stats", "Статистика игрока"],
+      ["stats", "Статистика"],
     ];
   }
   return [
@@ -3656,6 +3738,10 @@ function openRaidHouse(code) {
 function renderClubSections() {
   const box = el("club-sections");
   box.textContent = "";
+  // В справочной переключатель один на три раздела и должен влезать в
+  // одну строку на самом узком экране: там он сегментированный, а не
+  // россыпью пузырьков, как в остальных домах
+  box.classList.toggle("segments", clubHouse === "info");
   el("club-title").textContent = CLUB_HOUSES[clubHouse].title;
   // В справочную не входили — значит, и выходить из неё на карту некуда
   el("club-back").classList.toggle("hidden", clubHouse === "info");
@@ -5988,6 +6074,8 @@ function renderHistory(data) {
   // к себе хотят до того, как долистают чужие бои до конца
   el("stats-mine").classList.toggle("hidden", !statsWho);
 
+  renderStatsSum(data, people, raids);
+
   const body = el("stats-body");
   body.textContent = "";
   data.days.forEach((day) => {
@@ -5997,6 +6085,65 @@ function renderHistory(data) {
     body.appendChild(head);
     day.fights.forEach((fight) => body.appendChild(fightRow(fight)));
   });
+}
+
+/** Плитка сводки: число крупно, подпись под ним. */
+function tile(value, label, mark) {
+  const box = document.createElement("div");
+  box.className = "tile" + (mark ? " tile-" + mark : "");
+  const big = document.createElement("span");
+  big.className = "tile-value";
+  big.textContent = num(value);
+  const small = document.createElement("span");
+  small.className = "tile-label";
+  small.textContent = label;
+  box.append(big, small);
+  return box;
+}
+
+/** Ключевые числа и доли исходов. Только то, что прислал сервер.
+ *
+ * Полоса здесь одна и показывает ровно то, из чего сложен счёт:
+ * победы, поражения, ничьи. Рисовать по трём числам графики за месяц
+ * было бы красиво и неправдой — таких данных сервер не присылает.
+ */
+function renderStatsSum(data, people, raids) {
+  const box = el("stats-sum");
+  box.textContent = "";
+  box.classList.toggle("hidden", !data.total);
+  if (!data.total) return;
+
+  const counts = data.counts;
+  box.appendChild(tile(people, plural(people, "бой", "боя", "боёв")));
+  box.appendChild(tile(counts.win, "побед", "win"));
+  box.appendChild(tile(counts.loss, "поражений", "loss"));
+  box.appendChild(tile(counts.draw, "ничьих", "draw"));
+  // Рейды — отдельной плиткой и только если они были: ноль из нуля
+  // ничего не говорит, а место занимает
+  if (raids.total) {
+    box.appendChild(
+      tile(raids.wins, "рейдов из " + num(raids.total), "raid")
+    );
+  }
+
+  if (!people) return;
+  const bar = document.createElement("div");
+  bar.className = "tiles-bar";
+  bar.setAttribute("role", "img");
+  bar.setAttribute(
+    "aria-label",
+    "Из " + people + " боёв: побед " + counts.win
+      + ", поражений " + counts.loss + ", ничьих " + counts.draw
+  );
+  [["win", counts.win], ["loss", counts.loss], ["draw", counts.draw]]
+    .forEach(([mark, value]) => {
+      if (!value) return;
+      const part = document.createElement("span");
+      part.className = "tiles-part tiles-" + mark;
+      part.style.width = (value / people) * 100 + "%";
+      bar.appendChild(part);
+    });
+  box.appendChild(bar);
 }
 
 function prettyDay(date) {
@@ -6139,7 +6286,9 @@ function renderClub(data) {
 
   const list = el("club-list");
   list.textContent = "";
-  data.fighters.forEach((fighter) => list.appendChild(fighterRow(fighter)));
+  data.fighters.forEach((fighter) =>
+    list.appendChild(fighterRow(fighter, showFighter))
+  );
   pagerOf("club", data);
 }
 
@@ -6348,10 +6497,31 @@ function renderLadderPrizes(prizes) {
   box.appendChild(list);
 }
 
+// Металл призёров: золото, серебро, бронза. Четвёртого места в этом
+// списке нет и не будет — дальше идут обычные строки с цифрой
+const MEDALS = { 1: "🥇", 2: "🥈", 3: "🥉" };
+
 /** Строка рейтинга недели: всё то же плюс бои за неделю и награда. */
 function ladderRow(one) {
-  const box = fighterRow(one);
+  const box = fighterRow(one, showFighter);
   box.classList.add("ladder-row");
+  // Тройка призёров выделяется металлом, остальные идут ровными
+  // строками. Место считает сервер по всему рейтингу, поэтому на
+  // второй странице золота не будет — и правильно
+  if (one.place >= 1 && one.place <= 3) {
+    box.classList.add("ladder-top", "ladder-top-" + one.place);
+    // Медаль встаёт на место цифры, а не рядом: колонка остаётся той
+    // же ширины, и строка призёра не разъезжается против остальных.
+    // Цифра при этом не теряется — диктору медаль ничего не говорит,
+    // и место он читает с подписи
+    const place = box.querySelector(".fighter-place");
+    if (place) {
+      place.textContent = MEDALS[one.place];
+      place.setAttribute("role", "img");
+      place.setAttribute("aria-label", one.place + " место");
+      place.classList.add("fighter-medal");
+    }
+  }
   const fights = document.createElement("span");
   fights.className = "ladder-fights";
   fights.textContent = one.fights + " б.";
@@ -7588,6 +7758,8 @@ function render(card, keepTab) {
   hideLoader();
   // Чужую карточку показываем одним экраном: ни панели, ни рюкзака
   el("bar").classList.toggle("hidden", !card.is_self);
+  // Панель только что показали — теперь её можно померить
+  fitBar();
   pickClubSection(clubSection);
   if (!keepTab) showTab("hero");
 }
@@ -20770,6 +20942,11 @@ el("map-cars").addEventListener("click", () => carsHereSheet());
 el("vote-chip").addEventListener("click", () => openBallot());
 startVoteClock();
 watchInteriors();
+
+// Нарисованные иконки подменяют эмодзи, если приехали
+dressTabs();
+// Панель могла стать выше: пересчитываем отступ страницы под неё
+window.addEventListener("resize", fitBar);
 
 // Кнопок на панели меньше, чем экранов: лавки открываются с карты
 TABS.forEach((tab) => {

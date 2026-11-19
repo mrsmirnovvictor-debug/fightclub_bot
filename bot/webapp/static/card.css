@@ -79,8 +79,12 @@ body.dark {
 
 body {
   margin: 0;
-  /* снизу оставляем место под панель вкладок */
-  padding: 14px 14px calc(78px + env(safe-area-inset-bottom));
+  /* Снизу оставляем место под панель вкладок. Высоту панели меряет
+     `fitBar` в card.js и кладёт сюда: подобранное руками число
+     однажды разойдётся с настоящей панелью — подпись станет крупнее
+     или иконка выше, — и панель накроет последнюю строку списка.
+     Запасное значение на случай, если измерить не успели */
+  padding: 14px 14px calc(var(--bar-h, 62px) + 16px + env(safe-area-inset-bottom));
   background: var(--bg);
   color: var(--ink);
   font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -847,33 +851,123 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   border-top: 1px solid var(--line);
 }
 .bar.hidden { display: none; }
+
+/* Дымчатое стекло: панель не закрашивает экран, а приглушает его. На
+   вебвью без поддержки размытия остаётся просто тёмная подложка —
+   поэтому цвет задан и сам по себе, а не только как «то, что под
+   размытием» */
+body.dark .bar {
+  background: rgba(12, 14, 20, 0.82);
+  border-top: 1px solid rgba(150, 200, 255, 0.16);
+  box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.04) inset,
+              0 -8px 24px rgba(0, 0, 0, 0.45);
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  body.dark .bar {
+    background: rgba(12, 14, 20, 0.62);
+    -webkit-backdrop-filter: blur(14px) saturate(130%);
+    backdrop-filter: blur(14px) saturate(130%);
+  }
+}
+
 .bar-tab {
   flex: 1;
   min-width: 0;
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
+  gap: 3px;
+  /* Сорок четыре на сорок четыре — нижняя граница попадания пальцем.
+     Нажимается вся ячейка, а не значок внутри неё */
+  min-height: 44px;
   padding: 5px 2px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 10px;
   background: transparent;
   color: var(--muted);
   font: inherit;
   cursor: pointer;
+  transition: color 160ms ease, background 160ms ease;
 }
-.bar-icon { font-size: 19px; line-height: 1; }
+
+.bar-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Один размер на эмодзи и на картинку: иначе панель дёргается, когда
+     иконка подгрузилась, и в момент подмены видно скачок */
+  width: 24px;
+  height: 24px;
+  font-size: 19px;
+  line-height: 1;
+}
+
+.bar-pic {
+  width: 100%;
+  height: 100%;
+  /* `contain`, а не `cover`: иконки разной формы, и обрезка съела бы
+     у одних края, а у других оставила поля */
+  object-fit: contain;
+  display: block;
+}
+
 .bar-label {
   font-size: 10.5px;
   font-weight: 700;
+  letter-spacing: 0.01em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
 }
-.bar-tab.active { color: var(--accent); }
-.bar-tab.active .bar-icon { transform: translateY(-1px); }
+
+/* Активная вкладка: местный ореол, а не залитая ярким четверть панели.
+   Светится подложка под значком, подпись просто светлеет */
+.bar-tab.active { color: var(--ink); }
+
+body.dark .bar-tab.active {
+  color: #eaf4ff;
+  background:
+    radial-gradient(60% 70% at 50% 38%, rgba(90, 170, 255, 0.22), transparent 70%);
+}
+
+/* Тонкий акцент сверху ячейки — он и говорит, где ты находишься */
+.bar-tab.active::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 28%;
+  right: 28%;
+  height: 2px;
+  border-radius: 0 0 2px 2px;
+  background: linear-gradient(90deg,
+    rgba(120, 200, 255, 0), rgba(120, 200, 255, 0.9),
+    rgba(170, 130, 255, 0.9), rgba(170, 130, 255, 0));
+}
+
+body.dark .bar-tab.active .bar-icon {
+  filter: drop-shadow(0 0 6px rgba(120, 200, 255, 0.55));
+}
+
 .bar-tab:active { background: var(--slot); }
+
+/* Клавиатурный фокус виден не хуже активной вкладки: по ТЗ он не
+   должен быть тише её */
+.bar-tab:focus-visible {
+  outline: 2px solid rgba(120, 200, 255, 0.9);
+  outline-offset: -3px;
+  color: var(--ink);
+}
+
+/* Попросили не анимировать — убираем переходы и свечение, позы и
+   читаемость остаются */
+@media (prefers-reduced-motion: reduce) {
+  .bar-tab { transition: none; }
+  body.dark .bar-tab.active .bar-icon { filter: none; }
+}
 
 .shop { max-width: 760px; margin: 0 auto; }
 .shop-head {
@@ -6163,3 +6257,216 @@ body.bench {
 .bench-again {
   margin-bottom: 18px;
 }
+
+/* ---------- сегментированный переключатель справочной ---------- */
+
+/* Три раздела обязаны лечь в одну строку на трёхстах двадцати
+   пикселях. Поэтому не перенос, а сжатие: отступы и кегль едут по
+   `clamp`, а названия остаются целыми — сокращать их ТЗ запрещает, да
+   и «Рейт. нед.» никому не помогает */
+.bubbles.segments {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--slot);
+  border: 1px solid var(--line);
+}
+
+.bubbles.segments .chip {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: clamp(6px, 1.9vw, 9px) clamp(3px, 1.4vw, 10px);
+  font-size: clamp(10.5px, 3vw, 13px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+}
+
+/* Выбранный раздел — приподнятая плашка на дорожке, а не общий
+   `.chip.on`: тот заливает пузырь акцентом, и внутри дорожки выходит
+   кнопка поверх кнопки. Цвет текста здесь обязателен: `.chip.on`
+   ставит белый под свою заливку, а заливку у него забрали выше —
+   без этой строки выбранная надпись становится белой на светлом и
+   пропадает совсем */
+.bubbles.segments .chip.on {
+  color: var(--ink);
+  background: #fff;
+  border-color: var(--slot-line);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.12);
+}
+
+body.dark .bubbles.segments .chip.on {
+  color: #eaf4ff;
+  border-color: rgba(120, 200, 255, 0.35);
+  background:
+    linear-gradient(180deg, rgba(90, 170, 255, 0.18), rgba(140, 110, 255, 0.12));
+  box-shadow: 0 0 10px rgba(90, 170, 255, 0.18) inset;
+}
+
+.bubbles.segments .chip:focus-visible {
+  outline: 2px solid rgba(120, 200, 255, 0.9);
+  outline-offset: -2px;
+}
+
+/* ---------- кликабельная строка бойца и подиум рейтинга ---------- */
+
+/* Строка-кнопка должна остаться строкой: сбрасываем всё, что браузер
+   добавляет кнопке от себя, и возвращаем раскладку `.fighter` */
+.fighter-pick {
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.fighter-pick:active { transform: scale(0.995); }
+
+.fighter-pick:focus-visible {
+  outline: 2px solid rgba(120, 200, 255, 0.9);
+  outline-offset: -2px;
+}
+
+/* Свой боец — тонкой холодной рамкой со свечением, а не сплошной
+   заливкой: залитая строка перебивает собой и золото призёра, и
+   собственные цифры */
+body.dark .fighter.me {
+  border-color: rgba(120, 200, 255, 0.55);
+  box-shadow: 0 0 0 1px rgba(120, 200, 255, 0.18),
+              0 0 12px rgba(90, 170, 255, 0.14);
+}
+
+/* Цифры рейтинга выровнены по правому краю и не прыгают от разной
+   ширины знаков: табличные цифры одинаковой ширины */
+.fighter-elo,
+.ladder-prize {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Тройка призёров: металл в рамке и лёгкая подложка. Золото — только
+   здесь, больше нигде на экране его нет */
+.ladder-top { border-width: 1px; }
+
+.ladder-top-1 {
+  border-color: rgba(198, 158, 12, 0.7);
+  background: linear-gradient(135deg,
+    rgba(226, 183, 20, 0.22), rgba(226, 183, 20, 0.06) 60%, transparent);
+}
+
+.ladder-top-2 {
+  border-color: rgba(150, 160, 176, 0.65);
+  background: linear-gradient(135deg,
+    rgba(198, 206, 219, 0.26), transparent 60%);
+}
+
+.ladder-top-3 {
+  border-color: rgba(176, 108, 42, 0.6);
+  background: linear-gradient(135deg,
+    rgba(205, 127, 50, 0.2), transparent 60%);
+}
+
+/* Золото светится только в тёмной теме: на светлой подложке свечение
+   не читается, а края строки размывает */
+body.dark .ladder-top-1 {
+  border-color: rgba(226, 183, 20, 0.6);
+  box-shadow: 0 0 14px rgba(226, 183, 20, 0.16);
+}
+
+body.dark .ladder-top-2 { border-color: rgba(198, 206, 219, 0.5); }
+body.dark .ladder-top-3 { border-color: rgba(205, 127, 50, 0.5); }
+
+/* Медаль занимает колонку места: знак крупнее цифры и стоит по
+   центру — у эмодзи нет цифрового «хвоста» справа, и прижатая вправо
+   медаль выглядела бы съехавшей от своей строки */
+.fighter-medal {
+  font-size: 15px;
+  text-align: center;
+}
+
+/* Первое место крупнее остальных, но не на полэкрана: вырастает
+   место и имя, строка остаётся строкой */
+.ladder-top-1 { padding: 9px 10px; }
+.ladder-top-1 .fighter-name { font-size: 15px; }
+.ladder-top-1 .fighter-place { font-size: 15px; }
+.ladder-top-1 .fighter-medal { font-size: 17px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .fighter-pick { transition: none; }
+  .fighter-pick:active { transform: none; }
+}
+
+/* ---------- сводка статистики: плитки и доли ---------- */
+
+/* Плитки кладутся в сетку, а не в строку: на трёхстах двадцати
+   пикселях пять штук в ряд не читаются, а перенос сам разложит их по
+   две-три. `auto-fit` с минимумом в 92 пикселя — это и есть «столько,
+   сколько влезло» */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+body.dark .tile {
+  background: linear-gradient(180deg,
+    rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015));
+  border-color: rgba(150, 200, 255, 0.14);
+}
+
+.tile-value {
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.tile-label {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.dark .tile-win .tile-value { color: #5ec46a; }
+body.dark .tile-loss .tile-value { color: #e4594b; }
+body.dark .tile-draw .tile-value { color: #c9ced8; }
+body.dark .tile-raid .tile-value { color: #8fb6ff; }
+
+/* Полоса долей — на всю ширину сетки. Показывает ровно то, из чего
+   сложен счёт, и ничего сверх него */
+.tiles-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--hp-track);
+}
+
+.tiles-part { display: block; height: 100%; }
+.tiles-win { background: #4cbf52; }
+.tiles-loss { background: #e04b3f; }
+.tiles-draw { background: #8a8d98; }
