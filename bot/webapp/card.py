@@ -41,7 +41,7 @@ from bot.game.equipment import (
     set_power,
     shop_sections,
 )
-from bot.game.abilities import MAX_ABILITIES, TIER_COST
+from bot.game.abilities import MAX_ABILITIES, TIERS, TIER_COST
 from bot.game.gear import ModKind
 from bot.game.market import FEE as MARKET_FEE, buyback
 from bot.game.health import (
@@ -319,20 +319,35 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
 def abilities_payload(player: Player) -> dict:
     """Приёмы бойца в карточке: что выучено и что предстоит выбрать."""
     from bot.abilities_service import known, next_tier_after, pending_choice
+    from bot.game import art
 
     choice = pending_choice(player)
+    learned = [
+        {
+            "code": ability.code,
+            "title": ability.title,
+            "icon": ability.icon,
+            "image": ability.picture,
+            "note": ability.note,
+            "tier": tier,
+            "cost": TIER_COST[tier],
+        }
+        for ability, tier in known(player)
+    ]
+    by_tier = {row["tier"]: row for row in learned}
     return {
-        "known": [
+        "known": learned,
+        # Ряд из четырёх ступеней, с первого уровня и всегда целиком:
+        # место невзятого приёма занимает заглушка с нарисованной на
+        # ней ступенью. Так видно не только что взято, но и сколько
+        # ещё будет, — а это и есть вопрос, с которым в приёмы заходят
+        "tiers": [
             {
-                "code": ability.code,
-                "title": ability.title,
-                "icon": ability.icon,
-                "image": ability.picture,
-                "note": ability.note,
                 "tier": tier,
-                "cost": TIER_COST[tier],
+                "known": by_tier.get(tier),
+                "image": art.ability_placeholder(tier),
             }
-            for ability, tier in known(player)
+            for tier in TIERS
         ],
         "slots": MAX_ABILITIES,
         # Развилка, если боец дорос и ещё не выбрал
@@ -359,8 +374,8 @@ def abilities_payload(player: Player) -> dict:
 def public_abilities(player: Player) -> dict:
     """То же, но для чужих глаз: приёмы видно, развилку — нет."""
     rows = abilities_payload(player)
-    return {"known": rows["known"], "slots": rows["slots"],
-            "choice": None, "next_tier": 0}
+    return {"known": rows["known"], "tiers": rows["tiers"],
+            "slots": rows["slots"], "choice": None, "next_tier": 0}
 
 
 def weapon_in_hands(item: Item, fclass: FighterClass | None) -> str:

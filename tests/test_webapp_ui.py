@@ -7863,6 +7863,40 @@ async def test_the_energy_bar_shows_what_it_counts(server):
         await browser.close()
 
 
+# Ступени приёмов: по одной на каждую из них, с первого уровня и
+# всегда все четыре. Невзятую занимает заглушка с нарисованной на ней
+# ступенью, поэтому адрес у неё считается от ступени, а не от кода:
+# кода у невыученного приёма ещё нет
+ABILITY_LADDER = (1, 3, 6, 10)
+
+
+def abilities_state(*known, choice=None, next_tier=0, ladder=ABILITY_LADDER):
+    """Приёмы так, как их присылает сервер: ряд ступеней и что взято.
+
+    Собирается одной функцией, а не руками в каждом тесте: ряд ступеней
+    и список выученного обязаны сходиться между собой, и разошлись бы
+    они молча — на экране просто стало бы меньше плиток.
+    """
+    by_tier = {one["tier"]: one for one in known}
+    return {
+        "known": list(known),
+        "tiers": [
+            {
+                "tier": tier,
+                "known": by_tier.get(tier),
+                "image": (
+                    "https://example.test/items/ability_placeholder_"
+                    + str(tier) + ".webp"
+                ),
+            }
+            for tier in ladder
+        ],
+        "slots": 4,
+        "choice": choice,
+        "next_tier": next_tier,
+    }
+
+
 async def test_the_tricks_live_on_the_character_screen(server):
     """Приёмы — про бойца, а не про поклажу: их место в персонаже.
 
@@ -7871,13 +7905,11 @@ async def test_the_tricks_live_on_the_character_screen(server):
     """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
-    card["abilities"] = {
-        "known": [
-            {"code": "strong_hit", "title": "Сильный удар", "icon": "👊",
-             "image": "", "note": "+15 урона.", "tier": 1, "cost": 3},
-        ],
-        "slots": 4, "choice": None, "next_tier": 3,
-    }
+    card["abilities"] = abilities_state(
+        {"code": "strong_hit", "title": "Сильный удар", "icon": "👊",
+         "image": "", "note": "+15 урона.", "tier": 1, "cost": 3},
+        next_tier=3,
+    )
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#hero:not(.hidden)")
@@ -7892,22 +7924,83 @@ async def test_the_tricks_live_on_the_character_screen(server):
 async def test_the_card_lists_what_the_fighter_knows(server):
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
-    card["abilities"] = {
-        "known": [
-            {"code": "strong_hit", "title": "Сильный удар", "icon": "👊",
-             "image": "https://example.test/items/strong_hit.jpeg",
-             "note": "+15 урона.", "tier": 1, "cost": 3},
-        ],
-        "slots": 4, "choice": None, "next_tier": 3,
-    }
+    card["abilities"] = abilities_state(
+        {"code": "strong_hit", "title": "Сильный удар", "icon": "👊",
+         "image": "https://example.test/items/strong_hit.jpeg",
+         "note": "+15 урона.", "tier": 1, "cost": 3},
+        next_tier=3,
+    )
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#hero:not(.hidden)")
 
         box = page.locator("#skills-box")
-        assert await box.locator(".skill").count() == 1
+        # Плиток всегда четыре, выучен из них один: ряд показывает не
+        # только что взято, но и сколько ещё будет
+        assert await box.locator(".skill").count() == 4
+        assert await box.locator(".skill.on").count() == 1
+        assert await box.locator(".skill.off").count() == 3
         assert "1 из 4" in await page.locator("#skills-count").inner_text()
-        assert "на 3 уровне" in await page.locator("#skills-note").inner_text()
+        # Про ближайшую ступень словами не пишем: её номер нарисован на
+        # самой заглушке, и подпись повторяла бы картинку
+        said = await page.locator("#skills-note").inner_text()
+        assert said.strip() == "", said
+        await browser.close()
+
+
+async def test_an_unlearned_tier_stands_in_the_row_as_a_locked_option(server):
+    """Невзятая ступень стоит в ряду заглушкой и не нажимается.
+
+    Прежде в ряду было ровно столько плиток, сколько приёмов выучено,
+    и на первом уровне он состоял из одной. Сколько их будет всего и
+    когда — приходилось держать в голове; подпись под рядом называла
+    только ближайшую ступень.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["abilities"] = abilities_state(
+        {"code": "strong_hit", "title": "Сильный удар", "icon": "👊",
+         "image": "https://example.test/items/strong_hit.jpeg",
+         "note": "+15 урона.", "tier": 1, "cost": 3},
+        next_tier=3,
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), images=True
+        )
+        await page.wait_for_selector(".skill")
+
+        tiles = page.locator("#skills-list .skill")
+        assert await tiles.count() == 4
+
+        # Выученный — как выбранная кнопка раздела, и он нажимается
+        first = tiles.first
+        assert "on" in (await first.get_attribute("class"))
+        assert not await first.is_disabled()
+
+        # Остальные три — как невыбранная, и нажатия не принимают
+        for number in (1, 2, 3):
+            step = tiles.nth(number)
+            assert "off" in (await step.get_attribute("class")), number
+            assert await step.is_disabled(), number
+            # Диктору номер ступени говорят словами: на картинке он
+            # нарисован, а картинка ему ничего не говорит
+            said = await step.get_attribute("aria-label")
+            assert said and "ещё не выучен" in said, said
+
+        # И у каждой заглушки своя картинка — та, на которой её номер
+        where = await page.locator("#skills-list .skill.off img").evaluate_all(
+            "list => list.map(one => one.getAttribute('src'))"
+        )
+        assert len(where) == 3, where
+        assert where == sorted(set(where), key=where.index), "картинка повторилась"
+        for step, address in zip((3, 6, 10), where):
+            assert address.endswith(f"ability_placeholder_{step}.webp"), address
+
+        # Нажатие на заглушку ничего не открывает
+        await tiles.nth(1).click(force=True)
+        assert await page.locator("#sheet-veil").is_hidden()
         await browser.close()
 
 
@@ -7915,9 +8008,9 @@ async def test_the_fork_is_impossible_to_miss(server):
     """Дорос до ступени — развилка стоит в карточке и предупреждает."""
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
-    card["abilities"] = {
-        "known": [], "slots": 4, "next_tier": 6,
-        "choice": {
+    card["abilities"] = abilities_state(
+        next_tier=6,
+        choice={
             "tier": 3,
             "options": [
                 {"code": "power_hit", "title": "Мощный удар", "icon": "👊",
@@ -7931,7 +8024,7 @@ async def test_the_fork_is_impossible_to_miss(server):
                  "note": "Крит без проверки.", "cost": 6, "own": False},
             ],
         },
-    }
+    )
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#hero:not(.hidden)")
@@ -18940,21 +19033,17 @@ async def test_without_an_account_only_the_cash_tile_stands(server):
 def a_fighter_with_tricks():
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
-    card["abilities"] = {
-        "slots": 4,
-        "known": [
-            {"code": "a", "title": "Двойка", "icon": "🥊", "image": "",
-             "cost": 3, "tier": 2, "note": "Два удара подряд в одну зону."},
-            {"code": "b", "title": "Подсечка", "icon": "🦵", "image": "",
-             "cost": 4, "tier": 4, "note": "Сбивает соперника с ног."},
-            {"code": "c", "title": "Захват", "icon": "🤼", "image": "",
-             "cost": 5, "tier": 6, "note": "Держит соперника ход."},
-            {"code": "d", "title": "Контратака", "icon": "↩️", "image": "",
-             "cost": 6, "tier": 8, "note": "Отвечает на пропущенный удар."},
-        ],
-        "choice": None,
-        "next_tier": 12,
-    }
+    card["abilities"] = abilities_state(
+        {"code": "a", "title": "Двойка", "icon": "🥊", "image": "",
+         "cost": 3, "tier": 2, "note": "Два удара подряд в одну зону."},
+        {"code": "b", "title": "Подсечка", "icon": "🦵", "image": "",
+         "cost": 4, "tier": 4, "note": "Сбивает соперника с ног."},
+        {"code": "c", "title": "Захват", "icon": "🤼", "image": "",
+         "cost": 5, "tier": 6, "note": "Держит соперника ход."},
+        {"code": "d", "title": "Контратака", "icon": "↩️", "image": "",
+         "cost": 6, "tier": 8, "note": "Отвечает на пропущенный удар."},
+        next_tier=12, ladder=(2, 4, 6, 8),
+    )
     return card
 
 
@@ -18992,21 +19081,17 @@ def a_fighter_with_long_tricks():
     """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
-    card["abilities"] = {
-        "slots": 4,
-        "known": [
-            {"code": "a", "title": "Сокрушительный удар", "icon": "👊",
-             "image": "", "cost": 3, "tier": 2, "note": "Бьёт."},
-            {"code": "b", "title": "Критический удар", "icon": "👊",
-             "image": "", "cost": 4, "tier": 4, "note": "Бьёт."},
-            {"code": "c", "title": "Восстановление", "icon": "💚",
-             "image": "", "cost": 5, "tier": 6, "note": "Лечит."},
-            {"code": "d", "title": "Воля к победе", "icon": "🔥",
-             "image": "", "cost": 6, "tier": 8, "note": "Держит."},
-        ],
-        "choice": None,
-        "next_tier": 12,
-    }
+    card["abilities"] = abilities_state(
+        {"code": "a", "title": "Сокрушительный удар", "icon": "👊",
+         "image": "", "cost": 3, "tier": 2, "note": "Бьёт."},
+        {"code": "b", "title": "Критический удар", "icon": "👊",
+         "image": "", "cost": 4, "tier": 4, "note": "Бьёт."},
+        {"code": "c", "title": "Восстановление", "icon": "💚",
+         "image": "", "cost": 5, "tier": 6, "note": "Лечит."},
+        {"code": "d", "title": "Воля к победе", "icon": "🔥",
+         "image": "", "cost": 6, "tier": 8, "note": "Держит."},
+        next_tier=12, ladder=(2, 4, 6, 8),
+    )
     return card
 
 

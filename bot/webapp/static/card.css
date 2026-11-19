@@ -3907,6 +3907,40 @@ body.dark .bar-tab.active .bar-icon {
   text-align: center;
   cursor: pointer;
 }
+
+/* Выученный приём и пустая ступень различаются как выбранная кнопка
+   раздела и невыбранная: тем же приёмом, теми же цветами. Учить
+   второй язык «это есть / этого нет» ради одного ряда незачем */
+.skill.on {
+  background: #fff;
+  border-color: var(--slot-line);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.12);
+}
+
+body.dark .skill.on {
+  border-color: rgba(120, 200, 255, 0.35);
+  background:
+    linear-gradient(180deg, rgba(90, 170, 255, 0.18), rgba(140, 110, 255, 0.12));
+  box-shadow: 0 0 10px rgba(90, 170, 255, 0.18) inset;
+}
+
+/* Пустая ступень тише во всём: и рамкой, и картинкой, и подписью.
+   Гасим её целиком прозрачностью, а не серым цветом, — на картинке
+   нарисована цифра ступени, и она обязана остаться читаемой */
+.skill.off {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--slot-line);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.skill.off .skill-title { color: var(--muted); font-weight: 600; }
+
+.skill:focus-visible {
+  outline: 2px solid rgba(120, 200, 255, 0.9);
+  outline-offset: -2px;
+}
 /* Строка приёма — там, где его выбирают: на развилке уровня и на
    прилавке школы. Без описания выбора нет, поэтому картинка, цена и
    слова стоят рядом, а не прячутся за нажатием */

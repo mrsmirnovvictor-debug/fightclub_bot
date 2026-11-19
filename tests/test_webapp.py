@@ -374,6 +374,46 @@ async def test_the_club_pictures_reach_the_page_by_their_real_address(client):
     assert REDESIGN_SLOT not in body
 
 
+def test_the_card_shows_all_four_ability_tiers_from_the_first_level():
+    """Ряд приёмов — четыре ступени, и он такой с первого уровня.
+
+    Невзятую ступень занимает заглушка с нарисованным на ней номером,
+    и адрес у неё считается от ступени, а не от кода: кода у
+    невыученного приёма ещё нет, его только предстоит выбрать.
+    """
+    from bot.game.abilities import TIERS
+    from bot.webapp.card import abilities_payload
+
+    rookie = make_player()
+    rookie.level = 1
+    rookie.loadout.learn("strong_hit", 1)
+
+    rows = abilities_payload(rookie)["tiers"]
+    assert [one["tier"] for one in rows] == list(TIERS)
+
+    first, *rest = rows
+    assert first["known"] and first["known"]["code"] == "strong_hit"
+    # Адрес сверяем с ожидаемым написанием, а не с той же функцией,
+    # что его и строит: себе она равна при любой ошибке
+    for step in rest:
+        assert step["known"] is None
+        assert step["image"].endswith(
+            "/items/ability_placeholder_" + str(step["tier"]) + ".webp"
+        ), step["image"]
+
+
+def test_a_stranger_sees_the_same_four_tiers():
+    """Чужая карточка показывает тот же ряд: соперника изучают до боя."""
+    from bot.webapp.card import public_abilities
+
+    rookie = make_player()
+    rookie.loadout.learn("strong_hit", 1)
+
+    rows = public_abilities(rookie)
+    assert len(rows["tiers"]) == 4
+    assert rows["choice"] is None
+
+
 def test_the_version_changes_with_the_files(tmp_path, monkeypatch):
     """Метка считается по содержимому: правка стиля обязана её сдвинуть.
 

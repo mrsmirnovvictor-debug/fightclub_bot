@@ -194,6 +194,17 @@ def item(code: str) -> str:
     return f"{ITEMS}/{code}.jpeg"
 
 
+def ability_placeholder(tier: int) -> str:
+    """Тень невыученного приёма: items/ability_placeholder_3.webp.
+
+    Приёмов в карточке всегда четыре — по одному на ступень, — и место
+    невзятого занимает заглушка со ступенью, нарисованной прямо на
+    ней. Поэтому адрес считается от ступени, а не от кода: кода у
+    невыученного приёма ещё нет, его только предстоит выбрать.
+    """
+    return f"{ITEMS}/ability_placeholder_{tier}.webp"
+
+
 def set_piece(line: str, kit: str, slot: str) -> str:
     """Вещь из сета: items_new/trickster/cardsharp/jacket.png.
 
@@ -354,6 +365,7 @@ __all__ = [
     "NPC",
     "PDD",
     "REDESIGN",
+    "ability_placeholder",
     "POTIONS",
     "RAID_ITEMS",
     "SERVICES",

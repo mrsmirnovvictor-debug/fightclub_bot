@@ -1274,24 +1274,30 @@ function renderSkills(card) {
   box.classList.remove("hidden");
   el("skills-count").textContent = "· " + state.known.length + " из " + state.slots;
 
+  // Ряд всегда из четырёх ступеней и с первого уровня: место
+  // невзятого приёма занимает заглушка со ступенью, нарисованной
+  // прямо на ней. Так видно не только что взято, но и сколько ещё
+  // будет, — а это и есть вопрос, с которым в приёмы заходят
   const list = el("skills-list");
   list.textContent = "";
-  state.known.forEach((trick) => list.appendChild(skillCard(trick)));
+  (state.tiers || []).forEach((step) => {
+    list.appendChild(step.known ? skillCard(step.known) : lockedSkill(step));
+  });
 
   // Развилка — отдельной плашкой под списком: её нельзя не заметить
   const old = box.querySelector(".fork");
   if (old) old.remove();
   if (state.choice) box.appendChild(forkCard(state.choice));
 
+  // Про ближайшую ступень словами больше не пишем: её номер нарисован
+  // на самой заглушке, и подпись повторяла картинку
   const note = el("skills-note");
-  note.textContent = state.choice
+  note.textContent = state.choice || state.next_tier
     ? ""
-    : state.next_tier
-      ? "Следующий приём — на " + state.next_tier + " уровне."
-      : // Ступени кончились, а приёмы нет: дальше их берут в школе
-        // боевых искусств — за дела в бою и по наименьшей цене
-        "Все приёмы своих ступеней взяты. Новый берут в школе боевых " +
-        "искусств — за дела в бою.";
+    : // Ступени кончились, а приёмы нет: дальше их берут в школе
+      // боевых искусств — за дела в бою и по наименьшей цене
+      "Все приёмы своих ступеней взяты. Новый берут в школе боевых " +
+      "искусств — за дела в бою.";
 }
 
 /** Приём в ряду: картинка и название под ней.
@@ -1303,7 +1309,9 @@ function renderSkills(card) {
 function skillCard(trick) {
   const box = document.createElement("button");
   box.type = "button";
-  box.className = "skill";
+  // Выученный приём горит, как выбранная кнопка раздела: один язык
+  // «это у тебя есть» на весь апп
+  box.className = "skill on";
   box.addEventListener("click", () => skillSheet(trick));
 
   const pic = document.createElement("div");
@@ -1314,6 +1322,37 @@ function skillCard(trick) {
   const title = document.createElement("div");
   title.className = "skill-title";
   title.textContent = trick.title;
+  box.appendChild(title);
+  return box;
+}
+
+/** Пустая ступень: заглушка со ступенью, нарисованной на картинке.
+ *
+ * Кнопка, а не просто картинка, и кнопка выключенная: это ровно то,
+ * чем ступень и является — вариант, который пока не выбрать. Нажимать
+ * её незачем, и нажатие ничего бы не открыло: приёма за ней ещё нет,
+ * его только предстоит выбрать на развилке.
+ *
+ * Номер ступени нарисован на самой картинке, поэтому словами он
+ * повторяется только для диктора — ему картинка не говорит ничего.
+ */
+function lockedSkill(step) {
+  const box = document.createElement("button");
+  box.type = "button";
+  box.className = "skill off";
+  box.disabled = true;
+  box.setAttribute(
+    "aria-label", "Приём " + step.tier + " ступени — ещё не выучен"
+  );
+
+  const pic = document.createElement("div");
+  pic.className = "skill-pic";
+  pic.appendChild(slotPicture(step, String(step.tier)));
+  box.appendChild(pic);
+
+  const title = document.createElement("div");
+  title.className = "skill-title";
+  title.textContent = "не выучен";
   box.appendChild(title);
   return box;
 }
