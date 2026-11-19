@@ -16,7 +16,7 @@ from bot.abilities_service import AbilityError, ensure_starter
 from bot.daily_service import DailyError, check_in, claim, ladder_view
 from bot.abilities_service import learn as learn_ability
 from bot.database import Database
-from bot.game.art import LOADING, combat_base
+from bot.game.art import LOADING, REDESIGN, combat_base
 from bot.battle_service import BattleError
 from bot.duel_service import DuelError
 from bot.raid_service import RaidError
@@ -281,6 +281,10 @@ LOADING_SLOT = "{{loading}}"
 # и прописывать бакет в вёрстке нельзя: все адреса картинок живут в
 # `bot.game.art`
 COMBAT_SLOT = "{{combat}}"
+# И адрес папки редизайна: от него страница считает подложку
+# справочной и медали призёров. Та же причина, что у сцены, — бакет в
+# вёрстке не пишется
+REDESIGN_SLOT = "{{ui}}"
 
 # Типизированные ключи приложения — так рекомендует aiohttp
 BOT_KEY: web.AppKey = web.AppKey("bot")
@@ -381,6 +385,7 @@ def stamped_page(stamp: str, page: str = "card.html") -> str:
     for name in PAGES[page]:
         html = html.replace(f"static/{name}", f"static/{name}?v={stamp}")
     html = html.replace(LOADING_SLOT, LOADING)
+    html = html.replace(REDESIGN_SLOT, REDESIGN)
     return html.replace(COMBAT_SLOT, combat_base())
 
 

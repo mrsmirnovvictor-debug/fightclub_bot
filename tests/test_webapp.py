@@ -356,6 +356,24 @@ async def test_the_loading_picture_reaches_the_page_by_its_real_address(client):
     assert LOADING_SLOT not in body
 
 
+async def test_the_club_pictures_reach_the_page_by_their_real_address(client):
+    """Адрес папки редизайна подставляет сервер — и следа от него не остаётся.
+
+    Проверка на вид лишняя, но без неё переименованное место в вёрстке
+    никто не заметит: подложка и медали нарисованы с запасным
+    вариантом, и страница без них выглядит рабочей — над меню просто
+    пусто, а в строках обычные номера. Красивый и молчаливый отказ,
+    ровно тот, который доезжает до игрока.
+    """
+    from bot.game.art import REDESIGN
+    from bot.webapp.server import REDESIGN_SLOT
+
+    body = await (await client.get("/")).text()
+
+    assert f'data-ui="{REDESIGN}"' in body
+    assert REDESIGN_SLOT not in body
+
+
 def test_the_version_changes_with_the_files(tmp_path, monkeypatch):
     """Метка считается по содержимому: правка стиля обязана её сдвинуть.
 

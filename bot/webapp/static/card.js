@@ -2312,16 +2312,25 @@ const TAB_ICONS = {
 };
 
 // Нарисованное убранство справочной: широкая подложка над меню и три
-// медали призёров. Лежит там же, где иконки панели, — в статике
-// приложения, и грузится по тем же правилам: картинка появляется
-// только после успешной загрузки, а до неё и вместо неё страница
-// работает сама по себе. У подложки «вместо неё» — пусто, у медалей —
-// обычный номер места
+// медали призёров. Лежат в бакете, как и вся остальная графика игры;
+// адрес папки приходит в разметке — бакет в коде страницы не пишется,
+// все адреса картинок живут в `bot.game.art`.
+//
+// Грузятся они по тому же правилу, что и значки панели: картинка
+// появляется только после успешной загрузки, а до неё и вместо неё
+// страница работает сама по себе. У подложки «вместо неё» — пусто, у
+// медалей — обычный номер места. Бакет не отвечает — справочная
+// открывается и читается, просто без убранства
+function clubArt(name) {
+  const base = document.body.dataset.ui || "";
+  return base ? base + "/" + name : "";
+}
+
 const CLUB_ART = {
-  top: "static/club/club_header.webp",
-  1: "static/club/rank_1.webp",
-  2: "static/club/rank_2.webp",
-  3: "static/club/rank_3.webp",
+  top: "club_header.webp",
+  1: "rank_1.webp",
+  2: "rank_2.webp",
+  3: "rank_3.webp",
 };
 
 // Приехала ли подложка. Пока нет — её фигуру не показываем вовсе:
@@ -2330,13 +2339,16 @@ let clubTopReady = false;
 
 function dressClub() {
   const pic = el("club-top-pic");
-  if (!pic) return;
+  // Папки картинок нет — грузить нечего: на стенде сцены и в старой
+  // странице из кеша `data-ui` пустой, и пустой `src` увёл бы браузер
+  // запрашивать саму страницу вместо картинки
+  if (!pic || !document.body.dataset.ui) return;
   pic.addEventListener("load", () => {
     clubTopReady = true;
     // Справочную могли открыть раньше, чем картинка доехала
     paintClubTop();
   });
-  pic.src = CLUB_ART.top;
+  pic.src = clubArt(CLUB_ART.top);
 }
 
 /** Показать подложку там, где ей место: в справочной и только с картинкой. */
@@ -6554,7 +6566,7 @@ function renderLadderPrizes(prizes) {
  * чем кажется.
  */
 function dressRank(place, number) {
-  if (!place || !CLUB_ART[number]) return;
+  if (!place || !CLUB_ART[number] || !document.body.dataset.ui) return;
   const pic = new Image();
   pic.addEventListener("load", () => {
     pic.className = "rank-pic";
@@ -6563,7 +6575,7 @@ function dressRank(place, number) {
     place.classList.add("has-rank");
     place.appendChild(pic);
   });
-  pic.src = CLUB_ART[number];
+  pic.src = clubArt(CLUB_ART[number]);
 }
 
 /** Строка рейтинга недели: всё то же плюс бои за неделю и награда. */

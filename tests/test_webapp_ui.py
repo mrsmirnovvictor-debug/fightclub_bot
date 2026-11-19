@@ -20312,6 +20312,14 @@ async def test_the_top_three_wear_their_medals(server):
         # и второй раз диктору его читать незачем
         assert await pics.first.get_attribute("alt") == ""
 
+        # И берутся они из бакета, а не из статики приложения: адрес
+        # приходит в разметке, и подменённый пиксель в тестах скрыл бы
+        # подмену самого адреса
+        from bot.game.art import REDESIGN
+
+        where = await pics.first.get_attribute("src")
+        assert where == REDESIGN + "/rank_1.webp", where
+
         sizes = []
         for number in range(3):
             box = await pics.nth(number).bounding_box()
@@ -20355,7 +20363,7 @@ async def test_a_rating_without_medals_still_counts_from_one(server):
     """
     async with async_playwright() as pw:
         browser, page = await open_desk_at(
-            pw, server, 375, images=True, broken="**/static/club/rank_*.webp",
+            pw, server, 375, images=True, broken="**/ui/redesign/*/rank_*.webp",
             ladder=ladder_state(*FOUR_RANKS), club=a_rating(),
         )
         await page.wait_for_selector(".ladder-row")
@@ -20422,7 +20430,7 @@ async def test_a_desk_without_its_backdrop_opens_all_the_same(server):
     async with async_playwright() as pw:
         browser, page = await open_desk_at(
             pw, server, 375, images=True,
-            broken="**/static/club/club_header.webp",
+            broken="**/ui/redesign/*/club_header.webp",
             ladder=ladder_state(*FOUR_RANKS), club=a_rating(),
         )
         assert await page.locator("#club-top").is_hidden(), "пустая рамка над меню"
