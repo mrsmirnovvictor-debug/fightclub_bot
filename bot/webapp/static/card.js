@@ -149,7 +149,7 @@ window.addEventListener("unhandledrejection", (event) => {
 const numberFormat = new Intl.NumberFormat("ru-RU");
 const num = (value) => numberFormat.format(value);
 
-function share(combat, name, label, text) {
+function share(combat, name, label, text, hero) {
   // Строка процента: если потолок срезал лишнее, так и говорим. Иначе
   // «+100% уворота с вещей» и «60%» в строке выглядят как ошибка счёта.
   const cap = (combat.caps || {})[name];
@@ -158,7 +158,10 @@ function share(combat, name, label, text) {
   const value = text || combat[name] + "%";
   // Срезанный потолком процент красим золотом, а не подписываем: подпись
   // ломала строку, а объяснение всё равно живёт в подсказке
-  const line = row(label, value, limited && cap.capped ? "capped" : "");
+  const mark = limited && cap.capped ? "capped" : "";
+  // `hero` — строка стоит в коробке раздела бойца, а не в общем списке
+  // `.rows`: там своя ширина и своё начертание цифр
+  const line = hero ? heroLine(label, value, mark) : row(label, value, mark);
   if (cap) {
     const sum = label + ": своё " + cap.own + "% + вещи " + cap.gear + "%";
     line.title = !limited
@@ -314,6 +317,33 @@ function row(label, value, extraClass) {
   }
   li.append(left, right);
   return li;
+}
+
+/** Строка показателя в коробке раздела: подпись слева, число справа.
+ *
+ * Не `row()`: у того подпись и значение живут в списке `.rows`, общем
+ * на весь апп, и ширина у него своя. Здесь строка стоит в столбце
+ * коробки, подпись жмётся многоточием, а число остаётся целым — оно и
+ * есть то, ради чего строку читают.
+ */
+function heroLine(label, value, extraClass) {
+  const box = document.createElement("div");
+  box.className = "hero-line";
+
+  const name = document.createElement("span");
+  name.className = "hero-line-name";
+  name.textContent = label;
+
+  const said = document.createElement("span");
+  said.className = "hero-line-value" + (extraClass ? " " + extraClass : "");
+  if (value instanceof Node) {
+    said.appendChild(value);
+  } else {
+    said.textContent = value;
+  }
+
+  box.append(name, said);
+  return box;
 }
 
 function statValue(stat) {
@@ -1574,7 +1604,7 @@ function statStep(stat) {
   row.className = "up-row";
 
   const label = document.createElement("span");
-  label.className = "label";
+  label.className = "up-name";
   label.textContent = stat.emoji + " " + stat.title;
 
   const value = document.createElement("span");
@@ -1591,7 +1621,7 @@ function statStep(stat) {
   minus.addEventListener("click", () => {
     draft[stat.code] = Math.max(0, (draft[stat.code] || 0) - 1);
     if (!draft[stat.code]) delete draft[stat.code];
-    paintUpgrade();
+    paintUpgradeSheet();
   });
 
   const plus = document.createElement("button");
@@ -1603,57 +1633,86 @@ function statStep(stat) {
     if (draftLeft() <= 0) return;
     draft[stat.code] = (draft[stat.code] || 0) + 1;
     haptic((feedback) => feedback.selectionChanged());
-    paintUpgrade();
+    paintUpgradeSheet();
   });
 
   row.append(label, minus, value, plus);
   return row;
 }
 
+/** Зелёная кнопка под характеристиками — всё, что от раздачи очков
+ * остаётся на экране.
+ *
+ * Прежде список с «−» и «+» стоял прямо в карточке и занимал её
+ * ровно в те дни, когда очки есть, то есть в самые частые. Теперь он
+ * во всплывашке, а на экране — кнопка, и только когда раздавать
+ * действительно есть что.
+ */
 function paintUpgrade() {
-  const box = el("upgrade");
-  box.textContent = "";
-  box.classList.toggle("hidden", freePoints <= 0);
+  const btn = el("hero-up");
+  if (!btn) return;
+  btn.classList.toggle("hidden", freePoints <= 0);
   if (freePoints <= 0) {
     draft = {};
     return;
   }
+  btn.textContent = "Улучшения (" + freePoints + ")";
+}
 
-  const head = document.createElement("div");
-  head.className = "up-head";
-  head.textContent =
+/** Всплывашка раздачи: строка на характеристику, «−», «+» и итог.
+ *
+ * Окно посередине экрана, как у вещи: раздача короткая, и поднимать
+ * ради неё лист снизу незачем.
+ */
+function openUpgrade() {
+  if (freePoints <= 0) return;
+  openSheet("Распределить очки", "", true);
+  paintUpgradeSheet();
+}
+
+function paintUpgradeSheet() {
+  const box = el("sheet-list");
+  if (!box) return;
+  box.textContent = "";
+
+  const free = document.createElement("p");
+  free.className = "up-free";
+  free.textContent =
     "✨ Свободных очков: " + draftLeft() + " из " + freePoints;
-  box.appendChild(head);
+  box.appendChild(free);
 
-  const rows = document.createElement("ul");
-  rows.className = "rows";
+  const rows = document.createElement("div");
   cardStats.forEach((stat) => rows.appendChild(statStep(stat)));
   box.appendChild(rows);
 
   const buttons = document.createElement("div");
-  buttons.className = "thing-buttons";
-  buttons.appendChild(
-    button("Сохранить", {
-      disabled: draftTotal() <= 0,
-      onClick: applyUpgrade,
-    })
-  );
-  if (draftTotal() > 0) {
-    buttons.appendChild(
-      button("Сбросить", {
-        secondary: true,
-        onClick: () => {
-          draft = {};
-          paintUpgrade();
-        },
-      })
-    );
-  }
+  buttons.className = "up-buttons";
+
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "save";
+  save.textContent = "Сохранить";
+  save.disabled = draftTotal() <= 0;
+  save.addEventListener("click", applyUpgrade);
+  buttons.appendChild(save);
+
+  // «Сбросить» стоит всегда, а не появляется с первым выбором: кнопка,
+  // выскакивающая под пальцем, уводит нажатие на соседнюю
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "reset";
+  reset.textContent = "Сбросить";
+  reset.disabled = draftTotal() <= 0;
+  reset.addEventListener("click", () => {
+    draft = {};
+    paintUpgradeSheet();
+  });
+  buttons.appendChild(reset);
   box.appendChild(buttons);
 
-  const note = document.createElement("div");
+  const note = document.createElement("p");
   note.className = "up-note";
-  note.textContent = "После сохранения поменять выбор будет уже нельзя";
+  note.textContent = "После сохранения поменять выбор будет уже нельзя.";
   box.appendChild(note);
 }
 
@@ -1675,6 +1734,7 @@ async function applyUpgrade() {
   try {
     const data = await post("api/upgrade", draft);
     draft = {};
+    closeSheet();
     render(data.card, true);
     haptic((feedback) => feedback.notificationOccurred("success"));
     popup(
@@ -6539,6 +6599,12 @@ function sayLadderOops(said) {
 }
 
 function renderLadder(data) {
+  // Своё место в рейтинге недели знает и строка рейтинга в карточке:
+  // спрашивать его вторым запросом, когда ответ уже в руках, незачем
+  if (data && data.mine) {
+    weekPlace = data.mine.place || 0;
+    paintRating();
+  }
   ladderData = data;
   el("ladder-oops").classList.add("hidden");
   el("ladder-prizes").classList.remove("hidden");
@@ -6632,6 +6698,148 @@ function dressRank(place, number) {
     place.appendChild(pic);
   });
   pic.src = clubArt(CLUB_ART[number]);
+}
+
+/** Коробки раздела бойца: атака, защита, модификаторы, бои и рождение.
+ *
+ * Всё это прежде лежало одним списком в сорок строк, и найти нужное
+ * число в нём можно было только сверху вниз. Коробка отвечает на один
+ * вопрос: чем я бью, чем закрываюсь, что у меня по бою, сколько я
+ * выиграл.
+ */
+function renderHeroSheet(card) {
+  const c = card.combat;
+
+  // ---------- бои ----------
+  const record = el("record");
+  record.textContent = "";
+  record.appendChild(heroLine("Победы", num(card.record.wins), "win"));
+  record.appendChild(
+    heroLine("Поражения", num(card.record.losses), "loss-count")
+  );
+  record.appendChild(heroLine("Ничьи", num(card.record.draws), "draw"));
+  record.appendChild(heroLine("Рейды", raidScore(card.record), "raid"));
+
+  // ---------- атака ----------
+  // В строке урона — только своё: то, что боец выбивает руками. Оружие
+  // стоит отдельными строками, по строке на руку, и там уже реальный
+  // урон — тот, что долетит до соперника в руках этого класса.
+  const attack = el("hero-attack");
+  attack.textContent = "";
+  attack.appendChild(heroLine("Урон", c.damage_min + "–" + c.damage_max));
+  if (!c.weapon_damage.length) {
+    // Безоружному так и пишем. Пустая строка на этом месте читалась бы
+    // как «ещё не посчитали», а не как «оружия нет»
+    attack.appendChild(heroLine("Оружие", "нет", "none"));
+  } else {
+    c.weapon_damage.forEach((weapon, number) => {
+      attack.appendChild(
+        heroLine(
+          number ? "Оружие " + (number + 1) : "Оружие",
+          weapon.min + "–" + weapon.max
+        )
+      );
+    });
+  }
+
+  // ---------- защита ----------
+  // Все пять зон и всегда: ноль в пустой зоне — это ответ на вопрос
+  // «чем я закрыт», а пропущенная строка ответа не даёт
+  const guard = el("hero-guard");
+  guard.textContent = "";
+  card.armor.forEach((zone) => {
+    guard.appendChild(
+      zone.max > 0
+        ? heroLine(zone.title, zone.min + "–" + zone.max)
+        : heroLine(zone.title, "0", "zero")
+    );
+  });
+
+  // ---------- модификаторы ----------
+  const left = el("hero-mods-left");
+  left.textContent = "";
+  left.appendChild(
+    share(c, "crit_chance", "Крит", c.crit_chance + "% ×" + c.crit_power, true)
+  );
+  left.appendChild(share(c, "anticrit", "Антикрит", null, true));
+  left.appendChild(share(c, "dodge_chance", "Уворот", null, true));
+  left.appendChild(share(c, "accuracy", "Точность", null, true));
+
+  const right = el("hero-mods-right");
+  right.textContent = "";
+  right.appendChild(share(c, "counter_chance", "Контрудар", null, true));
+  // Насколько крепко держится блок, когда в него упирается крит: то,
+  // что не удержалось, проходит половиной максимального урона
+  right.appendChild(share(c, "block_hold", "Держит блок", null, true));
+  right.appendChild(heroLine("Сопротивление", c.resist + "%"));
+  right.appendChild(heroLine("Пробитие", c.penetration + "%"));
+
+  // ---------- рейтинг и рождение ----------
+  paintRating(card);
+
+  const born = el("hero-born");
+  born.textContent = "";
+  born.append("Место рождения — ");
+  const where = document.createElement("b");
+  where.textContent = card.birthplace;
+  const when = document.createElement("span");
+  when.textContent = card.birthday;
+  born.append(where, when);
+}
+
+/** Строка рейтинга: число и место в недельном рейтинге рядом с ним.
+ *
+ * Карточку рисуют после каждого действия, а место живёт в рейтинге
+ * недели и приходит отдельным запросом. Поэтому карточку и место
+ * храним врозь: пришла новая карточка — число обновилось, место
+ * осталось тем же, каким его в последний раз видели.
+ */
+let heroCard = null;
+let weekPlace = null;
+
+function paintRating(card) {
+  if (card) {
+    heroCard = card;
+    // Место приезжает только с самой карточкой, а не с ответом на
+    // действие: пришло — запоминаем, не пришло — оставляем то, что
+    // знали. Иначе место мигало бы на каждой покупке
+    if (typeof card.record.week_place === "number") {
+      weekPlace = card.record.week_place;
+    }
+  }
+  if (!heroCard) return;
+  const box = el("hero-rating-side");
+  if (!box) return;
+  box.textContent = "";
+
+  const elo = document.createElement("span");
+  elo.className = "hero-elo";
+  elo.textContent = num(heroCard.record.rating);
+  box.appendChild(elo);
+
+  const place = weekPlace || 0;
+  if (!place) {
+    el("hero-rating").classList.remove("prize");
+    return;
+  }
+  // Призовое место — медалью, та же, что в рейтинге недели. Не
+  // приехала — остаётся подпись с номером: место сказано в любом
+  // случае, картинка только добавляет к нему вес
+  const said = document.createElement("span");
+  said.className = "hero-place";
+  said.textContent = place + " место";
+  box.appendChild(said);
+
+  const prize = place >= 1 && place <= 3;
+  el("hero-rating").classList.toggle("prize", prize);
+  if (!prize) return;
+  const pic = new Image();
+  pic.addEventListener("load", () => {
+    pic.className = "hero-medal";
+    pic.alt = "";
+    box.replaceChild(pic, said);
+  });
+  pic.src = clubArt(CLUB_ART[place]);
 }
 
 /** Строка рейтинга недели: всё то же плюс бои за неделю и награда. */
@@ -7819,7 +8027,7 @@ function render(card, keepTab) {
   const stats = el("stats");
   stats.textContent = "";
   card.stats.forEach((stat) => {
-    stats.appendChild(row(stat.title, statValue(stat)));
+    stats.appendChild(heroLine(stat.title, statValue(stat)));
   });
 
   // Раздача очков — только на своей карточке: чужие характеристики не наши
@@ -7834,46 +8042,7 @@ function render(card, keepTab) {
   progress.appendChild(experienceBar(card));
   progress.classList.toggle("hidden", !card.progress);
 
-  const combat = el("combat");
-  combat.textContent = "";
-  const c = card.combat;
-  // В строке урона — только своё: то, что боец выбивает руками. Оружие
-  // стоит отдельными строками, по строке на руку, и там уже реальный
-  // урон — тот, что долетит до соперника в руках этого класса.
-  combat.appendChild(row("👊 Урон", c.damage_min + "–" + c.damage_max));
-  c.weapon_damage.forEach((w) => {
-    combat.appendChild(
-      row(w.title || "Оружие", (w.icon || "") + w.min + "–" + w.max, "weapon")
-    );
-  });
-  combat.appendChild(
-    share(c, "crit_chance", "🩸 Крит", c.crit_chance + "% ×" + c.crit_power)
-  );
-  combat.appendChild(share(c, "anticrit", "🚫 Антикрит"));
-  combat.appendChild(share(c, "dodge_chance", "🌀 Уворот"));
-  combat.appendChild(share(c, "accuracy", "🎯 Точность"));
-  combat.appendChild(share(c, "counter_chance", "🔄 Контрудар"));
-  // Насколько крепко держится блок, когда в него упирается крит: то, что
-  // не удержалось, проходит половиной максимального урона
-  combat.appendChild(share(c, "block_hold", "🛡🩸 Держит блок"));
-  combat.appendChild(row("🪨 Сопротивление", c.resist + "%"));
-  combat.appendChild(row("🛡💥 Пробивание", c.penetration + "%"));
-  // Броня — по строке на зону: в одну строку пять диапазонов не читаются
-  card.armor
-    .filter((zone) => zone.max > 0)
-    .forEach((zone) => {
-      combat.appendChild(row(zone.title, zone.min + "–" + zone.max));
-    });
-
-  const record = el("record");
-  record.textContent = "";
-  record.appendChild(row("Побед", num(card.record.wins)));
-  record.appendChild(row("Поражений", num(card.record.losses)));
-  record.appendChild(row("Ничьих", num(card.record.draws)));
-  record.appendChild(row("Рейды", raidScore(card.record)));
-  record.appendChild(row("Рейтинг", num(card.record.rating)));
-  record.appendChild(row("Место рождения", card.birthplace));
-  record.appendChild(row("День рождения персонажа", card.birthday));
+  renderHeroSheet(card);
 
   el("foot").textContent =
     card.fclass.emoji + " " + card.fclass.title + " — " + card.fclass.tagline;
@@ -21075,6 +21244,9 @@ el("map-cars").addEventListener("click", () => carsHereSheet());
 el("vote-chip").addEventListener("click", () => openBallot());
 startVoteClock();
 watchInteriors();
+
+// Раздачу очков открывает кнопка под характеристиками
+el("hero-up").addEventListener("click", openUpgrade);
 
 // Нарисованные иконки подменяют эмодзи, если приехали
 dressTabs();

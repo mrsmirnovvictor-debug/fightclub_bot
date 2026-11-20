@@ -85,6 +85,20 @@ async def live_week(db: Database, now: int | None = None) -> list[tuple[int, Sta
     return place_standings(_standings(rows))
 
 
+async def week_place_of(
+    db: Database, user_id: int, now: int | None = None
+) -> int:
+    """Место бойца в идущей неделе. Ноль — порог ещё не пройден.
+
+    Считается по всему рейтингу сразу, другого способа узнать место
+    нет: оно и есть положение среди остальных.
+    """
+    ranked = await live_week(db, now)
+    return next(
+        (place for place, one in ranked if one.user_id == user_id), 0
+    )
+
+
 async def my_week(db: Database, user_id: int, now: int | None = None) -> int:
     """Сколько зачётных боёв у бойца на этой неделе."""
     moment = now_ts() if now is None else now
@@ -232,4 +246,5 @@ __all__ = [
     "pay_week",
     "settle",
     "settle_due",
+    "week_place_of",
 ]

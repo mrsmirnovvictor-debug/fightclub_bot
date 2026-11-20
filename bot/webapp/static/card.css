@@ -21,6 +21,13 @@
      темнее: те же, что в тёмной, на белом не читаются */
   --cyan: #1f6fc4;
   --violet: #6b45c0;
+  /* Цифры показателей — моноширинные, с поджатой разрядкой. Семейство
+     берём из того, что уже стоит в системе: своя гарнитура значила бы
+     ещё один запрос в сеть перед тем, как боец увидит свои цифры, и
+     прыжок вёрстки, когда она доедет. Моноширинные знаки к тому же
+     одинаковой ширины — столбец чисел не пляшет от строки к строке */
+  --digits: ui-monospace, "SF Mono", "SFMono-Regular", "Menlo",
+            "Roboto Mono", "DejaVu Sans Mono", monospace;
   /* Фон рамки бойца. Не из темы: машины сняты в студии на ровном сером,
      и рамка обязана быть того же серого — иначе полоса машины висит
      заплаткой на фоне другого цвета. Цвет снят с самих фотографий, и по
@@ -799,29 +806,72 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 
 /* ---------- раздача свободных очков ---------- */
 
-.upgrade { margin-top: 10px; }
-.upgrade.hidden { display: none; }
-.up-head {
+/* Раздача очков живёт во всплывашке: на экране бойца от неё остаётся
+   зелёная кнопка. Прежде она стояла прямо в карточке списком с
+   кнопками «−» и «+» — и занимала экран ровно в те дни, когда очки
+   есть, то есть в самые частые */
+.up-free {
+  margin: 0 0 10px;
+  font-size: 13px;
   font-weight: 700;
   color: var(--hp-green);
-  margin-bottom: 6px;
 }
 .up-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 0;
+  padding: 5px 0;
 }
-.up-row .label { flex: 1; min-width: 0; }
+.up-row .up-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+}
 .up-value {
-  min-width: 62px;
+  min-width: 58px;
   text-align: right;
+  font-family: var(--digits);
   font-weight: 700;
+  font-size: 13.5px;
+  word-spacing: -0.2em;
 }
 .up-value.added { color: var(--hp-green); }
+.up-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.up-buttons button {
+  flex: 1 1 auto;
+  min-height: 40px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 700;
+  cursor: pointer;
+  background: var(--accent);
+  color: #fff;
+}
+body.dark .up-buttons .save {
+  color: #eaf4ff;
+  border-color: rgba(120, 200, 255, 0.45);
+  background:
+    linear-gradient(180deg, rgba(90, 170, 255, 0.3), rgba(140, 110, 255, 0.22));
+  box-shadow: 0 0 12px rgba(90, 170, 255, 0.22) inset;
+}
+.up-buttons .reset {
+  background: transparent;
+  border-color: var(--slot-line);
+  color: var(--ink);
+}
+.up-buttons button:disabled { opacity: 0.45; cursor: default; }
 .step {
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   flex: none;
   padding: 0;
   border: 1px solid var(--slot-line);
@@ -836,11 +886,13 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .step:disabled { opacity: 0.35; cursor: default; }
 .step:not(:disabled):active { transform: scale(0.92); }
 .up-note {
-  margin-top: 8px;
-  font-size: 12.5px;
-  line-height: 1.35;
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
   color: var(--muted);
 }
+
+body.dark .step { border-color: rgba(150, 200, 255, 0.22); }
 
 /* ---------- вкладки и магазин ---------- */
 
@@ -6636,4 +6688,280 @@ body.dark .tile-raid .tile-value { color: #8fb6ff; }
 
 @media (prefers-reduced-motion: reduce) {
   .fight-back:active { transform: none; }
+}
+
+
+/* ---------- раздел бойца: коробками, а не ведомостью ----------
+
+   Сорок строк подряд читались как ведомость: найти в ней нужное число
+   можно было только сверху вниз. Коробка — это вопрос, с которым в
+   раздел заходят: «сколько у меня рейтинга», «что у меня по бою»,
+   «чем я бью», «чем закрываюсь». */
+
+.hero-sheet { margin-top: 12px; }
+
+.hero-box {
+  padding: 9px 11px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+body.dark .hero-box {
+  border-color: rgba(150, 200, 255, 0.16);
+  background: linear-gradient(180deg,
+    rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015));
+}
+
+/* ---------- рейтинг строкой во всю ширину ---------- */
+
+.hero-rating {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 7px;
+}
+
+/* Золото строки рейтинга — единственное на экране: больше его тут
+   нигде нет, и поэтому оно и значит «призовое место». Не призёру
+   коробка достаётся обычная: золотая рамка вокруг четырнадцатого
+   места обещала бы награду, которой нет */
+body.dark .hero-rating.prize {
+  border-color: rgba(226, 183, 20, 0.35);
+  background: linear-gradient(135deg,
+    rgba(226, 183, 20, 0.12), rgba(255, 255, 255, 0.015) 55%);
+}
+
+.hero-head {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hero-rating-side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.hero-elo {
+  font-family: var(--digits);
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  /* Пробел у моноширинных знаков той же ширины, что и цифра, и разряд
+     в «1 195» разваливал число надвое. Поджимаем — разряд остаётся
+     виден, а число читается числом */
+  word-spacing: -0.3em;
+  color: var(--gold);
+}
+
+/* Непризовое место — обычной подписью: медаль за четырнадцатое место
+   была бы обещанием, которого нет */
+.hero-place {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* Призовое — картинкой. Та же, что в рейтинге недели, и по тому же
+   правилу: не приехала — остаётся подпись с номером места */
+.hero-medal {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  display: block;
+}
+
+/* ---------- коробки парами ---------- */
+
+.hero-duo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 7px;
+  margin-bottom: 7px;
+  align-items: start;
+}
+
+/* Заголовок внутри коробки: холодная подпись и тонкая черта под ней —
+   та же пара цветов, что горит в панели и в разделах */
+.hero-sub {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-bottom: 4px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+body.dark .hero-sub {
+  color: #8fc4ff;
+  border-bottom-color: rgba(120, 200, 255, 0.28);
+}
+
+/* Защита — фиолетовой половиной пары: столбцы различаются не только
+   словом в заголовке */
+body.dark .hero-sub.guard {
+  color: #b79cff;
+  border-bottom-color: rgba(170, 130, 255, 0.28);
+}
+
+/* Строка показателя: подпись слева, число справа */
+.hero-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 1.5px 0;
+  font-size: 12px;
+}
+
+.hero-line-name {
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hero-line-value {
+  font-family: var(--digits);
+  font-weight: 700;
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+  word-spacing: -0.2em;
+  white-space: nowrap;
+}
+
+body.dark .hero-line-value { color: #dff0ff; }
+
+.hero-line-value .bonus { color: var(--muted); font-weight: 400; }
+
+/* Просевшая от травмы характеристика — красная целиком, вместе с
+   прибавкой: «Проворство -5 (-20)» читается как одно число, и красить
+   в нём половину значило бы делать вид, что вторая половина цела */
+.hero-line-value .hurt,
+.hero-line-value.hurt { color: var(--hp-red); font-weight: 700; }
+.hero-line-value .hurt .loss { font-weight: 600; }
+.hero-line-value .hurt .bonus { color: var(--hp-red); opacity: 0.8; }
+
+/* «нет» — не число, и моноширинным его набирать незачем */
+.hero-line-value.none {
+  font-family: inherit;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+body.dark .hero-line-value.win { color: #5ec46a; }
+body.dark .hero-line-value.loss-count { color: #e4594b; }
+body.dark .hero-line-value.draw { color: #c9ced8; }
+body.dark .hero-line-value.raid { color: #8fb6ff; }
+
+/* Пустая зона брони — тем же тоном, что и подпись: ноль не должен
+   спорить за внимание с теми зонами, где броня есть */
+.hero-line-value.zero { color: var(--muted); font-weight: 600; }
+
+/* Процент, упёршийся в потолок клуба. Золотом, а не подписью: подпись
+   ломала строку, а объяснение и так живёт в подсказке */
+.hero-line-value.capped { color: var(--gold); }
+
+/* Кнопка раздачи очков — зелёная, и зелёная она тут одна: этим цветом
+   на экране отмечено только то, что боец ещё может взять */
+.hero-up {
+  width: 100%;
+  margin-top: 8px;
+  min-height: 34px;
+  padding: 7px 8px;
+  border-radius: 9px;
+  border: 1px solid var(--hp-green);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  background: var(--hp-green);
+  color: #fff;
+}
+
+/* На тёмной теме сплошная заливка слишком криклива рядом с дымчатыми
+   коробками: оставляем свечение и прозрачную подложку */
+body.dark .hero-up {
+  color: #9af0a0;
+  background: rgba(76, 191, 82, 0.16);
+  border-color: rgba(76, 191, 82, 0.55);
+  box-shadow: 0 0 12px rgba(76, 191, 82, 0.18) inset;
+}
+
+.hero-up:active { transform: scale(0.98); }
+
+.hero-up:focus-visible {
+  outline: 2px solid rgba(120, 200, 255, 0.9);
+  outline-offset: 2px;
+}
+
+/* ---------- коробка в два столбца ---------- */
+
+.hero-split {
+  display: grid;
+  /* `minmax(0, 1fr)`, а не `1fr`: у `1fr` нижняя граница — ширина
+     содержимого, и «Сопротивление» с числом рядом выталкивали столбец
+     за край коробки. С нулевой границей сжимается подпись, а число
+     остаётся целым — оно и есть то, ради чего строку читают */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 12px;
+}
+
+/* Тонкая черта между столбцами: это два разных списка, а не один в
+   две колонки, и граница между ними нужна */
+.hero-split > div + div {
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+}
+
+body.dark .hero-split > div + div {
+  border-left-color: rgba(150, 200, 255, 0.12);
+}
+
+.hero-fight { margin-bottom: 7px; }
+
+/* ---------- место и день рождения ---------- */
+
+.hero-born {
+  margin: 10px 0 0;
+  text-align: center;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.hero-born b { font-weight: 700; color: var(--ink); }
+
+.hero-born span {
+  display: block;
+  font-family: var(--digits);
+  letter-spacing: 0.02em;
+}
+
+/* На самом узком экране коробкам тесно: ужимаем кегль и отступы, но в
+   столбик не складываем — пары «характеристики и бои», «атака и
+   защита» читаются именно парами */
+@media (max-width: 345px) {
+  .hero-box { padding: 8px 9px; }
+  .hero-duo { gap: 6px; }
+  .hero-line { font-size: 11px; gap: 4px; }
+  .hero-line-value { font-size: 11.5px; }
+  .hero-split { column-gap: 7px; }
+  .hero-split > div + div { padding-left: 7px; }
+  .hero-up { font-size: 11.5px; padding: 7px 4px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-up:active { transform: none; }
 }

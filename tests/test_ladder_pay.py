@@ -14,7 +14,14 @@ from bot.game.classes import Stats
 from bot.game.clock import WEEK_SECONDS, week_key, week_opens
 from bot.game.economy import RATING_START
 from bot.game.ladder import QUALIFY, prize_for
-from bot.ladder_service import live_week, my_week, pay_week, settle, settle_due
+from bot.ladder_service import (
+    live_week,
+    my_week,
+    pay_week,
+    settle,
+    settle_due,
+    week_place_of,
+)
 from bot.models import Player
 from tests.test_ladder import msk
 
@@ -93,6 +100,26 @@ async def test_a_fighter_below_the_threshold_does_not_shift_anybody(db):
 
     places = await live_week(db, MIDWEEK)
     assert [(place, one.user_id) for place, one in places] == [(1, 2), (2, 3)]
+
+
+async def test_a_fighter_knows_his_own_place_without_the_whole_list(db):
+    """Своё место — одним числом: его показывает карточка бойца.
+
+    Непрошедшему порог место не положено, и ноль здесь — не нулевое
+    место, а «в рейтинге тебя ещё нет».
+    """
+    for user_id, rating in ((1, 2500), (2, 1500), (3, 1400)):
+        await db.save_player(make_player(user_id, rating=rating))
+    await many_fights(db, 1, QUALIFY, outcome="draw")
+    await many_fights(db, 2, QUALIFY, outcome="draw")
+    await many_fights(db, 3, QUALIFY - 1, outcome="draw")
+
+    assert await week_place_of(db, 1, MIDWEEK) == 1
+    assert await week_place_of(db, 2, MIDWEEK) == 2
+    # Порог не пройден — места нет
+    assert await week_place_of(db, 3, MIDWEEK) == 0
+    # И тот, кто на этой неделе не дрался вовсе, тоже без места
+    assert await week_place_of(db, 99, MIDWEEK) == 0
 
 
 # ---------- что считается боем: критерий 2 ----------

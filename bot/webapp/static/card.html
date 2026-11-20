@@ -991,13 +991,55 @@
          число документов. -->
     <div class="hero-acts" id="hero-tabs"></div>
 
-    <section class="panel" id="hero-stats">
-      <ul class="rows" id="stats"></ul>
-      <div id="upgrade" class="upgrade hidden"></div>
-      <hr class="rule">
-      <ul class="rows" id="combat"></ul>
-      <hr class="rule">
-      <ul class="rows" id="record"></ul>
+    <!-- Раздел бойца разложен по коробкам, а не одним списком в
+         столбик: сорок строк подряд читались как ведомость, и найти в
+         ней нужное число можно было только сверху вниз. Коробка —
+         это вопрос, с которым сюда заходят: «что у меня по бою»,
+         «сколько я выиграл», «чем я бью», «чем закрываюсь» -->
+    <section id="hero-stats" class="hero-sheet">
+      <!-- Рейтинг строкой во всю ширину: число и место рядом с ним -->
+      <div class="hero-box hero-rating" id="hero-rating">
+        <span class="hero-head">Рейтинг</span>
+        <span class="hero-rating-side" id="hero-rating-side"></span>
+      </div>
+
+      <div class="hero-duo">
+        <div class="hero-box">
+          <div class="hero-sub">Характеристики</div>
+          <div id="stats"></div>
+          <!-- Раздача очков живёт во всплывашке: на экране от неё
+               остаётся кнопка, и только когда раздавать есть что -->
+          <button type="button" class="hero-up hidden" id="hero-up"></button>
+        </div>
+
+        <div class="hero-box">
+          <div class="hero-sub">Бои</div>
+          <div id="record"></div>
+        </div>
+      </div>
+
+      <div class="hero-box hero-fight">
+        <div class="hero-split">
+          <div>
+            <div class="hero-sub">Атака</div>
+            <div id="hero-attack"></div>
+          </div>
+          <div>
+            <div class="hero-sub guard">Защита</div>
+            <div id="hero-guard"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hero-box hero-fight">
+        <div class="hero-sub">Модификаторы</div>
+        <div class="hero-split">
+          <div id="hero-mods-left"></div>
+          <div id="hero-mods-right"></div>
+        </div>
+      </div>
+
+      <p class="hero-born" id="hero-born"></p>
     </section>
 
     <!-- Квесты: список заданий бармена. Он же журнал — боец носит его с

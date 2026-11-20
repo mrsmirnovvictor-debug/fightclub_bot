@@ -227,7 +227,12 @@ from bot.police_service import (
     take_from_thief,
     settle_week as police_settle,
 )
-from bot.ladder_service import live_week, my_week, settle_due
+from bot.ladder_service import (
+    live_week,
+    my_week,
+    settle_due,
+    week_place_of,
+)
 from bot.robbery_service import RobberyError, RobberyService
 from bot.turf_war import TurfWar
 from bot.webapp.driving import build_police, build_school
@@ -542,6 +547,13 @@ async def api_card(request: web.Request) -> web.Response:
             player = await db.get_player(player.user_id) or player
             said = f"{said} {verdict}".strip()
     card = build_card(player, config.bot_token, viewer.user_id)
+    # Место в недельном рейтинге живёт не в карточке, а в рейтинге, и
+    # считается по всей неделе сразу. Кладём его сюда, и только здесь:
+    # эта ручка открывается раз за заход, а карточка приезжает ещё и в
+    # ответ на каждое действие — считать ради одного числа недельный
+    # рейтинг по десятку раз в минуту незачем. Страница место помнит
+    if player.user_id == viewer.user_id:
+        card["record"]["week_place"] = await week_place_of(db, player.user_id)
     if said:
         card["said"] = said
     if visit is not None:

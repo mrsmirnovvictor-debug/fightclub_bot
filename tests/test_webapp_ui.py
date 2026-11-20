@@ -1838,9 +1838,9 @@ async def test_stranger_card_has_no_backpack_and_no_shop(server):
 
         # зато боец и его характеристики на месте
         assert await page.locator("#hero-name").inner_text() == stranger.nickname
-        rows = await page.locator("#stats li").all_inner_texts()
+        rows = await page.locator("#stats .hero-line").all_inner_texts()
         assert any("Сила" in row for row in rows)
-        combat = await page.locator("#combat").inner_text()
+        combat = await page.locator("#hero-stats").inner_text()
         for line in ("Урон", "Крит", "Уворот", "Сопротивление"):
             assert line in combat
         # кошелёк соседа не показываем
@@ -2550,6 +2550,150 @@ async def test_the_bag_counts_the_fights_a_thing_has_left(server):
         await browser.close()
 
 
+async def test_the_character_sheet_stands_in_boxes(server):
+    """Раздел разложен по коробкам, и каждая отвечает на свой вопрос.
+
+    Прежде это был один список в сорок строк: найти в нём нужное число
+    можно было только сверху вниз. Коробка — это вопрос, с которым в
+    раздел заходят: сколько рейтинга, что по бою, чем бью, чем закрыт.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-stats")
+
+        # Заголовки набраны прописными через `text-transform`, и
+        # браузер отдаёт их такими же: сверяем слова, а не регистр
+        heads = await page.locator("#hero-stats .hero-sub").all_inner_texts()
+        assert [one.lower() for one in heads] == [
+            "характеристики", "бои", "атака", "защита", "модификаторы"
+        ], heads
+
+        # Рейтинг стоит строкой во всю ширину, над парой коробок
+        rating = await page.locator("#hero-rating").bounding_box()
+        duo = await page.locator("#hero-stats .hero-duo").bounding_box()
+        assert rating["y"] + rating["height"] <= duo["y"] + 1
+        assert rating["width"] > duo["width"] / 2
+
+        # Место рождения и дата — под всем, одной подписью. Место
+        # берём из карточки: у свежего бойца в модели его ещё нет, а
+        # сервер подставляет город сам
+        born = await page.locator("#hero-born").inner_text()
+        assert "Место рождения" in born
+        assert card["birthplace"] in born
+        assert card["birthday"] in born
+        await browser.close()
+
+
+async def test_the_rating_row_wears_metal_only_for_a_prize_place(server):
+    """Призовое место — золотом и медалью, обычное — просто подписью.
+
+    Золото на этом экране одно, и поэтому оно и значит «призовое».
+    Золотая рамка вокруг четырнадцатого места обещала бы награду,
+    которой нет.
+    """
+    player = make_player()
+
+    async def open_with(pw, place):
+        card = build_card(player, TOKEN, viewer_id=player.user_id)
+        card["record"]["week_place"] = place
+        return await open_page(pw, server, card, build_shop(player), images=True)
+
+    async with async_playwright() as pw:
+        browser, page = await open_with(pw, 1)
+        await page.wait_for_selector("#hero-rating .hero-elo")
+        assert "prize" in (await page.locator("#hero-rating").get_attribute("class"))
+        # Медаль — та же, что в рейтинге недели, и из того же бакета
+        await page.wait_for_selector("#hero-rating .hero-medal")
+        from bot.game.art import REDESIGN
+
+        where = await page.locator("#hero-rating .hero-medal").get_attribute("src")
+        assert where == REDESIGN + "/rank_1.webp", where
+        await browser.close()
+
+        browser, page = await open_with(pw, 14)
+        await page.wait_for_selector("#hero-rating .hero-elo")
+        assert "prize" not in (
+            await page.locator("#hero-rating").get_attribute("class")
+        )
+        assert await page.locator("#hero-rating .hero-medal").count() == 0
+        assert await page.locator(".hero-place").inner_text() == "14 место"
+        await browser.close()
+
+
+async def test_the_rating_row_holds_its_place_through_an_action(server):
+    """Место не мигает от каждой покупки.
+
+    Оно приезжает только с самой карточкой, а в ответ на действие
+    сервер шлёт её же без места: считать недельный рейтинг по десятку
+    раз в минуту ради одного числа незачем. Страница место помнит.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["record"]["week_place"] = 2
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), images=True
+        )
+        await page.wait_for_selector("#hero-rating.prize")
+
+        # Пришла карточка без места — ровно такая, какой её шлёт
+        # любой ответ на действие
+        await page.evaluate(
+            "card => { delete card.record.week_place; render(card, true); }",
+            card,
+        )
+        assert "prize" in (await page.locator("#hero-rating").get_attribute("class"))
+        await browser.close()
+
+
+async def test_a_weaponless_fighter_is_told_so_in_words(server):
+    """Безоружному пишут «нет», а не оставляют пустую строку.
+
+    Пустая строка на месте оружия читается как «ещё не посчитали», а
+    не как «оружия нет».
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["combat"]["weapon_damage"] = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-attack .hero-line")
+
+        # Урон берём из самой карточки, а не вписываем числом: он
+        # считается из характеристик и класса, и подогнанное руками
+        # число разошлось бы с ними на первой же правке баланса
+        hands = card["combat"]
+        rows = await page.locator("#hero-attack .hero-line").all_inner_texts()
+        assert rows == [
+            f"Урон\n{hands['damage_min']}–{hands['damage_max']}",
+            "Оружие\nнет",
+        ], rows
+        await browser.close()
+
+
+async def test_a_second_weapon_gets_its_own_line(server):
+    """Второе оружие — своей строкой, и только когда оно есть."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["combat"]["weapon_damage"] = [
+        {"title": "Нож", "icon": "🗡", "min": 6, "max": 14},
+        {"title": "Кастет", "icon": "👊", "min": 4, "max": 9},
+    ]
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-attack .hero-line")
+
+        names = await page.locator("#hero-attack .hero-line-name").all_inner_texts()
+        assert names == ["Урон", "Оружие", "Оружие 2"], names
+        await browser.close()
+
+
 async def test_the_hero_screen_reads_without_extra_icons(server):
     """Характеристики без значков, броня по строке на зону, шкала опыта."""
     player = make_player()
@@ -2560,7 +2704,7 @@ async def test_the_hero_screen_reads_without_extra_icons(server):
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#hero:not(.hidden)")
 
-        stats = await page.locator("#stats li .label").all_inner_texts()
+        stats = await page.locator("#stats .hero-line-name").all_inner_texts()
         assert stats == ["Сила", "Проворство", "Интуиция", "Выносливость"]
 
         # На месте прежних четырёх строк — шкала: ни «До уровня», ни
@@ -2571,14 +2715,27 @@ async def test_the_hero_screen_reads_without_extra_icons(server):
         assert "До уровня" not in progress
         assert await page.locator("#progress .xp").count() == 1
 
-        combat = await page.locator("#combat li .label").all_inner_texts()
-        assert "🩸 Крит" in combat  # крит помечен каплей крови
-        assert "🛡💥 Пробивание" in combat
-        # броня — по строке на зону, без значков и без общей строки «Броня»
-        head = page.locator("#combat li").filter(has_text="Голова").first
+        # Бой разложен по двум коробкам: чем бью — слева, чем закрыт —
+        # справа, проценты отдельно под ними
+        attack = await page.locator("#hero-attack .hero-line-name").all_inner_texts()
+        assert attack[0] == "Урон"
+        mods = await page.locator(
+            "#hero-mods-left .hero-line-name, #hero-mods-right .hero-line-name"
+        ).all_inner_texts()
+        assert "Крит" in mods and "Пробитие" in mods
+
+        # Броня — по строке на зону, без значков и без общей строки «Броня»
+        zones = await page.locator("#hero-guard .hero-line-name").all_inner_texts()
+        assert zones == ["Голова", "Корпус", "Живот", "Пояс", "Ноги"], zones
+        head = page.locator("#hero-guard .hero-line").filter(has_text="Голова").first
         low, high = CATALOGUE["moto_helmet"].armor_min, CATALOGUE["moto_helmet"].armor_max
         assert await head.inner_text() == f"Голова\n{low}–{high}"
-        assert "🛡 Броня" not in await page.locator("#combat").inner_text()
+        assert "🛡 Броня" not in await page.locator("#hero-stats").inner_text()
+
+        # Незакрытая зона — ноль, а не пропущенная строка: ноль отвечает
+        # на вопрос «чем я закрыт», а пропуск ответа не даёт
+        legs = page.locator("#hero-guard .hero-line").filter(has_text="Ноги").first
+        assert await legs.inner_text() == "Ноги\n0"
         await browser.close()
 
 
@@ -2606,17 +2763,21 @@ async def test_a_percentage_says_when_the_ceiling_cut_it(server):
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-hero").click()
 
-        counter = page.locator("#combat li").filter(has_text="Контрудар").first
+        counter = page.locator(
+            "#hero-mods-right .hero-line"
+        ).filter(has_text="Контрудар").first
         # срезанный процент подписью не помечают — его красят золотом
-        assert await counter.inner_text() == f"🔄 Контрудар\n{ceiling}%"
-        assert await counter.locator(".value.capped").count() == 1
+        assert await counter.inner_text() == f"Контрудар\n{ceiling}%"
+        assert await counter.locator(".hero-line-value.capped").count() == 1
         assert f"но выше {ceiling}% не растёт" in (
             await counter.get_attribute("title")
         )
 
         # а уворот золотом не горит: его потолок выше всего собираемого
-        dodge = page.locator("#combat li").filter(has_text="Уворот").first
-        assert await dodge.locator(".value.capped").count() == 0
+        dodge = page.locator(
+            "#hero-mods-left .hero-line"
+        ).filter(has_text="Уворот").first
+        assert await dodge.locator(".hero-line-value.capped").count() == 0
         assert MAX_DODGE_TOTAL >= 1.0
         assert "потолков сейчас нет" in await dodge.get_attribute("title")
         await browser.close()
@@ -2637,7 +2798,9 @@ async def test_a_percentage_says_when_there_is_no_ceiling(server):
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-hero").click()
 
-        dodge = page.locator("#combat li").filter(has_text="Уворот").first
+        dodge = page.locator(
+            "#hero-mods-left .hero-line"
+        ).filter(has_text="Уворот").first
 
         assert "потолок" not in await dodge.inner_text()
         assert "потолков сейчас нет" in await dodge.get_attribute("title")
@@ -2671,16 +2834,16 @@ async def test_the_card_catches_up_with_a_level_taken_in_a_fight(server):
         await page.wait_for_selector("#hero:not(.hidden)")
 
         level = await page.locator("#hero-level").inner_text()
-        assert await page.locator("#upgrade").is_hidden()
+        assert await page.locator("#hero-up").is_hidden()
 
         # ушли в чат, подрались, вернулись
         served[0] = after
         await open_screen(page, "shop")
         await page.locator("#tab-hero").click()
-        await page.wait_for_selector("#upgrade:not(.hidden)")
+        await page.wait_for_selector("#hero-up:not(.hidden)")
 
         assert await page.locator("#hero-level").inner_text() != level
-        assert "Свободных очков: 3" in await page.locator("#upgrade").inner_text()
+        assert await page.locator("#hero-up").inner_text() == "Улучшения (3)"
         await browser.close()
 
 
@@ -3429,9 +3592,11 @@ async def test_the_bag_explains_what_the_weapon_does_in_your_hands(server):
         assert "👊 Урон: 7–15 (у воина 6–14)" in bag
 
         # а в боевых показателях стоит отдельная строка про оружие
-        hero = await page.locator("#combat").inner_text()
-        # у оружия одна характеристика — реальный урон в этих руках
-        assert "Световой меч🗡6–14" in hero.replace("\n", "")
+        hero = await page.locator("#hero-attack").inner_text()
+        # У оружия одна характеристика — реальный урон в этих руках.
+        # Название вещи ушло из строки: в коробке «Атака» на него нет
+        # ширины, а что надето — видно на кукле выше
+        assert "Оружие6–14" in hero.replace("\n", "")
         assert "7–15" not in hero  # своё число вещи живёт в рюкзаке
         await browser.close()
 
@@ -3458,8 +3623,15 @@ async def test_free_points_are_handed_out_right_on_the_hero_screen(server):
         await page.route("**/api/upgrade", upgrade)
         await page.wait_for_selector("#hero:not(.hidden)")
 
-        box = page.locator("#upgrade")
-        assert await box.is_visible()
+        # На экране от раздачи осталась зелёная кнопка со счётом очков,
+        # сама раздача — во всплывашке
+        opens = page.locator("#hero-up")
+        assert await opens.is_visible()
+        assert await opens.inner_text() == "Улучшения (3)"
+        await opens.click()
+
+        box = page.locator("#sheet-list")
+        await page.wait_for_selector("#sheet:not(.hidden)")
         assert "Свободных очков: 3 из 3" in await box.inner_text()
 
         # пока ничего не разложено, сохранять нечего
@@ -3502,10 +3674,13 @@ async def test_free_points_are_handed_out_right_on_the_hero_screen(server):
         await page.wait_for_timeout(250)
 
         assert sent == [{"strength": 1, "intuition": 1}]
+        # Сохранили — окно закрылось: карточка под ним уже другая
+        assert await page.locator("#sheet").is_hidden()
         await browser.close()
 
 
 async def test_a_fighter_without_points_sees_no_panel(server):
+    """Раздавать нечего — и кнопки нет: она обещала бы несуществующее."""
     player = make_player()
     player.free_points = 0
     card = build_card(player, TOKEN, viewer_id=player.user_id)
@@ -3514,7 +3689,7 @@ async def test_a_fighter_without_points_sees_no_panel(server):
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#hero:not(.hidden)")
 
-        assert await page.locator("#upgrade").is_hidden()
+        assert await page.locator("#hero-up").is_hidden()
         await browser.close()
 
 
@@ -6143,8 +6318,8 @@ async def test_raids_are_counted_apart_from_fights_with_people(server):
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-hero").click()
 
-        rows = page.locator("#record li")
-        assert await rows.filter(has_text="Побед").first.inner_text() == "Побед\n4"
+        rows = page.locator("#record .hero-line")
+        assert await rows.filter(has_text="Победы").first.inner_text() == "Победы\n4"
         assert await rows.filter(has_text="Рейды").first.inner_text() == "Рейды\n4 / 10"
         await browser.close()
 
@@ -6564,14 +6739,14 @@ async def test_a_broken_stat_is_red_and_may_go_below_zero(server):
         browser, page = await open_page(pw, server, hurt_card(player), build_shop(player))
         await page.wait_for_selector("#hero:not(.hidden)")
 
-        row = page.locator("#stats li").filter(has_text="Проворство").first
+        row = page.locator("#stats .hero-line").filter(has_text="Проворство").first
         said = await row.inner_text()
         assert "-5" in said and "(-20)" in said
 
         painted = await row.locator(".hurt").evaluate(
             "node => getComputedStyle(node).color"
         )
-        whole = await page.locator("#stats li").filter(
+        whole = await page.locator("#stats .hero-line").filter(
             has_text="Выносливость"
         ).first.evaluate("node => getComputedStyle(node).color")
         assert painted != whole, "просевшая характеристика не отличается цветом"
