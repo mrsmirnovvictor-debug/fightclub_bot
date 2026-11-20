@@ -10905,10 +10905,12 @@ async def test_the_wallet_bar_stands_over_the_counter_with_both_purses(server):
         await open_screen(page, "shop")
         await page.wait_for_selector(".wallet")
 
-        picks = await page.locator(".wallet-pick-title").all_inner_texts()
-        assert [" ".join(one.split()) for one in picks] == [
-            "💰 Наличные", "💳 Карта"
-        ], picks
+        # Значок стоит слева во всю высоту кнопки, название — справа:
+        # живут они теперь в разных углах
+        picks = await page.locator(".wallet-pick-name").all_inner_texts()
+        assert picks == ["Наличные", "Карта"], picks
+        signs = await page.locator(".wallet .wallet-sign").all_inner_texts()
+        assert signs == ["💰", "💳"], signs
         money = await page.locator(".wallet-pick-money").all_inner_texts()
         assert money == ["1\u00a0200 💰", "3\u00a0000 💰"]
         # Выбранный горит, и на карте написано, сколько она снимает
@@ -19387,6 +19389,54 @@ async def test_a_wallet_without_its_picture_keeps_its_emoji(server):
         assert signs == ["💳", "💰"], signs
         sums = await page.locator("#wallets .wallet-tile-sum span").all_inner_texts()
         assert [one.replace("\u00a0", " ") for one in sums] == ["1 200 💰", "430 💰"]
+        await browser.close()
+
+
+async def test_the_pay_buttons_fit_the_longest_wallet_on_a_narrow_phone(server):
+    """«Карта Premium» со скидкой влезает в кнопку даже на 320.
+
+    Кнопок оплаты две в ряд, места в каждой вчетверо меньше экрана, и
+    скидка прежде лежала в углу поверх названия: «Карта Premium»
+    читалась как «Карта Prem−20%». Теперь она стоит рядом с суммой —
+    она и есть про цену.
+    """
+    moment = now_ts()
+    player = make_player()
+    player.credits = 580
+    player.account_balance = 1_200
+    player.account_number = "VB-1"
+    player.card_at = 1
+    player.premium_until = moment + 86_400  # самая длинная подпись
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), images=True,
+        )
+        await page.set_viewport_size({"width": 320, "height": 780})
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "shop")
+        await page.wait_for_selector(".wallet")
+
+        cut = await page.evaluate(
+            "() => [...document.querySelectorAll("
+            "  '.wallet-pick-name, .wallet-pick-line')]"
+            ".map(o => { const room = document.createRange();"
+            "  room.selectNodeContents(o);"
+            "  return [o.textContent.trim(),"
+            "          room.getBoundingClientRect().width, o.clientWidth]; })"
+        )
+        for said, want, got in cut:
+            assert want <= got + 1, f"«{said}» обрезано: {want} > {got}"
+
+        # Скидка стоит в строке суммы, а не поверх названия
+        off = page.locator(".wallet-pick-off")
+        assert await off.inner_text() == "−20%"
+        line = await page.locator(".wallet-pick-line").nth(1).bounding_box()
+        mark = await off.bounding_box()
+        assert mark["y"] >= line["y"] - 1, (mark, line)
+        name = await page.locator(".wallet-pick-name").nth(1).bounding_box()
+        assert mark["y"] >= name["y"] + name["height"] - 1, "скидка над названием"
         await browser.close()
 
 

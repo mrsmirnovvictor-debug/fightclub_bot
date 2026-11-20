@@ -9721,8 +9721,9 @@ function walletBar(state, reload) {
       + (state.purse === code ? " on" : "")
       + (ready ? "" : " off");
     btn.dataset.purse = code;
-    const title = document.createElement("span");
-    title.className = "wallet-pick-title";
+    // Значок слева во всю высоту кнопки, надписи справа — тем же
+    // складом, что и плашки над рюкзаком: кошелёк выглядит одинаково
+    // и там, где на него смотрят, и там, где им платят
     const sign = document.createElement("span");
     sign.className = "wallet-sign";
     sign.textContent = state.emoji[code] || "";
@@ -9730,20 +9731,33 @@ function walletBar(state, reload) {
       image: (state.images || {})[code],
       emoji: state.emoji[code],
     });
+
+    const side = document.createElement("span");
+    side.className = "wallet-pick-side";
+    const title = document.createElement("span");
+    title.className = "wallet-pick-title";
     const name = document.createElement("span");
     name.className = "wallet-pick-name";
     name.textContent = state.titles[code];
-    title.append(sign, name);
+    title.appendChild(name);
+    // Сумма и скидка — одной строкой: скидка про цену, и стоять ей
+    // рядом с деньгами, а не в углу поверх названия. В углу она
+    // отъедала у «Карты Premium» ровно столько, что название не
+    // помещалось ни на одном телефоне
+    const line = document.createElement("span");
+    line.className = "wallet-pick-line";
     const sum = document.createElement("span");
     sum.className = "wallet-pick-money";
     sum.textContent = num(money) + " 💰";
-    btn.append(title, sum);
+    line.appendChild(sum);
+    side.append(title, line);
+    btn.append(sign, side);
     // Скидка видна на самой кнопке: по ней и понятно, зачем переключать
     if (code === "card" && state.discount) {
       const off = document.createElement("span");
       off.className = "wallet-pick-off";
       off.textContent = "−" + state.discount + "%";
-      btn.appendChild(off);
+      line.appendChild(off);
     }
     if (ready && state.prefers !== code) {
       btn.addEventListener("click", () => choosePurse(code, reload));
