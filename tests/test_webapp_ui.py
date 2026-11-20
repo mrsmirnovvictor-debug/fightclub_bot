@@ -2571,12 +2571,6 @@ async def test_the_character_sheet_stands_in_boxes(server):
             "характеристики", "бои", "атака", "защита", "модификаторы"
         ], heads
 
-        # Рейтинг стоит строкой во всю ширину, над парой коробок
-        rating = await page.locator("#hero-rating").bounding_box()
-        duo = await page.locator("#hero-stats .hero-duo").bounding_box()
-        assert rating["y"] + rating["height"] <= duo["y"] + 1
-        assert rating["width"] > duo["width"] / 2
-
         # Место рождения и дата — под всем, одной подписью. Место
         # берём из карточки: у свежего бойца в модели его ещё нет, а
         # сервер подставляет город сам
@@ -2584,6 +2578,84 @@ async def test_the_character_sheet_stands_in_boxes(server):
         assert "Место рождения" in born
         assert card["birthplace"] in born
         assert card["birthday"] in born
+        await browser.close()
+
+
+async def test_the_rating_stands_under_the_level_and_over_the_moves(server):
+    """Рейтинг — не характеристика, и за кнопку раздела он не убран.
+
+    Место в клубе спрашивают так же часто, как уровень, поэтому строка
+    стоит сразу под уровнем и над приёмами, а не первой коробкой в
+    характеристиках: туда за ним пришлось бы заходить.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    # Приёмы в разметке всегда, но на экране — только когда они есть:
+    # без них блоку под рейтингом неоткуда взяться
+    card["abilities"] = abilities_state(
+        {"code": "strong_hit", "title": "Сильный удар", "icon": "👊",
+         "image": "", "note": "+15 урона.", "tier": 1, "cost": 3},
+        next_tier=3,
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-rating .hero-elo")
+        await page.wait_for_selector("#skills-box:not(.hidden)")
+
+        # Не внутри раздела: иначе он пропадал бы вместе с ним
+        assert await page.locator("#hero-stats #hero-rating").count() == 0
+
+        level = await page.locator("#progress").bounding_box()
+        rating = await page.locator("#hero-rating").bounding_box()
+        moves = await page.locator("#skills-box").bounding_box()
+        assert level["y"] + level["height"] <= rating["y"] + 1
+        assert rating["y"] + rating["height"] <= moves["y"] + 1
+        # Строкой во всю ширину — как и уровень над ней
+        assert abs(rating["width"] - level["width"]) < 2
+
+        # И остаётся на месте, когда раздел переключили на документы
+        await page.get_by_role("button", name="Документы").click()
+        await page.wait_for_selector("#hero-papers")
+        assert await page.locator("#hero-rating").is_visible()
+        await browser.close()
+
+
+@pytest.mark.parametrize("dark", [False, True])
+async def test_the_level_frame_is_the_same_box_as_the_rest(server, dark):
+    """Рамка уровня набрана тем же фоном и рамкой, что коробки раздела.
+
+    Плоская панель рядом с ними выглядела плотнее и читалась как блок
+    из другой вёрстки.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-stats .hero-duo .hero-box")
+        if dark:
+            await page.evaluate("() => document.body.classList.add('dark')")
+
+        async def look(where):
+            return await page.evaluate(
+                """(sel) => {
+                    const css = getComputedStyle(document.querySelector(sel));
+                    return [
+                        css.backgroundColor,
+                        css.backgroundImage,
+                        css.borderTopColor,
+                        css.borderTopWidth,
+                        css.borderTopLeftRadius,
+                    ];
+                }""",
+                where,
+            )
+
+        тема = "тёмная" if dark else "светлая"
+        assert await look("#progress") == await look(
+            "#hero-stats .hero-duo .hero-box"
+        ), тема
         await browser.close()
 
 
@@ -3069,15 +3141,79 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         assert face["x"] + face["width"] <= right["x"] + 0.5
 
         card_text = await page.locator("#sheet-list").inner_text()
+        # Та же раскладка, что на своём экране бойца: коробки, а не
+        # ведомость в сорок строк. Заголовки набраны прописными через
+        # `text-transform`, и браузер отдаёт их такими же
+        heads = await page.locator("#sheet-list .hero-sub").all_inner_texts()
+        assert [one.lower() for one in heads] == [
+            "характеристики", "бои", "атака", "защита", "модификаторы"
+        ], heads
         for line in ("Сила", "Проворство", "Интуиция", "Выносливость"):
             assert line in card_text
-        for line in ("Уровень", "Опыт", "Побед", "Поражений", "Ничьих",
-                     "Рейды", "Рейтинг"):
+        for line in ("Победы", "Поражения", "Ничьи", "Рейды"):
             assert line in card_text
+        # Уровень и опыт — шкалой, рейтинг — строкой во всю ширину
+        assert await page.locator("#sheet-list .xp-panel .xp-level").count() == 1
+        assert await page.locator("#sheet-list .hero-rating .hero-elo").count() == 1
         assert "Клуб на Вязов" in card_text
-        assert "День рождения персонажа" in card_text
+        assert "Место рождения" in card_text
         # чужой кошелёк в карточке не показываем
         assert "Кредиты" not in card_text
+        await browser.close()
+
+
+async def test_the_card_of_a_stranger_is_laid_out_like_your_own(server):
+    """Всплывашка из списка клуба — те же блоки, что на своём экране.
+
+    Чужого бойца смотрят с тем же вопросом, что и своего: кто передо
+    мной, чем он бьёт и чем закрыт. Ведомость в сорок строк, от которой
+    свой экран ушёл, во всплывашке оставалась — и ответ на один вопрос
+    выглядел двумя разными способами.
+    """
+    me = make_player()
+    rival = make_player()
+    rival.user_id = 43
+    rival.nickname = "Марла"
+    rival.level = 7
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+    rival_card = build_card(rival, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(me), club=club_of(me, rival)
+        )
+        await page.route(
+            "**/api/card?user_id=43",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(rival_card),
+            ),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        # Запоминаем, из чего собран свой экран, — с ним и сверяемся
+        mine = await page.evaluate(
+            "() => [...document.querySelectorAll('#hero .hero-sub')]"
+            "        .map((o) => o.textContent)"
+        )
+
+        await page.locator("#tab-club").click()
+        await pick_desk(page, "players")
+        await page.locator(".fighter").nth(1).locator(".fighter-info").click()
+        await page.wait_for_selector(".sheet-doll")
+
+        sheet = page.locator("#sheet-list")
+        assert await sheet.evaluate(
+            "(o) => [...o.querySelectorAll('.hero-sub')].map((one) => one.textContent)"
+        ) == mine
+        # Шкала опыта, строка рейтинга и подпись о рождении — тоже
+        assert await sheet.locator(".xp-panel .xp-level-number").inner_text() == "7"
+        assert await sheet.locator(".hero-rating .hero-elo").count() == 1
+        assert "Место рождения" in await sheet.locator(".hero-born").inner_text()
+
+        # Место в недельном рейтинге знает только своя карточка: чужую
+        # отдают без него, и выдумывать его здесь нечего
+        assert await sheet.locator(".hero-rating .hero-place").count() == 0
         await browser.close()
 
 
@@ -3180,8 +3316,18 @@ async def test_a_fighter_card_shows_health_and_leads_to_the_stats(server):
             "#sheet-list .sheet-place"
         ).inner_text()
 
+        # Кнопка — такая же коробка, как всё над ней: синяя плашка
+        # посреди них читалась как принесённая с другого экрана
+        go = page.get_by_role("button", name="📊 Статистика боёв")
+        assert "hero-box" in (await go.get_attribute("class"))
+        assert await page.locator("#sheet-list .btn").count() == 0
+        # и стоит она во всю ширину коробок, последней строкой
+        wide = await go.bounding_box()
+        boxes = await page.locator("#sheet-list .hero-box.hero-rating").bounding_box()
+        assert abs(wide["width"] - boxes["width"]) < 2
+
         # кнопка уводит в статистику именно этого бойца
-        await page.get_by_role("button", name="📊 Статистика боёв").click()
+        await go.click()
         assert await page.locator("#sheet.hidden").count() == 1
         await page.wait_for_selector("#club-stats:not(.hidden)")
         await browser.close()

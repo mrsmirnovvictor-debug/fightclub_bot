@@ -3688,55 +3688,68 @@ function fighterCard(card) {
     box.appendChild(where);
   }
 
-  const panel = document.createElement("section");
-  panel.className = "panel";
-  panel.appendChild(
-    sheetRows(card.stats.map((stat) => [stat.emoji + " " + stat.title, num(stat.total)]))
-  );
-  panel.appendChild(document.createElement("hr")).className = "rule";
-  panel.appendChild(
-    sheetRows([
-      ["Уровень", num(card.level)],
-      ["Опыт", num(card.progress.total_exp)],
-    ])
-  );
-  panel.appendChild(document.createElement("hr")).className = "rule";
-  panel.appendChild(
-    sheetRows([
-      ["Побед", num(card.record.wins)],
-      ["Поражений", num(card.record.losses)],
-      ["Ничьих", num(card.record.draws)],
-      ["Рейды", raidScore(card.record)],
-      ["Рейтинг", num(card.record.rating)],
-    ])
-  );
-  panel.appendChild(document.createElement("hr")).className = "rule";
-  panel.appendChild(
-    sheetRows([
-      ["Место рождения", card.birthplace],
-      ["День рождения персонажа", card.birthday],
-    ])
-  );
-  box.appendChild(panel);
+  // Дальше — то же, что на своём экране бойца: шкала опыта, рейтинг и
+  // коробки. Чужого бойца смотрят с тем же вопросом, что и своего, —
+  // «кто передо мной и чем он бьёт», — и ответ на него не должен
+  // выглядеть вторым способом. Прежде здесь лежала ведомость в сорок
+  // строк, от которой свой экран как раз и ушёл
+  const sheet = document.createElement("section");
+  sheet.className = "hero-sheet sheet-hero";
+
+  if (card.progress) {
+    const level = document.createElement("section");
+    level.className = "panel xp-panel";
+    level.appendChild(experienceBar(card));
+    sheet.appendChild(level);
+  }
+
+  sheet.appendChild(ratingRow(card.record));
+  sheet.appendChild(heroBoxes(card));
+
+  const born = document.createElement("p");
+  born.className = "hero-born";
+  fillBorn(born, card);
+  sheet.appendChild(born);
 
   // Статистика боёв переехала со строки списка сюда: смотреть её идут,
-  // уже увидев, кто перед тобой
-  const actions = document.createElement("div");
-  actions.className = "thing-buttons sheet-actions";
-  actions.appendChild(
-    button("📊 Статистика боёв", {
-      onClick: () => {
-        closeSheet();
-        // Статистика живёт в справочной, а не в здании клуба: карточку
-        // открывают откуда угодно, в том числе с улицы
-        openClubInfo();
-        pickClubSection("stats");
-        loadHistory(card.is_self ? null : card.user_id);
-      },
+  // уже увидев, кто перед тобой. Кнопка — такая же коробка, как всё
+  // над ней: синяя плашка посреди них читалась как чужая
+  sheet.appendChild(
+    heroGo("📊 Статистика боёв", () => {
+      closeSheet();
+      // Статистика живёт в справочной, а не в здании клуба: карточку
+      // открывают откуда угодно, в том числе с улицы
+      openClubInfo();
+      pickClubSection("stats");
+      loadHistory(card.is_self ? null : card.user_id);
     })
   );
-  box.appendChild(actions);
+
+  box.appendChild(sheet);
   return box;
+}
+
+/** Коробка-кнопка: подпись слева, уголок справа.
+ *
+ * Тот же прямоугольник, что у коробок вокруг, — потому и читается как
+ * продолжение карточки, а не как плашка, принесённая откуда-то ещё.
+ */
+function heroGo(label, onClick) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "hero-box hero-go";
+
+  const name = document.createElement("span");
+  name.className = "hero-head";
+  name.textContent = label;
+
+  const sign = document.createElement("span");
+  sign.className = "hero-go-sign";
+  sign.textContent = "›";
+
+  btn.append(name, sign);
+  btn.addEventListener("click", onClick);
+  return btn;
 }
 
 async function showFighter(fighter) {
@@ -6737,40 +6750,47 @@ function dressRank(place, number) {
   pic.src = clubArt(CLUB_ART[number]);
 }
 
-/** Коробки раздела бойца: атака, защита, модификаторы, бои и рождение.
+/* ---------- начинка коробок ----------
+
+   Коробки стоят в двух местах: на экране бойца они лежат в разметке и
+   зовутся по именам, а во всплывашке из списка клуба их строит код.
+   Начинка у них одна и та же, и живёт она здесь — иначе одно и то же
+   число пришлось бы потом чинить дважды. */
+
+/** Характеристики: четыре строки с прибавками и травмами. */
+function fillStats(box, card) {
+  box.textContent = "";
+  card.stats.forEach((stat) => {
+    box.appendChild(heroLine(stat.title, statValue(stat)));
+  });
+}
+
+/** Бои: победы, поражения, ничьи и рейды. */
+function fillRecord(box, card) {
+  box.textContent = "";
+  box.appendChild(heroLine("Победы", num(card.record.wins), "win"));
+  box.appendChild(heroLine("Поражения", num(card.record.losses), "loss-count"));
+  box.appendChild(heroLine("Ничьи", num(card.record.draws), "draw"));
+  box.appendChild(heroLine("Рейды", raidScore(card.record), "raid"));
+}
+
+/** Атака: свой урон и то, что добавляет оружие.
  *
- * Всё это прежде лежало одним списком в сорок строк, и найти нужное
- * число в нём можно было только сверху вниз. Коробка отвечает на один
- * вопрос: чем я бью, чем закрываюсь, что у меня по бою, сколько я
- * выиграл.
+ * В строке урона — только своё: то, что боец выбивает руками. Оружие
+ * стоит отдельными строками, по строке на руку, и там уже реальный
+ * урон — тот, что долетит до соперника в руках этого класса.
  */
-function renderHeroSheet(card) {
+function fillAttack(box, card) {
   const c = card.combat;
-
-  // ---------- бои ----------
-  const record = el("record");
-  record.textContent = "";
-  record.appendChild(heroLine("Победы", num(card.record.wins), "win"));
-  record.appendChild(
-    heroLine("Поражения", num(card.record.losses), "loss-count")
-  );
-  record.appendChild(heroLine("Ничьи", num(card.record.draws), "draw"));
-  record.appendChild(heroLine("Рейды", raidScore(card.record), "raid"));
-
-  // ---------- атака ----------
-  // В строке урона — только своё: то, что боец выбивает руками. Оружие
-  // стоит отдельными строками, по строке на руку, и там уже реальный
-  // урон — тот, что долетит до соперника в руках этого класса.
-  const attack = el("hero-attack");
-  attack.textContent = "";
-  attack.appendChild(heroLine("Урон", c.damage_min + "–" + c.damage_max));
+  box.textContent = "";
+  box.appendChild(heroLine("Урон", c.damage_min + "–" + c.damage_max));
   if (!c.weapon_damage.length) {
     // Безоружному так и пишем. Пустая строка на этом месте читалась бы
     // как «ещё не посчитали», а не как «оружия нет»
-    attack.appendChild(heroLine("Оружие", "нет", "none"));
+    box.appendChild(heroLine("Оружие", "нет", "none"));
   } else {
     c.weapon_damage.forEach((weapon, number) => {
-      attack.appendChild(
+      box.appendChild(
         heroLine(
           number ? "Оружие " + (number + 1) : "Оружие",
           weapon.min + "–" + weapon.max
@@ -6778,22 +6798,26 @@ function renderHeroSheet(card) {
       );
     });
   }
+}
 
-  // ---------- защита ----------
-  // Все пять зон и всегда: ноль в пустой зоне — это ответ на вопрос
-  // «чем я закрыт», а пропущенная строка ответа не даёт
-  const guard = el("hero-guard");
-  guard.textContent = "";
+/** Защита: все пять зон и всегда.
+ *
+ * Ноль в пустой зоне — это ответ на вопрос «чем я закрыт», а
+ * пропущенная строка ответа не даёт.
+ */
+function fillGuard(box, card) {
+  box.textContent = "";
   card.armor.forEach((zone) => {
-    guard.appendChild(
+    box.appendChild(
       zone.max > 0
         ? heroLine(zone.title, zone.min + "–" + zone.max)
         : heroLine(zone.title, "0", "zero")
     );
   });
+}
 
-  // ---------- модификаторы ----------
-  const left = el("hero-mods-left");
+/** Модификаторы: два столбца процентов. */
+function fillMods(left, right, c) {
   left.textContent = "";
   left.appendChild(
     share(c, "crit_chance", "Крит", c.crit_chance + "% ×" + c.crit_power, true)
@@ -6802,7 +6826,6 @@ function renderHeroSheet(card) {
   left.appendChild(share(c, "dodge_chance", "Уворот", null, true));
   left.appendChild(share(c, "accuracy", "Точность", null, true));
 
-  const right = el("hero-mods-right");
   right.textContent = "";
   right.appendChild(share(c, "counter_chance", "Контрудар", null, true));
   // Насколько крепко держится блок, когда в него упирается крит: то,
@@ -6810,18 +6833,136 @@ function renderHeroSheet(card) {
   right.appendChild(share(c, "block_hold", "Держит блок", null, true));
   right.appendChild(heroLine("Сопротивление", c.resist + "%"));
   right.appendChild(heroLine("Пробитие", c.penetration + "%"));
+}
 
-  // ---------- рейтинг и рождение ----------
-  paintRating(card);
-
-  const born = el("hero-born");
-  born.textContent = "";
-  born.append("Место рождения — ");
+/** Место и день рождения — одной подписью под всем. */
+function fillBorn(line, card) {
+  line.textContent = "";
+  line.append("Место рождения — ");
   const where = document.createElement("b");
   where.textContent = card.birthplace;
   const when = document.createElement("span");
   when.textContent = card.birthday;
-  born.append(where, when);
+  line.append(where, when);
+}
+
+/** Заголовок внутри коробки. */
+function heroSub(title, extraClass) {
+  const head = document.createElement("div");
+  head.className = "hero-sub" + (extraClass ? " " + extraClass : "");
+  head.textContent = title;
+  return head;
+}
+
+/** Коробка с заголовком и начинкой. */
+function heroBox(title, fill, extraClass) {
+  const box = document.createElement("div");
+  box.className = "hero-box" + (extraClass ? " " + extraClass : "");
+  box.appendChild(heroSub(title));
+  const body = document.createElement("div");
+  fill(body);
+  box.appendChild(body);
+  return box;
+}
+
+/** Коробка из двух столбцов с заголовком у каждого. */
+function heroPair(first, second) {
+  const box = document.createElement("div");
+  box.className = "hero-box hero-fight";
+  const split = document.createElement("div");
+  split.className = "hero-split";
+  [first, second].forEach(([title, fill, extraClass]) => {
+    const column = document.createElement("div");
+    column.appendChild(heroSub(title, extraClass));
+    const body = document.createElement("div");
+    fill(body);
+    column.appendChild(body);
+    split.appendChild(column);
+  });
+  box.appendChild(split);
+  return box;
+}
+
+/** Строка рейтинга: число во всю ширину, место рядом с ним.
+ *
+ * Место знает только своя карточка: недельный рейтинг считают один раз
+ * за заход и кладут в неё. У чужого бойца остаётся одно число — и это
+ * честно: место его в клубе отсюда не видно.
+ */
+function ratingRow(record) {
+  const box = document.createElement("div");
+  box.className = "hero-box hero-rating";
+  const head = document.createElement("span");
+  head.className = "hero-head";
+  head.textContent = "Рейтинг";
+  const side = document.createElement("span");
+  side.className = "hero-rating-side";
+  const elo = document.createElement("span");
+  elo.className = "hero-elo";
+  elo.textContent = num(record.rating);
+  side.appendChild(elo);
+  if (record.week_place) {
+    const said = document.createElement("span");
+    said.className = "hero-place";
+    said.textContent = record.week_place + " место";
+    side.appendChild(said);
+  }
+  box.append(head, side);
+  return box;
+}
+
+/** Все коробки бойца разом: характеристики, бои, атака, защита, модификаторы.
+ *
+ * Строит их код, а не разметка, и имён узлам не даёт: одно имя на две
+ * копии одного блока сделало бы вторую невидимой для всего остального.
+ */
+function heroBoxes(card) {
+  const out = document.createDocumentFragment();
+
+  const duo = document.createElement("div");
+  duo.className = "hero-duo";
+  duo.append(
+    heroBox("Характеристики", (body) => fillStats(body, card)),
+    heroBox("Бои", (body) => fillRecord(body, card))
+  );
+  out.appendChild(duo);
+
+  out.appendChild(
+    heroPair(
+      ["Атака", (body) => fillAttack(body, card)],
+      ["Защита", (body) => fillGuard(body, card), "guard"]
+    )
+  );
+
+  const mods = document.createElement("div");
+  mods.className = "hero-box hero-fight";
+  mods.appendChild(heroSub("Модификаторы"));
+  const split = document.createElement("div");
+  split.className = "hero-split";
+  const left = document.createElement("div");
+  const right = document.createElement("div");
+  fillMods(left, right, card.combat);
+  split.append(left, right);
+  mods.appendChild(split);
+  out.appendChild(mods);
+
+  return out;
+}
+
+/** Коробки раздела бойца: атака, защита, модификаторы, бои и рождение.
+ *
+ * Всё это прежде лежало одним списком в сорок строк, и найти нужное
+ * число в нём можно было только сверху вниз. Коробка отвечает на один
+ * вопрос: чем я бью, чем закрываюсь, что у меня по бою, сколько я
+ * выиграл.
+ */
+function renderHeroSheet(card) {
+  fillRecord(el("record"), card);
+  fillAttack(el("hero-attack"), card);
+  fillGuard(el("hero-guard"), card);
+  fillMods(el("hero-mods-left"), el("hero-mods-right"), card.combat);
+  paintRating(card);
+  fillBorn(el("hero-born"), card);
 }
 
 /** Строка рейтинга: число и место в недельном рейтинге рядом с ним.
@@ -8061,11 +8202,7 @@ function render(card, keepTab) {
   marketFollowsBag();
   paintCity(card);
 
-  const stats = el("stats");
-  stats.textContent = "";
-  card.stats.forEach((stat) => {
-    stats.appendChild(heroLine(stat.title, statValue(stat)));
-  });
+  fillStats(el("stats"), card);
 
   // Раздача очков — только на своей карточке: чужие характеристики не наши
   cardStats = card.is_self ? card.stats : [];

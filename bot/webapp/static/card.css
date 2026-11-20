@@ -3818,7 +3818,7 @@ body.dark .bar-tab.active .bar-icon {
 .sheet-hp-note.online { color: var(--hp-green); font-weight: 700; }
 /* Кнопка под карточкой одна, и она про всю карточку целиком —
    поэтому во всю ширину, а не по ширине надписи */
-.sheet-actions { margin-bottom: 4px; }
+
 
 /* ---------- приёмы в бою ---------- */
 
@@ -6113,7 +6113,11 @@ body.dark .wallet-pick { border-color: rgba(150, 200, 255, 0.18); }
    оранжевая дорожка — те же, что в бою */
 .xp-panel {
   padding: 12px 14px;
-  margin-bottom: 14px;
+  margin-bottom: 7px;
+  /* Та же коробка, что в разделе бойца: тот же радиус, та же рамка и
+     тот же фон. Плоская панель рядом с ними выглядела плотнее и
+     читалась как блок из другой вёрстки */
+  border-radius: 12px;
 }
 /* Правая половина по высоте выравнивается с числом уровня: шапка,
    дорожка и числа стоят посередине, а не висят от верхнего края */
@@ -6783,8 +6787,9 @@ body.dark .tile-raid .tile-value { color: #8fb6ff; }
 
    Сорок строк подряд читались как ведомость: найти в ней нужное число
    можно было только сверху вниз. Коробка — это вопрос, с которым в
-   раздел заходят: «сколько у меня рейтинга», «что у меня по бою»,
-   «чем я бью», «чем закрываюсь». */
+   раздел заходят: «что у меня по бою», «сколько я выиграл», «чем я
+   бью», «чем закрываюсь». Рейтинг стоит выше, отдельной строкой: он
+   про место в клубе, а не про то, что боец себе раздаёт. */
 
 .hero-sheet { margin-top: 12px; }
 
@@ -6795,7 +6800,8 @@ body.dark .tile-raid .tile-value { color: #8fb6ff; }
   background: var(--panel);
 }
 
-body.dark .hero-box {
+body.dark .hero-box,
+body.dark .xp-panel {
   border-color: rgba(150, 200, 255, 0.16);
   background: linear-gradient(180deg,
     rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015));
@@ -6808,7 +6814,10 @@ body.dark .hero-box {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 7px;
+  /* Стоит отдельной строкой между уровнем и приёмами, а не первой
+     коробкой в разделе: снизу от него отступ как у блоков карточки,
+     а не как у коробок внутри раздела */
+  margin-bottom: 14px;
 }
 
 /* Золото строки рейтинга — единственное на экране: больше его тут
@@ -6865,6 +6874,50 @@ body.dark .hero-rating.prize {
   height: 32px;
   object-fit: contain;
   display: block;
+}
+
+/* Во всплывашке бойца из списка клуба те же коробки, что на своём
+   экране: вопрос, с которым смотрят на чужого бойца, тот же самый, и
+   ответ не должен выглядеть вторым способом */
+.sheet-hero { margin-bottom: 4px; }
+
+/* ---------- коробка-кнопка ---------- */
+
+/* Синяя плашка посреди коробок читалась как принесённая из другого
+   экрана. Кнопка — такой же прямоугольник, как всё над ней: подпись
+   слева, уголок справа, и только он говорит, что отсюда уходят */
+.hero-go {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  font: inherit;
+  text-align: left;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.hero-go .hero-head { color: var(--ink); }
+body.dark .hero-go .hero-head { color: #dff0ff; }
+
+.hero-go-sign {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent);
+}
+body.dark .hero-go-sign { color: #8fc4ff; }
+
+.hero-go:active { transform: scale(0.99); }
+.hero-go:focus-visible {
+  outline: 2px solid rgba(120, 200, 255, 0.9);
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-go:active { transform: none; }
 }
 
 /* ---------- коробки парами ---------- */
