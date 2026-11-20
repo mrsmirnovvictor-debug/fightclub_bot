@@ -2571,12 +2571,6 @@ async def test_the_character_sheet_stands_in_boxes(server):
             "характеристики", "бои", "атака", "защита", "модификаторы"
         ], heads
 
-        # Рейтинг стоит строкой во всю ширину, над парой коробок
-        rating = await page.locator("#hero-rating").bounding_box()
-        duo = await page.locator("#hero-stats .hero-duo").bounding_box()
-        assert rating["y"] + rating["height"] <= duo["y"] + 1
-        assert rating["width"] > duo["width"] / 2
-
         # Место рождения и дата — под всем, одной подписью. Место
         # берём из карточки: у свежего бойца в модели его ещё нет, а
         # сервер подставляет город сам
@@ -2584,6 +2578,84 @@ async def test_the_character_sheet_stands_in_boxes(server):
         assert "Место рождения" in born
         assert card["birthplace"] in born
         assert card["birthday"] in born
+        await browser.close()
+
+
+async def test_the_rating_stands_under_the_level_and_over_the_moves(server):
+    """Рейтинг — не характеристика, и за кнопку раздела он не убран.
+
+    Место в клубе спрашивают так же часто, как уровень, поэтому строка
+    стоит сразу под уровнем и над приёмами, а не первой коробкой в
+    характеристиках: туда за ним пришлось бы заходить.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    # Приёмы в разметке всегда, но на экране — только когда они есть:
+    # без них блоку под рейтингом неоткуда взяться
+    card["abilities"] = abilities_state(
+        {"code": "strong_hit", "title": "Сильный удар", "icon": "👊",
+         "image": "", "note": "+15 урона.", "tier": 1, "cost": 3},
+        next_tier=3,
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-rating .hero-elo")
+        await page.wait_for_selector("#skills-box:not(.hidden)")
+
+        # Не внутри раздела: иначе он пропадал бы вместе с ним
+        assert await page.locator("#hero-stats #hero-rating").count() == 0
+
+        level = await page.locator("#progress").bounding_box()
+        rating = await page.locator("#hero-rating").bounding_box()
+        moves = await page.locator("#skills-box").bounding_box()
+        assert level["y"] + level["height"] <= rating["y"] + 1
+        assert rating["y"] + rating["height"] <= moves["y"] + 1
+        # Строкой во всю ширину — как и уровень над ней
+        assert abs(rating["width"] - level["width"]) < 2
+
+        # И остаётся на месте, когда раздел переключили на документы
+        await page.get_by_role("button", name="Документы").click()
+        await page.wait_for_selector("#hero-papers")
+        assert await page.locator("#hero-rating").is_visible()
+        await browser.close()
+
+
+@pytest.mark.parametrize("dark", [False, True])
+async def test_the_level_frame_is_the_same_box_as_the_rest(server, dark):
+    """Рамка уровня набрана тем же фоном и рамкой, что коробки раздела.
+
+    Плоская панель рядом с ними выглядела плотнее и читалась как блок
+    из другой вёрстки.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-stats .hero-duo .hero-box")
+        if dark:
+            await page.evaluate("() => document.body.classList.add('dark')")
+
+        async def look(where):
+            return await page.evaluate(
+                """(sel) => {
+                    const css = getComputedStyle(document.querySelector(sel));
+                    return [
+                        css.backgroundColor,
+                        css.backgroundImage,
+                        css.borderTopColor,
+                        css.borderTopWidth,
+                        css.borderTopLeftRadius,
+                    ];
+                }""",
+                where,
+            )
+
+        тема = "тёмная" if dark else "светлая"
+        assert await look("#progress") == await look(
+            "#hero-stats .hero-duo .hero-box"
+        ), тема
         await browser.close()
 
 

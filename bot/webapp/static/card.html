@@ -969,6 +969,16 @@
          ошибка, а не как напоминание -->
     <section class="panel xp-panel" id="progress"></section>
 
+    <!-- Рейтинг строкой во всю ширину: число и место рядом с ним.
+         Стоит сразу под уровнем, а не внутри характеристик: это не
+         показатель бойца, который он себе раздаёт, а его место в
+         клубе, и спрашивают о нём так же часто, как об уровне —
+         за кнопку раздела его прятать незачем -->
+    <div class="hero-box hero-rating" id="hero-rating">
+      <span class="hero-head">Рейтинг</span>
+      <span class="hero-rating-side" id="hero-rating-side"></span>
+    </div>
+
     <!-- Приёмы — про самого бойца, а не про его поклажу, и стоят рядом с
          характеристиками. В инвентаре их видел только хозяин карточки:
          рюкзак чужим не показывают, а приёмы соперника — то, что стоит
@@ -997,12 +1007,6 @@
          это вопрос, с которым сюда заходят: «что у меня по бою»,
          «сколько я выиграл», «чем я бью», «чем закрываюсь» -->
     <section id="hero-stats" class="hero-sheet">
-      <!-- Рейтинг строкой во всю ширину: число и место рядом с ним -->
-      <div class="hero-box hero-rating" id="hero-rating">
-        <span class="hero-head">Рейтинг</span>
-        <span class="hero-rating-side" id="hero-rating-side"></span>
-      </div>
-
       <div class="hero-duo">
         <div class="hero-box">
           <div class="hero-sub">Характеристики</div>
