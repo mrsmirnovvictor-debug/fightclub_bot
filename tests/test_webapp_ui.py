@@ -3141,15 +3141,79 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         assert face["x"] + face["width"] <= right["x"] + 0.5
 
         card_text = await page.locator("#sheet-list").inner_text()
+        # Та же раскладка, что на своём экране бойца: коробки, а не
+        # ведомость в сорок строк. Заголовки набраны прописными через
+        # `text-transform`, и браузер отдаёт их такими же
+        heads = await page.locator("#sheet-list .hero-sub").all_inner_texts()
+        assert [one.lower() for one in heads] == [
+            "характеристики", "бои", "атака", "защита", "модификаторы"
+        ], heads
         for line in ("Сила", "Проворство", "Интуиция", "Выносливость"):
             assert line in card_text
-        for line in ("Уровень", "Опыт", "Побед", "Поражений", "Ничьих",
-                     "Рейды", "Рейтинг"):
+        for line in ("Победы", "Поражения", "Ничьи", "Рейды"):
             assert line in card_text
+        # Уровень и опыт — шкалой, рейтинг — строкой во всю ширину
+        assert await page.locator("#sheet-list .xp-panel .xp-level").count() == 1
+        assert await page.locator("#sheet-list .hero-rating .hero-elo").count() == 1
         assert "Клуб на Вязов" in card_text
-        assert "День рождения персонажа" in card_text
+        assert "Место рождения" in card_text
         # чужой кошелёк в карточке не показываем
         assert "Кредиты" not in card_text
+        await browser.close()
+
+
+async def test_the_card_of_a_stranger_is_laid_out_like_your_own(server):
+    """Всплывашка из списка клуба — те же блоки, что на своём экране.
+
+    Чужого бойца смотрят с тем же вопросом, что и своего: кто передо
+    мной, чем он бьёт и чем закрыт. Ведомость в сорок строк, от которой
+    свой экран ушёл, во всплывашке оставалась — и ответ на один вопрос
+    выглядел двумя разными способами.
+    """
+    me = make_player()
+    rival = make_player()
+    rival.user_id = 43
+    rival.nickname = "Марла"
+    rival.level = 7
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+    rival_card = build_card(rival, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(me), club=club_of(me, rival)
+        )
+        await page.route(
+            "**/api/card?user_id=43",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(rival_card),
+            ),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        # Запоминаем, из чего собран свой экран, — с ним и сверяемся
+        mine = await page.evaluate(
+            "() => [...document.querySelectorAll('#hero .hero-sub')]"
+            "        .map((o) => o.textContent)"
+        )
+
+        await page.locator("#tab-club").click()
+        await pick_desk(page, "players")
+        await page.locator(".fighter").nth(1).locator(".fighter-info").click()
+        await page.wait_for_selector(".sheet-doll")
+
+        sheet = page.locator("#sheet-list")
+        assert await sheet.evaluate(
+            "(o) => [...o.querySelectorAll('.hero-sub')].map((one) => one.textContent)"
+        ) == mine
+        # Шкала опыта, строка рейтинга и подпись о рождении — тоже
+        assert await sheet.locator(".xp-panel .xp-level-number").inner_text() == "7"
+        assert await sheet.locator(".hero-rating .hero-elo").count() == 1
+        assert "Место рождения" in await sheet.locator(".hero-born").inner_text()
+
+        # Место в недельном рейтинге знает только своя карточка: чужую
+        # отдают без него, и выдумывать его здесь нечего
+        assert await sheet.locator(".hero-rating .hero-place").count() == 0
         await browser.close()
 
 
@@ -3252,8 +3316,18 @@ async def test_a_fighter_card_shows_health_and_leads_to_the_stats(server):
             "#sheet-list .sheet-place"
         ).inner_text()
 
+        # Кнопка — такая же коробка, как всё над ней: синяя плашка
+        # посреди них читалась как принесённая с другого экрана
+        go = page.get_by_role("button", name="📊 Статистика боёв")
+        assert "hero-box" in (await go.get_attribute("class"))
+        assert await page.locator("#sheet-list .btn").count() == 0
+        # и стоит она во всю ширину коробок, последней строкой
+        wide = await go.bounding_box()
+        boxes = await page.locator("#sheet-list .hero-box.hero-rating").bounding_box()
+        assert abs(wide["width"] - boxes["width"]) < 2
+
         # кнопка уводит в статистику именно этого бойца
-        await page.get_by_role("button", name="📊 Статистика боёв").click()
+        await go.click()
         assert await page.locator("#sheet.hidden").count() == 1
         await page.wait_for_selector("#club-stats:not(.hidden)")
         await browser.close()
