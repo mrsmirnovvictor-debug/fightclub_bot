@@ -19316,6 +19316,50 @@ async def test_the_bank_wallet_wears_the_face_it_earned(
         await browser.close()
 
 
+async def test_the_wallet_plates_hold_their_words_on_a_narrow_phone(server):
+    """На 320 имя кошелька целое, а сумма с монетой не рвётся надвое.
+
+    Значок занимает левую треть плашки, и на узком экране он отъедал у
+    надписей ровно столько, чтобы «Счёт в банке» стало «Счёт в ба…», а
+    кнопка пополнения уехала под сумму.
+    """
+    player = make_player()
+    player.credits = 580
+    player.account_balance = 60
+    player.account_number = "VB-1"
+    player.card_at = 0  # «Счёт в банке» — самое длинное имя кошелька
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            images=True,
+        )
+        await page.set_viewport_size({"width": 320, "height": 780})
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
+        await page.wait_for_selector("#wallets .wallet-tile")
+
+        cut = await page.evaluate(
+            "() => [...document.querySelectorAll('#wallets .wallet-tile-name')]"
+            ".map(o => { const room = document.createRange();"
+            "  room.selectNodeContents(o);"
+            "  return [o.textContent,"
+            "          room.getBoundingClientRect().width, o.clientWidth]; })"
+        )
+        assert len(cut) == 2, cut
+        for name, want, got in cut:
+            assert want <= got + 1, f"«{name}» обрезано: {want} > {got}"
+
+        # Сумма и плюс остаются в одной строке: высота строки суммы не
+        # больше её же кегля с запасом на начертание
+        rows = await page.evaluate(
+            "() => [...document.querySelectorAll('#wallets .wallet-tile-sum')]"
+            ".map(o => o.getBoundingClientRect().height)"
+        )
+        assert max(rows) <= 30, f"сумма разъехалась на две строки: {rows}"
+        await browser.close()
+
+
 async def test_a_wallet_without_its_picture_keeps_its_emoji(server):
     """Значок не приехал — в плашке остаётся смайл, и деньги читаются.
 
@@ -19396,10 +19440,12 @@ async def test_the_wallets_stand_above_the_backpack(server):
         await page.wait_for_selector("#hero:not(.hidden)")
         await open_screen(page, "bag")
 
-        heads = await page.locator("#wallets .wallet-tile-head").all_inner_texts()
-        assert [" ".join(one.split()) for one in heads] == [
-            "💳 Карта", "💰 Наличные"
-        ], heads
+        # Значок стоит слева во всю высоту плашки, название — справа,
+        # и живут они теперь в разных углах
+        heads = await page.locator("#wallets .wallet-tile-name").all_inner_texts()
+        assert heads == ["Карта", "Наличные"], heads
+        signs = await page.locator("#wallets .wallet-sign").all_inner_texts()
+        assert signs == ["💳", "💰"], signs
         sums = await page.locator("#wallets .wallet-tile-sum span").all_inner_texts()
         assert [one.replace(" ", " ") for one in sums] == [
             "1 200 💰", "430 💰"

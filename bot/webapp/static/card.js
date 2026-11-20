@@ -1534,25 +1534,32 @@ function walletTile(face, sum, kind) {
   const box = document.createElement("div");
   box.className = "wallet-tile " + kind;
 
-  const head = document.createElement("div");
-  head.className = "wallet-tile-head";
-
+  // Значок слева во всю высоту плашки, надписи справа столбиком.
+  // Карта нарисована горизонтальной, и рядом с текстом она читается
+  // карточкой, а над ним — просто картинкой
   const sign = document.createElement("span");
   sign.className = "wallet-sign";
   sign.textContent = face.emoji || "";
   dressWallet(sign, face);
 
+  const said = document.createElement("div");
+  said.className = "wallet-tile-side";
+
+  const head = document.createElement("div");
+  head.className = "wallet-tile-head";
   const title = document.createElement("span");
   title.className = "wallet-tile-name";
   title.textContent = face.title || "";
-  head.append(sign, title);
+  head.appendChild(title);
 
   const value = document.createElement("div");
   value.className = "wallet-tile-sum";
   const amount = document.createElement("span");
   amount.textContent = sum;
   value.appendChild(amount);
-  box.append(head, value);
+
+  said.append(head, value);
+  box.append(sign, said);
   return box;
 }
 

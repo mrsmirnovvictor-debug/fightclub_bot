@@ -6144,15 +6144,28 @@ body.dark .wallet-pick { border-color: rgba(150, 200, 255, 0.18); }
   gap: 8px;
   margin-bottom: 12px;
 }
+/* Значок слева во всю высоту плашки, надписи справа столбиком. Карта
+   нарисована горизонтальной, и рядом с текстом она читается карточкой,
+   а над ним — просто картинкой */
 .wallet-tile {
   padding: 8px 10px 9px;
   border-radius: 12px;
   background: var(--panel);
   border: 1px solid var(--line);
   display: flex;
+  align-items: stretch;
+  gap: 9px;
+}
+
+/* Правая половина: название сверху, сумма под ним. Прижата к краям по
+   высоте — так она и занимает всю плашку рядом со значком */
+.wallet-tile-side {
+  display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 3px;
+  justify-content: center;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 /* Дымчатое стекло и холодный контур — как у коробок раздела бойца:
@@ -6166,7 +6179,6 @@ body.dark .wallet-tile {
 .wallet-tile-head {
   display: flex;
   align-items: center;
-  gap: 6px;
   min-width: 0;
   font-size: 11px;
   letter-spacing: 0.04em;
@@ -6201,12 +6213,16 @@ body.dark .wallet-tile {
   display: block;
 }
 
-/* У плашки счёта значок крупнее: это карта, и её рисунок — половина
-   того, что в плашке вообще есть */
+/* В плашке значок тянется на всю её высоту и держит свою долю ширины:
+   карта — половина того, что в плашке вообще есть, и мельче значка
+   рядом с названием ей быть незачем. Ширина долей, а не числом, —
+   плашки бывают разной ширины, а выглядеть должны одинаково */
 .wallet-tile .wallet-sign {
-  width: 22px;
-  height: 22px;
-  font-size: 16px;
+  width: 34%;
+  max-width: 64px;
+  height: auto;
+  align-self: stretch;
+  font-size: 26px;
 }
 /* Сумма и плюс стоят в одной строке. Плюс своей строкой растягивал
    плашку наличных на три ряда, а плашку счёта — нет, и ряд из двух
@@ -6214,10 +6230,23 @@ body.dark .wallet-tile {
 .wallet-tile-sum {
   display: flex;
   align-items: center;
-  justify-content: center;
   gap: 8px;
   font-size: 17px;
   font-weight: 800;
+}
+
+/* Сумма со значком монеты не рвётся посередине: «580» на одной строке
+   и монета на другой читаются как два разных числа */
+.wallet-tile-sum > span { white-space: nowrap; }
+
+/* На узком экране значок уступает место надписям: «Счёт в банке» —
+   самое длинное имя кошелька, и в четверть экрана оно влезает только
+   так. Картинка при этом остаётся картинкой, а не полоской */
+@media (max-width: 380px) {
+  .wallet-tile { gap: 7px; padding: 7px 8px 8px; }
+  .wallet-tile .wallet-sign { width: 28%; max-width: 46px; }
+  .wallet-tile-sum { font-size: 15px; gap: 6px; }
+  .wallet-tile-head { font-size: 10.5px; }
 }
 /* Кнопка пополнения стоит у наличных: звёзды приходят кредитами в
    карман, а не на счёт */
