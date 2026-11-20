@@ -75,6 +75,37 @@ PURSES: tuple[str, ...] = (CASH, CARD)
 PURSE_TITLES: dict[str, str] = {CASH: "Наличные", CARD: "Карта"}
 PURSE_EMOJI: dict[str, str] = {CASH: "💰", CARD: "💳"}
 
+# Чем выглядит банковский кошелёк у конкретного бойца.
+#
+# Пока карта не выпущена, это счёт: деньги на нём есть, а расплатиться
+# ими в городе нельзя — со счёта не платят удалённо, за этим и идут в
+# банк за картой. Выпущена — карта, и вид её зависит от подписки:
+# ступень обслуживания видна прямо в кошельке, а не только в скидке.
+#
+# Код нужен, чтобы `bot.game.art` собрал адрес значка; смайл остаётся
+# запасным вариантом на случай, если картинка не приехала.
+# Короткое имя счёта — для плашки и кнопки оплаты: длинное «Счёт в
+# Vegas Банке» (`ACCOUNT_TITLE` ниже) в четверть экрана не влезает
+ACCOUNT_FACE = ("bank_account", "Счёт в банке", "🏦")
+CASH_FACE = ("cash_credits", PURSE_TITLES[CASH], PURSE_EMOJI[CASH])
+CARD_FACES: dict[int, tuple[str, str, str]] = {
+    0: ("card_basic", "Карта", "💳"),
+    1: ("card_pro", "Карта Pro", "💳"),
+    2: ("card_premium", "Карта Premium", "💳"),
+}
+
+
+def card_face(has_card: bool, rank: int = 0) -> tuple[str, str, str]:
+    """Код значка, название и запасной смайл банковского кошелька.
+
+    `rank` — ступень подписки: ноль без неё, единица у PRO, двойка у
+    PREMIUM. Неизвестная ступень падает на обычную карту: новая
+    подписка не должна оставлять кошелёк без лица.
+    """
+    if not has_card:
+        return ACCOUNT_FACE
+    return CARD_FACES.get(rank, CARD_FACES[0])
+
 # ---------- счёт ----------
 
 ACCOUNT_TITLE = "Счёт в Vegas Банке"
@@ -331,7 +362,11 @@ __all__ = [
     "CARD_DISCOUNT",
     "DISCOUNT_PLACES",
     "PURSES",
+    "ACCOUNT_FACE",
+    "CARD_FACES",
+    "CASH_FACE",
     "PURSE_EMOJI",
+    "card_face",
     "PURSE_TITLES",
     "CASH_OUT",
     "FEE",

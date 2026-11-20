@@ -194,6 +194,21 @@ def item(code: str) -> str:
     return f"{ITEMS}/{code}.jpeg"
 
 
+# Значки денег: счёт, карты трёх видов и наличные. Папка общая с
+# прочим убранством интерфейса — рисовались они одним заходом
+ECONOMY = f"{BUCKET}/ui/economy"
+
+
+def wallet_icon(code: str) -> str:
+    """Значок кошелька: ui/economy/card_pro.webp.
+
+    Код приходит из `bot.game.bank`: там решают, что за кошелёк перед
+    нами — счёт, обычная карта, Pro или Premium, — и здесь это решение
+    только превращается в адрес.
+    """
+    return f"{ECONOMY}/{code}.webp"
+
+
 def ability_placeholder(tier: int) -> str:
     """Тень невыученного приёма: items/ability_placeholder_3.webp.
 
@@ -365,7 +380,9 @@ __all__ = [
     "NPC",
     "PDD",
     "REDESIGN",
+    "ECONOMY",
     "ability_placeholder",
+    "wallet_icon",
     "POTIONS",
     "RAID_ITEMS",
     "SERVICES",

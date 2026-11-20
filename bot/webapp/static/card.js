@@ -1507,24 +1507,46 @@ function renderWallets(card) {
   box.classList.toggle("hidden", !card.is_self);
   if (!card.is_self) return;
 
-  if (money.has_account) {
+  const faces = card.wallet || {};
+  if (money.has_account && faces.bank) {
     box.appendChild(
-      walletTile("💳", "Карта", num(money.account) + " 💰", "card")
+      walletTile(faces.bank, num(money.account) + " 💰", "card")
     );
   }
   // Плюс встаёт в ту же строку, что и сумма: своей строкой он
   // растягивал плашку наличных на три ряда, а соседнюю — нет
-  const cash = walletTile("💰", "Наличные", num(money.credits) + " 💰", "cash");
+  const cash = walletTile(
+    faces.cash || { emoji: "💰", title: "Наличные" },
+    num(money.credits) + " 💰",
+    "cash"
+  );
   cash.querySelector(".wallet-tile-sum").appendChild(plusButton());
   box.appendChild(cash);
 }
 
-function walletTile(icon, title, sum, kind) {
+/** Плашка кошелька: значок, название и сумма.
+ *
+ * Значок — нарисованный, и подменяет он смайл только после успешной
+ * загрузки: до бакета можно и не достучаться, а плашка с деньгами
+ * обязана читаться в любом случае.
+ */
+function walletTile(face, sum, kind) {
   const box = document.createElement("div");
   box.className = "wallet-tile " + kind;
+
   const head = document.createElement("div");
   head.className = "wallet-tile-head";
-  head.textContent = icon + " " + title;
+
+  const sign = document.createElement("span");
+  sign.className = "wallet-sign";
+  sign.textContent = face.emoji || "";
+  dressWallet(sign, face);
+
+  const title = document.createElement("span");
+  title.className = "wallet-tile-name";
+  title.textContent = face.title || "";
+  head.append(sign, title);
+
   const value = document.createElement("div");
   value.className = "wallet-tile-sum";
   const amount = document.createElement("span");
@@ -1532,6 +1554,21 @@ function walletTile(icon, title, sum, kind) {
   value.appendChild(amount);
   box.append(head, value);
   return box;
+}
+
+/** Подменить смайл кошелька нарисованным значком, если он приехал. */
+function dressWallet(slot, face) {
+  if (!face || !face.image) return;
+  const pic = new Image();
+  pic.addEventListener("load", () => {
+    pic.className = "wallet-pic";
+    // Значок — украшение рядом с названием, и своего имени ему не
+    // нужно: название стоит тут же
+    pic.alt = "";
+    slot.textContent = "";
+    slot.appendChild(pic);
+  });
+  pic.src = face.image;
 }
 
 function renderBag(card) {
@@ -9542,7 +9579,17 @@ function walletBar(state, reload) {
     btn.dataset.purse = code;
     const title = document.createElement("span");
     title.className = "wallet-pick-title";
-    title.textContent = state.emoji[code] + " " + state.titles[code];
+    const sign = document.createElement("span");
+    sign.className = "wallet-sign";
+    sign.textContent = state.emoji[code] || "";
+    dressWallet(sign, {
+      image: (state.images || {})[code],
+      emoji: state.emoji[code],
+    });
+    const name = document.createElement("span");
+    name.className = "wallet-pick-name";
+    name.textContent = state.titles[code];
+    title.append(sign, name);
     const sum = document.createElement("span");
     sum.className = "wallet-pick-money";
     sum.textContent = num(money) + " 💰";

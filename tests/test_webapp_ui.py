@@ -10760,7 +10760,9 @@ async def test_the_wallet_bar_stands_over_the_counter_with_both_purses(server):
         await page.wait_for_selector(".wallet")
 
         picks = await page.locator(".wallet-pick-title").all_inner_texts()
-        assert picks == ["💰 Наличные", "💳 Карта"]
+        assert [" ".join(one.split()) for one in picks] == [
+            "💰 Наличные", "💳 Карта"
+        ], picks
         money = await page.locator(".wallet-pick-money").all_inner_texts()
         assert money == ["1\u00a0200 💰", "3\u00a0000 💰"]
         # Выбранный горит, и на карте написано, сколько она снимает
@@ -19117,6 +19119,119 @@ async def test_the_reward_window_never_doubles_on_redraws(server):
 # ---------- кошельки над рюкзаком ----------
 
 
+@pytest.mark.parametrize(
+    "card_at,pro,premium,said,sign",
+    [
+        (0, False, False, "Счёт в банке", "bank_account"),
+        (1, False, False, "Карта", "card_basic"),
+        (1, True, False, "Карта Pro", "card_pro"),
+        (1, False, True, "Карта Premium", "card_premium"),
+        # Держать обе подписки разом можно, и тогда работает старшая
+        (1, True, True, "Карта Premium", "card_premium"),
+    ],
+)
+async def test_the_bank_wallet_wears_the_face_it_earned(
+    server, card_at, pro, premium, said, sign
+):
+    """Пока карта не выпущена — счёт, после — карта своей ступени.
+
+    Счёт и карта — разные вещи, и подписаны они по-разному нарочно: со
+    счёта в городе не платят, за этим и идут в банк за картой. Плашка,
+    зовущая счёт картой, обещала бы оплату, которой нет.
+    """
+    moment = now_ts()
+    player = make_player()
+    player.credits = 430
+    player.account_balance = 1_200
+    player.account_number = "VB-1"
+    player.card_at = card_at
+    if pro:
+        player.pro_until = moment + 86_400
+    if premium:
+        player.premium_until = moment + 86_400
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, images=True)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
+
+        head = page.locator("#wallets .wallet-tile").first.locator(
+            ".wallet-tile-name"
+        )
+        assert await head.inner_text() == said
+
+        # И значок тот, что заказан под это лицо
+        await page.wait_for_selector("#wallets .wallet-tile .wallet-pic")
+        where = await page.locator(
+            "#wallets .wallet-tile .wallet-pic"
+        ).first.get_attribute("src")
+        assert where.endswith("/ui/economy/" + sign + ".webp"), where
+        await browser.close()
+
+
+async def test_a_wallet_without_its_picture_keeps_its_emoji(server):
+    """Значок не приехал — в плашке остаётся смайл, и деньги читаются.
+
+    Плашка с деньгами обязана работать и тогда, когда до бакета не
+    достучаться: подменяем смайл картинкой только после успешной
+    загрузки, иначе на месте суммы висела бы битая картинка.
+    """
+    player = make_player()
+    player.credits = 430
+    player.account_balance = 1_200
+    player.account_number = "VB-1"
+    player.card_at = 1
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, images=True, broken="**/ui/economy/*.webp"
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
+        await page.wait_for_selector("#wallets .wallet-tile")
+
+        assert await page.locator("#wallets .wallet-pic").count() == 0
+        signs = await page.locator("#wallets .wallet-sign").all_inner_texts()
+        assert signs == ["💳", "💰"], signs
+        sums = await page.locator("#wallets .wallet-tile-sum span").all_inner_texts()
+        assert [one.replace("\u00a0", " ") for one in sums] == ["1 200 💰", "430 💰"]
+        await browser.close()
+
+
+async def test_a_bank_account_cannot_pay_for_anything(server):
+    """Со счёта в городе не платят: кнопка показана, но не нажимается.
+
+    Прятать её нельзя — по ней и видно, чего не хватает и зачем идти в
+    банк. Спрятанная кнопка не объясняет ничего.
+    """
+    player = make_player()
+    player.credits = 430
+    player.account_balance = 1_200
+    player.account_number = "VB-1"
+    player.card_at = 0  # счёт открыт, карта не выпущена
+    shop = build_shop(player)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id), shop
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "shop")
+        await page.wait_for_selector(".wallet")
+
+        bank = page.locator(".wallet-pick").nth(1)
+        assert await bank.locator(".wallet-pick-name").inner_text() == "Счёт в банке"
+        assert "off" in (await bank.get_attribute("class"))
+
+        # Нажали — выбор не поменялся: платить со счёта нельзя
+        await bank.click(force=True)
+        await page.wait_for_timeout(150)
+        assert "on" not in (await bank.get_attribute("class"))
+        await browser.close()
+
+
 async def test_the_wallets_stand_above_the_backpack(server):
     """Счёт и наличные в один ряд над рюкзаком, а не среди показателей.
 
@@ -19136,7 +19251,9 @@ async def test_the_wallets_stand_above_the_backpack(server):
         await open_screen(page, "bag")
 
         heads = await page.locator("#wallets .wallet-tile-head").all_inner_texts()
-        assert heads == ["💳 Карта", "💰 Наличные"]
+        assert [" ".join(one.split()) for one in heads] == [
+            "💳 Карта", "💰 Наличные"
+        ], heads
         sums = await page.locator("#wallets .wallet-tile-sum span").all_inner_texts()
         assert [one.replace(" ", " ") for one in sums] == [
             "1 200 💰", "430 💰"

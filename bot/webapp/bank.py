@@ -36,12 +36,15 @@ from bot.game.bank import (
     DISCOUNT_PLACES,
     PURSE_EMOJI,
     PURSE_TITLES,
+    CASH_FACE,
+    card_face,
     YEAR_DAYS,
     card_number,
     card_works,
     discount_of,
     year_text,
 )
+from bot.game import art
 from bot.game.clock import club_moment
 from bot.game.health import format_term, now_ts
 from bot.game.locations import Service
@@ -84,6 +87,7 @@ def purse_payload(
     """
     moment = now_ts() if now is None else now
     purse = player.purse_for(moment, service)
+    face = card_face(player.has_card, player.tier_rank(moment))
     takes_card = card_works(service)
     percent = discount_of(service, player.tier_rank(moment))
     return {
@@ -100,8 +104,15 @@ def purse_payload(
         # Сколько скидки боец получает прямо сейчас: выбрал наличные —
         # ноль, и это видно без чтения правил
         "now_off": percent if purse == CARD else 0,
-        "titles": dict(PURSE_TITLES),
-        "emoji": dict(PURSE_EMOJI),
+        # Как банковский кошелёк зовётся и выглядит у этого бойца:
+        # счёт, пока карта не выпущена, и карта своей ступени после.
+        # Решает это `bot.game.bank`, здесь только раскладываем
+        "titles": {CASH: CASH_FACE[1], CARD: face[1]},
+        "emoji": {CASH: CASH_FACE[2], CARD: face[2]},
+        "images": {
+            CASH: art.wallet_icon(CASH_FACE[0]),
+            CARD: art.wallet_icon(face[0]),
+        },
         "note": _purse_note(player, moment, service, takes_card, percent),
     }
 

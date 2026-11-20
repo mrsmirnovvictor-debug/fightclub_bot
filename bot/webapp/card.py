@@ -316,6 +316,38 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
     }
 
 
+def _wallet_faces(player: Player, is_self: bool) -> dict:
+    """Лицо каждого кошелька: код значка, название и запасной смайл.
+
+    Чужую карточку это не касается вовсе: чужие деньги не наше дело,
+    и показывать по ним ступень подписки — тем более.
+    """
+    from bot.game import art
+    from bot.game.bank import CASH_FACE, card_face
+
+    if not is_self:
+        return {}
+    bank = card_face(player.has_card, player.tier_rank())
+    return {
+        "bank": {
+            "code": bank[0],
+            "title": bank[1],
+            "emoji": bank[2],
+            "image": art.wallet_icon(bank[0]),
+            # Со счёта в городе не платят: за этим и идут в банк за
+            # картой. Страница по этому полю и гасит выбор
+            "pays": player.has_card,
+        },
+        "cash": {
+            "code": CASH_FACE[0],
+            "title": CASH_FACE[1],
+            "emoji": CASH_FACE[2],
+            "image": art.wallet_icon(CASH_FACE[0]),
+            "pays": True,
+        },
+    }
+
+
 def abilities_payload(player: Player) -> dict:
     """Приёмы бойца в карточке: что выучено и что предстоит выбрать."""
     from bot.abilities_service import known, next_tier_after, pending_choice
@@ -1362,6 +1394,11 @@ def build_card(
             "has_account": bool(is_self and player.has_account),
             "has_card": bool(is_self and player.has_card),
         },
+        # Чем выглядят кошельки у этого бойца: счёт, пока карта не
+        # выпущена, карта своей ступени после, и наличные рядом.
+        # Название и значок решает `bot.game.bank`, адрес — `art`:
+        # страница не знает ни про подписки, ни про бакет
+        "wallet": _wallet_faces(player, is_self),
         "birthplace": player.home,
         "birthday": format_birthday(player.created_at),
         "combat": {

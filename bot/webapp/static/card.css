@@ -4745,11 +4745,50 @@ body.dark .hero-act.on {
   cursor: pointer;
 }
 .wallet-pick.on { border-color: var(--accent); background: var(--panel); }
+
+/* Выбранный кошелёк горит тем же холодным стеклом, что и выбранный
+   раздел: «это сейчас» на весь апп говорится одним языком */
+body.dark .wallet-pick.on {
+  border-color: rgba(120, 200, 255, 0.45);
+  background:
+    linear-gradient(180deg, rgba(90, 170, 255, 0.18), rgba(140, 110, 255, 0.12));
+  box-shadow: 0 0 10px rgba(90, 170, 255, 0.18) inset;
+}
+
+body.dark .wallet-pick { border-color: rgba(150, 200, 255, 0.18); }
+
+.wallet-pick:focus-visible {
+  outline: 2px solid rgba(120, 200, 255, 0.9);
+  outline-offset: 1px;
+}
 /* Кошелька нет или он тут не ходит: кнопку не прячем — по ней и видно,
    чего не хватает. Спрятанная ничего не объясняет */
 .wallet-pick.off { opacity: 0.45; cursor: default; }
-.wallet-pick-title { font-size: 12px; font-weight: 600; }
-.wallet-pick-money { font-size: 13.5px; font-weight: 700; }
+.wallet-pick-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Название жмётся многоточием, а значок — нет: «Карта Premium» длиннее
+   «Карты», и в четверть экрана помещается только так */
+.wallet-pick-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wallet-pick-money {
+  font-family: var(--digits);
+  font-size: 13.5px;
+  font-weight: 700;
+  word-spacing: -0.2em;
+}
 .wallet-pick.on .wallet-pick-money { color: var(--accent); }
 .wallet-pick-off {
   position: absolute;
@@ -6103,18 +6142,67 @@ body.dark .hero-act.on {
 }
 .wallet-tile {
   padding: 8px 10px 9px;
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--panel);
   border: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
 }
+
+/* Дымчатое стекло и холодный контур — как у коробок раздела бойца:
+   деньги не должны выглядеть другим приложением */
+body.dark .wallet-tile {
+  border-color: rgba(150, 200, 255, 0.16);
+  background: linear-gradient(180deg,
+    rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015));
+}
+
 .wallet-tile-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   font-size: 11px;
   letter-spacing: 0.04em;
   color: var(--muted);
+}
+
+.wallet-tile-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Место под значок: один размер у смайла и у картинки, иначе плашка
+   дёргается, когда картинка подгрузилась */
+.wallet-sign {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.wallet-pic {
+  width: 100%;
+  height: 100%;
+  /* `contain`: значки разной формы, и обрезка съела бы у одних края */
+  object-fit: contain;
+  display: block;
+}
+
+/* У плашки счёта значок крупнее: это карта, и её рисунок — половина
+   того, что в плашке вообще есть */
+.wallet-tile .wallet-sign {
+  width: 22px;
+  height: 22px;
+  font-size: 16px;
 }
 /* Сумма и плюс стоят в одной строке. Плюс своей строкой растягивал
    плашку наличных на три ряда, а плашку счёта — нет, и ряд из двух
