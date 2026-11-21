@@ -4594,12 +4594,12 @@ async def test_the_damage_is_coloured_by_the_kind_of_strike(server):
         # ждёт: без этой строки проверка иногда читала пустой список
         await page.wait_for_selector(".fight-log .dmg")
         marks = page.locator(".fight-log .dmg")
-        # Лента идёт свежим сверху и внутри размена, поэтому второй удар
-        # стоит первым. Подсветка при этом едет со своей строкой: удары
-        # и слова судьи связываются до переворота, а не по месту в ленте
-        assert await marks.all_inner_texts() == ["−60", "−5"]
-        assert await marks.nth(0).get_attribute("class") == "dmg crit"
-        assert await marks.nth(1).get_attribute("class") == "dmg"
+        # Лента идёт по порядку боя, поэтому первым стоит первый удар.
+        # Подсветка едет со своей строкой: удары и слова судьи
+        # связываются при разборе размена, а не по месту в ленте
+        assert await marks.all_inner_texts() == ["−5", "−60"]
+        assert await marks.nth(0).get_attribute("class") == "dmg"
+        assert await marks.nth(1).get_attribute("class") == "dmg crit"
 
         colours = [
             await marks.nth(index).evaluate("node => getComputedStyle(node).color")
@@ -21616,13 +21616,13 @@ async def test_the_trainers_row_says_who_he_is(server):
         await browser.close()
 
 
-async def test_the_feed_starts_with_the_verdict_and_not_with_a_punch(server):
-    """Первыми в ленте стоят победа и строка о том, для кого бой кончен.
+async def test_the_verdict_closes_the_feed_and_does_not_open_it(server):
+    """Последними в ленте стоят строка о выбывшем и победа.
 
-    Лента идёт свежим сверху, и порядок в ней теперь один на всю
-    длину: и размены от нового к старому, и строки внутри размена.
-    Прежде внутри размена они шли в прямом порядке, и лента читалась
-    то вниз, то вверх — понять, что случилось позже, было нельзя.
+    Лента идёт по порядку боя, и порядок в ней один на всю длину: и
+    размены от старого к новому, и строки внутри размена. Прежде
+    размены шли от нового к старому, а строки внутри размена в прямом
+    порядке, и лента читалась то вниз, то вверх.
     """
     over = ring_with_duel()
     over["duel"]["finished"] = True
@@ -21642,10 +21642,12 @@ async def test_the_feed_starts_with_the_verdict_and_not_with_a_punch(server):
         await page.wait_for_selector(".fight-log")
 
         said = await page.locator(".fight-log .log-line").all_inner_texts()
-        # Лента идёт свежим сверху — и между разменами, и внутри
-        # размена: первой стоит победа, под ней — для кого бой кончился
-        assert said[0] == "🏆 Победа за Растафарайчик", said
-        assert said[1] == "💀 Для Марла бой закончен", said
+        # Лента идёт по порядку боя — и между разменами, и внутри
+        # размена: сперва удары, под ними для кого бой кончился, и
+        # самой последней победа
+        assert said[-2] == "💀 Для Марла бой закончен", said
+        assert said[-1] == "🏆 Победа за Растафарайчик", said
+        assert "вкладывается кулаком" in said[0], said  # первый удар боя
 
         # А на самом итоге их нет: там приговор и что унесли
         card = await page.locator(".fight-finish").inner_text()
