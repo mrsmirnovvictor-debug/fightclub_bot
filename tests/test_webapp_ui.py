@@ -2009,7 +2009,9 @@ def barber_shelf(
 
     shelf = []
     for look in LOOKS:
-        if look.pro or look.gender != gender:
+        # Классовые образы на полку не идут: их не продают — они и так
+        # твои с первого дня. Старую выдачу тем более не продают
+        if look.pro or look.starter or look.gender != gender:
             continue
         row = look_row(look, current, not look.paid or look.code in bought)
         row["can_buy"] = bool(not row["owned"] and mine)
