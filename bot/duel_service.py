@@ -63,6 +63,7 @@ from bot.game.narrator import (
     finish_text,
     health_warning,
     ready_mark,
+    fallen_line,
     rewards_report,
     winners_line,
     plain,
@@ -183,6 +184,10 @@ class DuelSession:
     mode: FightMode = FightMode.FIST
     round_number: int = 0
     choices: dict[int, Choice] = field(default_factory=dict)
+    # Кто раньше закончил выбирать. Номер по порядку, а не час: важен
+    # только порядок, и считать его часами значило бы зависеть от того,
+    # как быстро идёт сеть. Пустой у того, кто ход пропустил
+    pressed_at: dict[int, int] = field(default_factory=dict)
     players: dict[int, Player] = field(default_factory=dict)
     prompt_message_id: int | None = None
     # Кого позвать, когда бой кончится: турнир так узнаёт победителя пары
@@ -235,6 +240,26 @@ class DuelSession:
 
     def choice_of(self, user_id: int) -> Choice:
         return self.choices.setdefault(user_id, Choice())
+
+    def note_press(self, user_id: int) -> None:
+        """Запомнить, что этот боец закончил выбирать.
+
+        Второй раз за ход не переписываем: передумавший бьёт в другую
+        зону, но очередь он уже занял. Иначе менять решение значило бы
+        отдавать ход сопернику.
+        """
+        self.pressed_at.setdefault(user_id, len(self.pressed_at) + 1)
+
+    def struck_first(self) -> int | None:
+        """Кто нажал раньше. None — не нажал никто.
+
+        По этому решается очередь удара, когда проворство вровень: на
+        равных ногах первым бьёт тот, кто раньше решился.
+        """
+        pressed = [uid for uid in self.order if uid in self.pressed_at]
+        if not pressed:
+            return None
+        return min(pressed, key=lambda uid: self.pressed_at[uid])
 
     @property
     def challenger_id(self) -> int:
@@ -669,6 +694,9 @@ class DuelService:
     async def _start_round(self, session: DuelSession) -> None:
         session.round_number += 1
         session.choices = {}
+        # Очередь нажатий считается заново каждый ход: кто был первым в
+        # прошлом, в этом может замешкаться
+        session.pressed_at = {}
         session.resolving = False
         session.resting = False
         # За Тренера никто не нажимает: он выбирает сразу, как начался
@@ -696,6 +724,9 @@ class DuelService:
             fighter.attacks_per_round, fighter.block_width
         )
         session.choices[session.npc] = Choice(attacks=attacks, block=block)
+        # Тренер выбирает в тот же миг, как открылся ход, — значит, и в
+        # очереди он первый. Это не поблажка ему: он и правда не думает
+        session.note_press(session.npc)
 
     def _prompt_text(self, session: DuelSession) -> str:
         first, second = (session.fighters[uid] for uid in session.order)
@@ -822,6 +853,8 @@ class DuelService:
                 choice.block = block_combo(zone, fighter.block_width)
 
             now_ready = session.is_ready(user_id)
+            if now_ready:
+                session.note_press(user_id)
             both_ready = all(session.is_ready(uid) for uid in session.order)
             if both_ready:
                 session.resolving = True
@@ -878,6 +911,11 @@ class DuelService:
             # оружием), и выигрывал тот, кто успел больше нанести, —
             # а не тот, кто довёл дело до конца
             gong=NO_GONG,
+            # На равных ногах очередь решает рука, а не кость: первым
+            # бьёт тот, кто раньше нажал. Прежде такой размен считался
+            # одновременным, и упавший всё равно успевал ответить —
+            # на экране это выглядело как удар с пола
+            tiebreak=session.struck_first(),
         )
 
         # Боевые дела этого раунда — в ведомость школы: одной строкой
@@ -1014,7 +1052,15 @@ class DuelService:
             for uid in session.order
             if uid == result.winner_id and uid in session.fighters
         ]
-        said = [story, winners_line(champions)]
+        # Кто остался на полу — отдельной строкой с черепом. В дуэли это
+        # видно и по рассказу, но лента читается одинаково во всех боях:
+        # в групповом по этой же строке считают, кого уже нет
+        down = [
+            session.fighters[uid]
+            for uid in session.order
+            if uid in session.fighters and not session.fighters[uid].alive
+        ]
+        said = [story, fallen_line(down), winners_line(champions)]
         lines = session.rounds[-1].setdefault("lines", [])
         lines.extend(plain(one) for one in said if one)
 

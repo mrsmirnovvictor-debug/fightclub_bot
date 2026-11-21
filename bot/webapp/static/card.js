@@ -3789,6 +3789,9 @@ async function showFighter(fighter) {
 // драться можно откуда удобнее — экран и чат ведут один и тот же бой.
 
 let fightsData = null;
+// Ответ опроса, который ждёт конца анимации: панель перерисуем, как
+// только сцене станет нечего доигрывать
+let fightAwaits = false;
 let fightsTimer = null;
 // Итог прошлого ответа: по нему видно, что бой только что кончился
 let fightWasOver = false;
@@ -4011,6 +4014,23 @@ async function fightAction(payload) {
 let lastTurn = null;
 
 function renderFights(data) {
+  // Данные помним всегда — рисуем не всегда: пока сцена доигрывает
+  // размен, панель остаётся прежней. Иначе опрос выкладывает итог
+  // боя, новую энергию и кнопки следующего хода поверх ещё идущей
+  // анимации, и смотреть её уже незачем
+  fightsData = data;
+  // Сперва подкладываем сцене ходы, и только потом решаем, ждать ли
+  // её. Порядок решает всё: опрос приносит и свежий размен, и его
+  // итог разом, и до подкладывания раскадровке нечего доигрывать —
+  // она скажет «доиграла», а размен так и не покажет
+  if (data.duel && fightShow && fightShow.duelId === data.duel.id) {
+    fightShowFeed(data.duel);
+  }
+  if (data.duel && scenePlaying()) {
+    fightAwaits = true;
+    return;
+  }
+  fightAwaits = false;
   // Новый ход — намётки прошлого сбрасываем: иначе на экран вернётся
   // подсвеченным то, что уже ушло судье
   const turn = data.duel ? data.duel.id + ":" + data.duel.round + ":" + data.duel.turn : null;
@@ -4021,7 +4041,6 @@ function renderFights(data) {
   // Бой доигран — уровень и награда уже записаны: перечитываем карточку
   if (data.duel && data.duel.finished && !fightWasOver) catchUp();
   fightWasOver = Boolean(data.duel && data.duel.finished);
-  fightsData = data;
   const body = el("fights-body");
   body.textContent = "";
   if (data.duel) {
@@ -4556,6 +4575,20 @@ var fightShow = null;
 // атласов для них нет
 const SCENE_MODES = ["fist"];
 
+/** Идёт ли сейчас сцена, которой есть что доиграть.
+ *
+ * Опрос приходит каждые пару секунд и приносит БУДУЩЕЕ: здоровье,
+ * энергию и итог боя после удара, который на экране ещё не случился.
+ * Выложить это сразу значит рассказать конец раньше самого боя — а
+ * бой для того и рисуют, чтобы на него смотреть.
+ */
+function scenePlaying() {
+  return Boolean(
+    fightShow && fightShow.stage && fightShow.box && fightShow.box.isConnected
+      && !fightShow.stage.done()
+  );
+}
+
 function fightShowStop() {
   if (!fightShow) return;
   if (fightShow.frame) cancelAnimationFrame(fightShow.frame);
@@ -4593,6 +4626,13 @@ function fightShowTick(now) {
     fightShowFail(show, error);
     return;
   }
+  // Доиграли всё, что было расставлено, а опрос ждал — выкладываем:
+  // итог боя, энергия и кнопки следующего хода появляются ровно
+  // тогда, когда их уже видно на сцене
+  if (fightAwaits && show.stage.done() && fightsData) {
+    fightAwaits = false;
+    renderFights(fightsData);
+  }
   show.frame = requestAnimationFrame(fightShowTick);
 }
 
@@ -4602,6 +4642,12 @@ function fightShowFail(show, error) {
     show.box.parentNode.replaceChild(show.fallback, show.box);
   }
   fightShowStop();
+  // Сцены больше нет — ждать нечего: отложенный ответ выкладываем
+  // сразу, иначе бой замрёт на последнем, что успели нарисовать
+  if (fightAwaits && fightsData) {
+    fightAwaits = false;
+    renderFights(fightsData);
+  }
 }
 
 // Прелоадер: пока едет графика участников, человек видит прогресс, а

@@ -664,20 +664,31 @@ def validate_action(action: Action, fighter: Fighter) -> None:
         )
 
 
-def by_quickness(first: Fighter, second: Fighter) -> tuple[
-    Fighter | None, Fighter | None
-]:
-    """Кто бьёт первым: у кого проворство выше. Вровень — никто.
+def by_quickness(
+    first: Fighter, second: Fighter, tiebreak: int | None = None
+) -> tuple[Fighter | None, Fighter | None]:
+    """Кто бьёт первым: у кого проворство выше. Вровень — решает `tiebreak`.
 
     Проворство решает не только уворот и контрудар, но и очередь: в
     размене первым считается удар проворного, и, если он добил, ответа
     уже не будет — лежащий не бьёт.
 
-    Вровень — бьют одновременно, обе стороны от состояния на начало
-    раунда. Это единственный случай, когда оба могут упасть одним
-    разменом, и единственный, когда бой кончается вничью.
+    `tiebreak` — номер бойца, который бьёт первым при равном проворстве.
+    Его приносит служба боя: на равных ногах очередь решает тот, кто
+    раньше нажал. Прежде такой размен считался одновременным, и боец,
+    упавший от первого удара, всё равно успевал ответить — на экране это
+    выглядело так, будто мёртвый встал и ударил.
+
+    Никого не названо — бьют одновременно, обе стороны от состояния на
+    начало раунда: так считают бои, где нажимать некому (рейд, босс,
+    прогон баланса). Это единственный случай, когда оба могут упасть
+    одним разменом, а бой — кончиться вничью.
     """
     if first.stats.agility == second.stats.agility:
+        if tiebreak == first.user_id:
+            return first, second
+        if tiebreak == second.user_id:
+            return second, first
         return None, None
     if first.stats.agility > second.stats.agility:
         return first, second
@@ -1029,6 +1040,7 @@ def resolve_round(
     rng: random.Random | None = None,
     limit: int = MAX_TURNS,
     gong: int | None = None,
+    tiebreak: int | None = None,
 ) -> RoundResult:
     """Посчитать раунд и применить урон. Меняет hp и счётчики пропусков.
 
@@ -1041,6 +1053,11 @@ def resolve_round(
     что судьи нет и дерутся до победы: так идут все дуэли. Не названный
     вовсе — старое поведение, когда разгон и потолок были одним числом;
     на нём держится групповой бой и рейд.
+
+    `tiebreak` — кто бьёт первым, если проворство вровень. Это номер
+    того, кто раньше нажал: очередь в таком размене решает рука, а не
+    кость. Без него равный размен считается одновременным — см.
+    `by_quickness`.
     """
     rng = rng or random
 
@@ -1056,7 +1073,7 @@ def resolve_round(
     # восстановить — остаток обрезан нулём
     before = {user_id: fighter.hp for user_id, fighter in fighters.items()}
 
-    quick, slow = by_quickness(first, second)
+    quick, slow = by_quickness(first, second, tiebreak)
     if quick is None:
         # Проворство вровень — бьют одновременно, обе стороны от
         # состояния на начало раунда. Это единственный случай, когда

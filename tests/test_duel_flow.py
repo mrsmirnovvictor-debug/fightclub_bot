@@ -1251,7 +1251,10 @@ async def test_a_knockout_in_the_third_turn_skips_the_break(bot, db):
     await play_round(service, session)
 
     assert service.duel_in_chat(CHAT_ID, THREAD_ID) is None
-    assert not any("окончен" in text for text in bot.log)
+    # Ищем именно гонг в конце раунда: слово «окончен» стоит и в словах
+    # судьи о нокауте, и раньше проверка ловила их заодно
+    assert not any("Судья разводит по углам" in text for text in bot.log)
+    assert not any("Гонг! Раунд" in text for text in bot.log)
     await service.shutdown()
 
 
@@ -1664,3 +1667,113 @@ async def test_the_healing_line_reaches_the_judge_in_the_chat(bot, db):
 
     everywhere = list(bot.texts) + list(getattr(bot, "log", []))
     assert any("переводит дух" in text for text in everywhere), everywhere[-3:]
+
+
+# ---------- очередь удара при равном проворстве ----------
+
+
+async def test_on_equal_feet_the_one_who_pressed_first_strikes_first(bot, db):
+    """Проворство вровень — бьёт тот, кто раньше нажал.
+
+    Прежде такой размен считался одновременным, и очередь решала кость.
+    На экране это выглядело дико: боец получал удар, падал в ноль — и
+    всё равно успевал ответить, уже лёжа.
+    """
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "assassin"))
+    await db.save_player(make_player(2, "Марла", "assassin"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    # Ноги равны: иначе очередь решило бы проворство, а не рука
+    assert session.fighters[1].stats.agility == session.fighters[2].stats.agility
+    session.fighters[2].hp = 1
+
+    # Второй номер нажимает первым — и бьёт первым
+    await choose(service, session, 2, 0)
+    await choose(service, session, 1, 1)
+
+    last = session.rounds[-1]
+    assert last["resolution"] == "sequential", "размен снова одновременный"
+    hits = [one["attacker_id"] for one in last["strikes"]]
+    assert hits[0] == 2, hits
+
+    # А нажми первым первый номер — и очередь перевернётся
+    await service.shutdown()
+    service = make_service(bot, db)
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    await choose(service, session, 1, 0)
+    await choose(service, session, 2, 1)
+    assert session.rounds[-1]["strikes"][0]["attacker_id"] == 1
+
+
+async def test_a_fallen_fighter_does_not_strike_back(bot, db):
+    """Добитый не отвечает: ход кончается там, где он упал."""
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "assassin"))
+    await db.save_player(make_player(2, "Марла", "assassin"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    session.fighters[2].hp = 1
+
+    await choose(service, session, 1, 0)
+    await choose(service, session, 2, 1)
+
+    last = session.rounds[-1]
+    assert last["winner_id"] == 1
+    # Удар в журнале один — первого. Ответа нет вовсе
+    assert [one["attacker_id"] for one in last["strikes"]] == [1], last["strikes"]
+    assert last["hp_after"]["2"] == 0
+
+
+async def test_without_a_press_the_exchange_stays_simultaneous(bot, db):
+    """Нажимать некому — размен прежний, одновременный.
+
+    На этом держатся бои, где руки нет вовсе: рейд, босс, прогон
+    баланса. Там очередь по-прежнему решает проворство, а вровень —
+    бьют оба.
+    """
+    from bot.game.classes import get_class
+    from bot.game.combat import Action, Fighter, Zone, resolve_round
+
+    stats = get_class("assassin").base_stats
+    first = Fighter(1, "А", get_class("assassin"), stats)
+    second = Fighter(2, "Б", get_class("assassin"), stats)
+    first.hp = second.hp = 1
+    blow = Action(attacks=(Zone.HEAD,), block=(Zone.LEGS, Zone.BELT))
+
+    result = resolve_round(first, blow, second, blow, 1, random.Random(1))
+
+    assert result.simultaneous is True
+    assert len({one.attacker_id for one in result.strikes}) == 2
+
+
+async def test_changing_your_mind_does_not_buy_back_the_queue(bot, db):
+    """Передумал — бьёшь в другую зону, но очередь уже занята.
+
+    Иначе менять решение значило бы отдавать ход сопернику: нажал,
+    передумал — и вот ты уже второй.
+    """
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "assassin"))
+    await db.save_player(make_player(2, "Марла", "assassin"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+
+    # Первый выбрал всё — очередь за ним
+    await choose(service, session, 1, 0)
+    assert session.struck_first() == 1
+    # И передумал, уже после второго
+    await service.handle_choice(session.id, 2, "attack", "head")
+    await service.handle_choice(session.id, 1, "attack", "legs")
+
+    # Номер в очереди у него тот же, первый: передумавший не встаёт в
+    # хвост. Сравнивать тут надо сам номер — пока соперник не дожал
+    # свой выбор, «кто первый» ответит первым в любом случае
+    assert session.pressed_at[1] == 1, session.pressed_at
+    assert session.struck_first() == 1, session.pressed_at
+    await service.shutdown()

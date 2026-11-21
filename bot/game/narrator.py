@@ -515,6 +515,19 @@ def round_report(
     return "\n".join(head + said)
 
 
+def fallen_line(fallen: list[Fighter]) -> str:
+    """Кто выбыл из боя — строкой в ленту судьи. Пусто — никто.
+
+    Череп тут не украшение: по ленте читают бой, и в групповом по ней
+    же считают, кого уже нет. Удар, которым боец упал, от обычного
+    размена ничем не отличается — отличает его только эта строка.
+    """
+    if not fallen:
+        return ""
+    names = ", ".join(mention(one) for one in fallen)
+    return f"💀 Выбывает из боя: {names}"
+
+
 def winners_line(champions: list[Fighter]) -> str:
     """Кто взял бой — строкой в ленту судьи. Пусто — ничья.
 

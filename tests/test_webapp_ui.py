@@ -21641,3 +21641,54 @@ async def test_the_feed_ends_with_the_verdict_and_not_with_a_punch(server):
         assert "больше не встанет" not in card, card
         assert "Отлежаться" not in card, card
         await browser.close()
+
+
+@pytest.mark.skipif(CHROMIUM is None, reason="chromium не найден")
+@pytest.mark.asyncio
+async def test_the_result_waits_for_the_scene_to_play_out(server):
+    """Итог боя не выскакивает поверх ещё идущей анимации.
+
+    Опрос приносит будущее: бой для сервера уже кончился, а на сцене
+    последний размен ещё идёт. Показать итог в этот миг — значит
+    рассказать конец раньше самого боя, и смотреть его уже незачем.
+    То же и с энергией: её прибавка видна в панели, и всплывать она
+    должна тогда же, когда удар.
+    """
+    opening = ring_with_scene()
+    opening["duel"]["log"] = []
+
+    async with async_playwright() as pw:
+        browser, page, asked = await open_scene(pw, server, opening)
+        await page.wait_for_selector(".fight-veil.gone", timeout=10000)
+
+        over = ring_with_scene()  # тот же ход, но бой уже кончен
+        over["duel"]["finished"] = True
+        over["duel"]["summary"] = [
+            "🏆 Победа: Марла (Ассасин)",
+            "",
+            "📊 Итоги",
+            "🥷 Марла: Нанесено урона 61, получено +40 опыта",
+        ]
+        await page.route("**/api/fights*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(over)
+        ))
+        # Опрос останавливаем: иначе итог покажет он сам, следующим
+        # кругом через пару секунд, и проверка не увидит разницы между
+        # «сцена доиграла и выложила» и «опрос всё равно перерисовал»
+        await page.evaluate("() => stopWatchingFights()")
+        # Ответ разбираем прямо здесь: к возврату `loadFights` панель уже
+        # перерисована (или нарочно не перерисована), и ждать нечего
+        await page.evaluate("() => loadFights()")
+
+        # Размен ещё идёт — итога нет, и сцена на месте
+        assert await page.evaluate("() => fightShow.stage.done()") is False
+        assert await page.locator(".fight-finish").count() == 0, "итог опередил бой"
+        assert await page.locator(".fight-scene").count() == 1
+        assert await page.evaluate("() => fightAwaits") is True
+
+        # Доиграла — и итог появился сам, без нового опроса: опрос стоит
+        await page.wait_for_selector(".fight-finish", timeout=10000)
+        card = await page.locator(".fight-finish").inner_text()
+        assert "Победа: Марла" in card
+        assert await page.evaluate("() => fightAwaits") is False
+        await browser.close()

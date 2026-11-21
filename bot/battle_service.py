@@ -58,6 +58,7 @@ from bot.game.narrator import (
     battle_intro,
     battle_result,
     battle_rewards_report,
+    fallen_line,
     winners_line,
     battle_round_report,
     esc,
@@ -692,6 +693,13 @@ class BattleService:
             and user_id not in session.announced_out
         ]
         session.announced_out.update(fallen)
+        # Выбывшие — и в ленту судьи, а не только в панель чата: по
+        # ленте читают бой, и без этой строки из неё не понять, кого уже
+        # нет. В дуэли то же самое пишет развязка
+        if fallen and session.rounds:
+            session.rounds[-1].setdefault("lines", []).append(
+                plain(fallen_line([session.fighters[uid] for uid in fallen]))
+            )
         await self._close_panel(
             session, battle_round_report(session, results, fallen, said)
         )

@@ -936,6 +936,9 @@ async def test_the_end_of_the_fight_is_told_in_the_judges_feed(arena):
     last = duel["log"][-1]["lines"]
 
     assert any("Победа за:" in one for one in last), last
+    # И череп над упавшим: по ленте читают бой, а в групповом по этой
+    # же строке считают, кого уже нет
+    assert any("💀 Выбывает из боя:" in one for one in last), last
     who = next(one for one in last if "Победа за:" in one)
     winner = next(
         row["name"] for row in duel["fighters"]
