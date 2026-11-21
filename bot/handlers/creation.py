@@ -14,7 +14,6 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InputMediaPhoto,
     Message,
 )
 
@@ -31,7 +30,7 @@ from bot.game.classes import (
     get_class,
 )
 from bot.game.links import card_target
-from bot.game.looks import FEMALE, MALE, free_looks, get_look
+from bot.game.looks import FEMALE, MALE, class_look
 from bot.game.narrator import esc
 from bot.handlers.common import (
     card_keyboard,
@@ -43,11 +42,9 @@ from bot.handlers.common import (
 from bot.keyboards import (
     ClassCB,
     GenderCB,
-    LookCB,
     StatCB,
     classes_keyboard,
     genders_keyboard,
-    looks_keyboard,
     stats_keyboard,
 )
 from bot.models import Player
@@ -73,7 +70,6 @@ class Creation(StatesGroup):
     choosing_class = State()
     entering_nickname = State()
     choosing_gender = State()
-    choosing_avatar = State()
     distributing = State()
 
 
@@ -84,7 +80,7 @@ class Upgrade(StatesGroup):
 WELCOME = (
     "🥊 <b>Бойцовский клуб</b>\n\n"
     "Первое правило клуба: никто не дерётся без персонажа.\n"
-    "Собери бойца — класс, имя, аватар, характеристики, — "
+    "Собери бойца — класс, имя, характеристики, — "
     "а потом добавь меня в группу и вызывай кого-нибудь на кулаки.\n\n"
     "<b>Выбирай класс:</b>\n"
 )
@@ -238,32 +234,29 @@ GENDER_QUESTION = "За кого дерёмся?"
 GENDER_ANSWERS = {MALE: "За мужчину.", FEMALE: "За женщину."}
 
 
-async def _show_looks(message: Message, gender: str, bot) -> None:
-    """Показать открытые образы своего пола — картинками и кнопками.
+async def _show_look(message: Message, look, bot) -> None:
+    """Показать образ, который достался бойцу по классу.
 
-    Картинки лежат в R2 и уходят в Telegram ссылками. Не дошли — не беда:
-    выбор всё равно остаётся, просто кнопками без превью.
+    Выбирать его не надо: класс уже выбран, и лицо к нему прилагается.
+    Прежде новичок первым делом разглядывал три одинаковых лица, ничего
+    про них не зная, — а поменять образ можно в любой момент, и за тем
+    же лицом он всё равно возвращался позже.
+
+    Картинка лежит в R2 и уходит в Telegram ссылкой. Не дошла — не
+    беда: бой от этого не меняется, а образ боец увидит в карточке.
     """
-    looks = [look for look in free_looks() if look.gender == gender]
+    said = (
+        f"Твой образ: {look.emoji} <b>{esc(look.title)}</b> — {esc(look.note)}.\n"
+        "Поменять его можно в карточке, а купить другой — в барбершопе "
+        "или салоне красоты."
+    )
     try:
-        await bot.send_media_group(
-            chat_id=message.chat.id,
-            media=[
-                InputMediaPhoto(
-                    media=look.picture,
-                    caption=f"{look.emoji} <b>{esc(look.title)}</b> — {esc(look.note)}",
-                )
-                for look in looks
-            ],
+        await bot.send_photo(
+            chat_id=message.chat.id, photo=look.picture, caption=said
         )
     except TelegramAPIError:
-        logger.warning("Картинки образов не ушли в Telegram — оставляем кнопки")
-
-    await message.answer(
-        "Выбери образ. Потом его можно поменять в карточке — "
-        "там же лежат платные, за кредиты.",
-        reply_markup=looks_keyboard(gender),
-    )
+        logger.warning("Картинка образа не ушла в Telegram — оставляем текст")
+        await message.answer(said)
 
 
 @router.callback_query(Creation.choosing_gender, GenderCB.filter())
@@ -271,24 +264,12 @@ async def pick_gender(
     callback: CallbackQuery, callback_data: GenderCB, state: FSMContext, bot
 ) -> None:
     gender = callback_data.code if callback_data.code in (MALE, FEMALE) else MALE
-    await state.update_data(gender=gender)
-    await state.set_state(Creation.choosing_avatar)
+    data = await state.get_data()
+    # Образ достаётся по классу, а не выбором: он уже выбран шагом раньше
+    look = class_look(data["class_code"], gender)
+    await state.update_data(gender=gender, look=look.code, avatar=look.emoji)
     await callback.message.edit_text(f"{GENDER_QUESTION} {GENDER_ANSWERS[gender]}")
-    await _show_looks(callback.message, gender, bot)
-    await callback.answer()
-
-
-@router.callback_query(Creation.choosing_avatar, LookCB.filter())
-async def pick_look(
-    callback: CallbackQuery, callback_data: LookCB, state: FSMContext
-) -> None:
-    """Выбранный образ — это и картинка карточки, и значок бойца."""
-    look = get_look(callback_data.code)
-    if look is None or look.paid or look.pro:
-        await callback.answer("Этот образ на старте не выдаётся.", show_alert=True)
-        return
-    await state.update_data(look=look.code, avatar=look.emoji)
-    await callback.message.edit_text(f"Образ выбран: {look.emoji} {look.title}")
+    await _show_look(callback.message, look, bot)
     await _ask_stats(callback.message, state, edit=False)
     await callback.answer()
 

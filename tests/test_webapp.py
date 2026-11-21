@@ -191,10 +191,12 @@ def test_card_reports_a_beaten_fighter_as_red():
 
 
 def test_avatar_url_appears_only_for_uploaded_photos():
-    """Без фото в рамке стоит образ: своей картинки у него пока нет."""
+    """Своё фото важнее образа, а без него в рамке стоит образ класса."""
     plain = build_card(make_player(), TOKEN)["avatar"]
-    assert not plain["url"] and not plain["photo"]
-    assert plain["look"] == "rookie" and plain["emoji"] == "🥊"
+    assert not plain["photo"], "своего фото боец не загружал"
+    # Образа не выбирали — значит, тот, что положен классу
+    assert plain["look"] == "warrior_realistic" and plain["emoji"] == "⚔️"
+    assert plain["url"].endswith("/avatars/warrior_realistic.png")
 
     with_photo = build_card(make_player(avatar_file_id="file-123"), TOKEN)["avatar"]
     assert with_photo["url"].startswith("avatar/42?expires=")

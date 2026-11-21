@@ -1975,6 +1975,7 @@ def look_row(look, current: str, owned: bool) -> dict:
 
 def wardrobe(
     current: str = "rookie", gender: str = "male", bought: tuple = (),
+    class_code: str = "warrior",
 ) -> dict:
     """Гардероб, как его отдаёт сервер: только свои образы.
 
@@ -1983,16 +1984,18 @@ def wardrobe(
     """
     from bot.game.looks import LOOKS
 
+    def mine(look) -> bool:
+        if look.pro or look.gender != gender:
+            # Старая выдача видна только хозяину, чужой пол — никому
+            return False
+        if look.for_class and look.for_class != class_code:
+            # Классовый образ чужого класса в гардероб не идёт
+            return False
+        return not look.paid or look.code in bought
+
     return {
         "credits": 1200,
-        "looks": [
-            look_row(look, current, True)
-            for look in LOOKS
-            # Старая выдача видна только своему хозяину, чужой пол — никому
-            if not look.pro
-            and look.gender == gender
-            and (not look.paid or look.code in bought)
-        ],
+        "looks": [look_row(look, current, True) for look in LOOKS if mine(look)],
     }
 
 
@@ -2052,7 +2055,8 @@ async def test_tapping_the_avatar_opens_the_wardrobe(server):
         await page.locator("#hero-avatar").click()
         await page.wait_for_selector("#sheet:not(.hidden)")
 
-        assert await page.locator(".look").count() == 4
+        # Образ класса, три открытых и один купленный
+        assert await page.locator(".look").count() == 5
         assert await page.locator(".look.current .look-title").inner_text() == "Новичок"
         # Цен в гардеробе нет: всё на нём уже своё
         tags = await page.locator(".look-tag").all_inner_texts()

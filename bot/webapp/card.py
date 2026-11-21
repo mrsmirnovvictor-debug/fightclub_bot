@@ -51,7 +51,7 @@ from bot.game.health import (
     now_ts,
 )
 from bot.game.locations import Service, get_location
-from bot.game.looks import DEFAULT_LOOK, get_look
+from bot.game.looks import DEFAULT_LOOK, class_look, get_look
 from bot.game.trainer import TRAINER_EMOJI, TRAINER_ID, TRAINER_NAME
 from bot.game import pro
 from bot.game.presence import is_online, plural, presence_text
@@ -1062,9 +1062,10 @@ def avatar_payload(player: Player, avatar_url: str) -> dict:
             "look_title": TRAINER_NAME,
             "photo": False,
         }
-    look = get_look(player.look)
-    # Образ не выбирали — оставляем всё как было: значок бойца
-    own_face = bool(player.avatar_file_id) or look is None
+    # Образ не выбирали — на бойце тот, что положен его классу: выбора
+    # на старте больше нет, и пустое поле значит именно это
+    look = get_look(player.look) or class_look(player.class_code, player.sex)
+    own_face = bool(player.avatar_file_id)
     return {
         "emoji": player.avatar if own_face else look.emoji,
         "url": avatar_url or ("" if own_face else look.picture),

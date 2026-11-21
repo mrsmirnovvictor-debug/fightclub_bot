@@ -6,6 +6,7 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from bot.game.looks import FEMALE, MALE
 from bot.game.classes import (
     ALL_STATS,
     ALL_ZONES,
@@ -18,7 +19,6 @@ from bot.game.classes import (
     block_combos,
 )
 from bot.game.equipment import SHOWCASE, items_unlocked_at
-from bot.game.looks import FEMALE, MALE, free_looks
 from bot.game.potions import POTIONS
 
 AVATARS: tuple[str, ...] = (
@@ -49,10 +49,6 @@ class BuyCB(CallbackData, prefix="buy"):
 
 class GenderCB(CallbackData, prefix="gender"):
     code: str  # male | female
-
-
-class LookCB(CallbackData, prefix="look"):
-    code: str  # код образа из bot.game.looks
 
 
 class DrinkCB(CallbackData, prefix="drink"):
@@ -128,20 +124,6 @@ def genders_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="🙎‍♂️ Мужской", callback_data=GenderCB(code=MALE))
     builder.button(text="🙎‍♀️ Женский", callback_data=GenderCB(code=FEMALE))
     builder.adjust(2)
-    return builder.as_markup()
-
-
-def looks_keyboard(gender: str) -> InlineKeyboardMarkup:
-    """Открытые образы своего пола — из них и выбирают лицо бойца."""
-    builder = InlineKeyboardBuilder()
-    for look in free_looks():
-        if look.gender != gender:
-            continue
-        builder.button(
-            text=f"{look.emoji} {look.title}",
-            callback_data=LookCB(code=look.code),
-        )
-    builder.adjust(1)
     return builder.as_markup()
 
 

@@ -102,9 +102,13 @@ async def test_the_shelf_holds_every_look_of_this_house(db):
     rows = await shelf(db, player, BARBER, NOW)
 
     assert {one["gender"] for one in rows} == {MALE}
+    # Классовые образы на полку не идут: их не продают — они и так твои
     assert {one["code"] for one in rows} == {
-        one.code for one in looks_of_gender(MALE) if not one.pro
+        one.code
+        for one in looks_of_gender(MALE)
+        if not one.pro and not one.starter
     }
+    assert not any(one["code"].endswith("_realistic") for one in rows)
     boxer = next(one for one in rows if one["code"] == HIS)
     assert boxer["price"] == LOOK_PRICE == 200
     assert boxer["owned"] is False and boxer["can_buy"] is True
@@ -201,8 +205,10 @@ async def test_the_card_holds_only_what_you_own(db):
 
     rows = await wardrobe(db, player, NOW)
 
+    # Классовый образ воина лежит в гардеробе с первого дня, а чужих
+    # классов там нет вовсе
     assert {one["code"] for one in rows} == {
-        "rookie", "worker", "racer", HIS,
+        "warrior_realistic", "rookie", "worker", "racer", HIS,
     }
     assert all(one["owned"] for one in rows)
 
@@ -288,3 +294,83 @@ async def test_the_shop_opens_only_inside_it(db, client):
     away.location = CLUB
     await db.save_player(away)
     assert (await client.get("/api/barber", headers=headers())).status == 409
+
+
+# ---------- образ по классу ----------
+
+
+def test_every_class_has_its_own_face_and_women_share_one():
+    """Мужчине — образ его класса, женщине — один на все четыре."""
+    from bot.game.looks import LOOKS, class_look
+
+    faces = {
+        code: class_look(code, MALE).code
+        for code in ("warrior", "assassin", "rogue", "tank")
+    }
+    assert faces == {
+        "warrior": "warrior_realistic",
+        "assassin": "assassin_realistic",
+        "rogue": "trickster_realistic",
+        "tank": "tank_realistic",
+    }
+    # Женский один на все классы: рисовали его под пол, а не под класс
+    assert {class_look(code, FEMALE).code for code in faces} == {"female_realistic"}
+
+    # Все пятеро — бесплатные, не из старой выдачи и с картинкой
+    for look in LOOKS:
+        if look.starter:
+            assert not look.paid and not look.pro
+            assert look.picture.endswith(".png")
+
+
+async def test_the_class_face_is_on_a_fighter_who_never_chose(db):
+    """Пустой образ читается как «по классу», а не как «без лица».
+
+    Записи, заведённые до классовых образов, ровно такие: выбор на
+    старте был, а потом исчез — и обеим нужен один ответ.
+    """
+    from bot.looks_service import current_look
+
+    player = await visitor(db)
+    player.look = ""
+
+    assert current_look(player).code == "warrior_realistic"
+    player.class_code = "tank"
+    assert current_look(player).code == "tank_realistic"
+    player.gender = FEMALE
+    assert current_look(player).code == "female_realistic"
+
+
+async def test_a_stranger_class_face_is_not_in_your_wardrobe(db):
+    """В гардеробе воина нет ни танка, ни ассасина: это не вкус, а путаница."""
+    player = await visitor(db)
+
+    rows = await wardrobe(db, player, NOW)
+    codes = {one["code"] for one in rows}
+
+    assert "warrior_realistic" in codes
+    assert not codes & {"tank_realistic", "assassin_realistic", "trickster_realistic"}
+
+
+async def test_the_class_face_can_be_put_back_on(db):
+    """Переоделся — и вернулся к своему: образ класса никуда не девается."""
+    from bot.looks_service import wear_look
+
+    player = await visitor(db)
+    await wear_look(db, player, "rookie", NOW)
+    assert player.look == "rookie"
+
+    choice = await wear_look(db, player, "warrior_realistic", NOW)
+
+    assert choice.look.code == "warrior_realistic"
+    assert player.look == "warrior_realistic"
+
+
+async def test_a_class_face_of_another_class_cannot_be_worn(db):
+    """Чужой классовый образ не надеть даже запросом мимо страницы."""
+    from bot.looks_service import LookError, wear_look
+
+    player = await visitor(db)
+
+    with pytest.raises(LookError, match="не из твоего гардероба"):
+        await wear_look(db, player, "tank_realistic", NOW)

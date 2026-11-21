@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from bot.game.art import look_avatar
+from bot.game.art import avatar, look_avatar
 
 # Сколько стоит платный образ. Двести — цена пары эликсиров: внешность
 # это вкус, а не сила, и платить за неё как за комплект брони незачем.
@@ -54,6 +54,14 @@ class Look:
     price: int = 0
     image: str = ""  # пусто — берём файл по коду образа
     note: str = ""
+    # Класс, которому этот образ положен. Пусто — образ общий, и его
+    # носит кто угодно своего пола. Классовый в чужом гардеробе не
+    # показывается: воин в шкуре танка — это уже не вкус, а путаница
+    for_class: str = ""
+    # Образ, с которым боец выходит из регистрации. На полке дома его
+    # нет: там торгуют, а этот и так твой — в гардеробе он лежит с
+    # первого дня
+    starter: bool = False
     # Образ, который раздавали прежде. За кредиты его не купить и с
     # подпиской он больше не приходит: у кого он есть — остался навсегда,
     # у кого нет — не появится. В гардеробе виден только своему хозяину:
@@ -71,6 +79,53 @@ class Look:
 
 
 LOOKS: tuple[Look, ...] = (
+    # ---------- по классу: с ними боец и заводится ----------
+    #
+    # Выбора образа на старте больше нет: класс уже выбран, и лицо к
+    # нему прилагается. Прежде новичок первым делом разглядывал три
+    # одинаковых лица, ничего про них не зная, — а поменять их можно в
+    # любой момент, и за тем же лицом он всё равно возвращался позже.
+    #
+    # Файлы лежат под своими именами, без `_transparent`: их рисовали
+    # отдельным заходом, и адрес у них поэтому стоит целиком.
+    Look(
+        "warrior_realistic", "Воин", "⚔️", MALE,
+        image=avatar("warrior_realistic", "png"),
+        starter=True,
+        for_class="warrior",
+        note="Бьёт первым и бьёт сильно",
+    ),
+    Look(
+        # Назван не «Ассасином»: так уже зовётся старая выдача за PRO, и
+        # две одинаковые надписи в гардеробе не различить
+        "assassin_realistic", "Убийца", "🥷", MALE,
+        image=avatar("assassin_realistic", "png"),
+        starter=True,
+        for_class="assassin",
+        note="Бьёт туда, где больнее",
+    ),
+    Look(
+        "trickster_realistic", "Трикстер", "🎭", MALE,
+        image=avatar("trickster_realistic", "png"),
+        starter=True,
+        for_class="rogue",
+        note="Его удар — тот, которого не ждали",
+    ),
+    Look(
+        "tank_realistic", "Танк", "🛡", MALE,
+        image=avatar("tank_realistic", "png"),
+        starter=True,
+        for_class="tank",
+        note="Стоит, пока остальные падают",
+    ),
+    # Женский образ один на все четыре класса: рисовали его под пол, а
+    # не под класс — ровно как тело в сцене боя
+    Look(
+        "female_realistic", "Боец", "🥊", FEMALE,
+        image=avatar("female_realistic", "png"),
+        starter=True,
+        note="Пришла драться, а не смотреться",
+    ),
     # ---------- открыты всем ----------
     Look("rookie", "Новичок", "🥊", MALE, note="Пришёл с улицы, дерётся как умеет"),
     Look("worker", "Работяга", "🔧", MALE, note="Со смены — сразу в подвал"),
@@ -199,9 +254,34 @@ def get_look(code: str) -> Look | None:
     return BY_CODE.get(code)
 
 
+def class_look(class_code: str, gender: str) -> Look:
+    """Образ, с которым боец этого класса выходит из регистрации.
+
+    Женщинам он один на все классы: рисовали его под пол, а не под
+    класс. Мужчинам — свой на каждый класс.
+
+    Пустого ответа тут быть не может: без лица карточка показывает один
+    значок, и боец, у которого класс есть, а образа нет, выглядел бы
+    недоделанным. Класса не нашлось — отдаём первый общий: это не
+    «правильный» образ, а крайний случай, которого в игре не бывает.
+    """
+    starters = [look for look in LOOKS if look.starter]
+    if gender == FEMALE:
+        return next(one for one in starters if one.gender == FEMALE)
+    for look in starters:
+        if look.for_class == class_code:
+            return look
+    return LOOKS[0]  # pragma: no cover - классов четыре, и образ есть у каждого
+
+
 def free_looks() -> tuple[Look, ...]:
-    """Открытые всем. Старая выдача сюда не входит: она не бесплатная, она своя."""
-    return tuple(look for look in LOOKS if not look.paid and not look.pro)
+    """Открытые всем. Старая выдача сюда не входит: она не бесплатная, она своя.
+
+    Классовые тоже не входят: их не выбирают, с ними заводятся.
+    """
+    return tuple(
+        look for look in LOOKS if not look.paid and not look.pro and not look.starter
+    )
 
 
 def pro_looks() -> tuple[Look, ...]:
@@ -232,6 +312,7 @@ def shop_of(gender: str) -> str:
 __all__ = [
     "BY_CODE",
     "DEFAULT_LOOK",
+    "class_look",
     "FEMALE",
     "GENDER_TITLES",
     "LOOKS",

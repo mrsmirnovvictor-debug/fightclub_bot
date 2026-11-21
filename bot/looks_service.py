@@ -34,6 +34,7 @@ from bot.game.looks import (
     DEFAULT_LOOK,
     LOOKS,
     Look,
+    class_look,
     get_look,
     gender_at,
     looks_of_gender,
@@ -58,8 +59,13 @@ class LookChoice:
 
 
 def current_look(player: Player) -> Look:
-    """Образ бойца. Не выбирал — считаем, что на нём стандартный."""
-    return get_look(player.look) or get_look(DEFAULT_LOOK)
+    """Образ бойца. Не выбирал — тот, что положен его классу.
+
+    Выбора на старте нет вовсе, и пустое поле теперь значит не «боец
+    без лица», а «лицо по классу». Так же читаются и старые записи,
+    заведённые до того, как образы появились.
+    """
+    return get_look(player.look) or class_look(player.class_code, player.sex)
 
 
 def is_owned(look: Look, owned: set[str]) -> bool:
@@ -76,6 +82,11 @@ def shown_to(look: Look, player: Player, owned: set[str]) -> bool:
         # Старая выдача: у кого её нет, у того и не будет — кнопка,
         # которая ничего не делает, только дразнит
         return False
+    if look.for_class and look.for_class != player.class_code:
+        # Классовый образ чужого класса: воин в шкуре танка — это уже
+        # не вкус, а путаница. Купленным он при этом быть не может, так
+        # что и отнимать нечего
+        return look.code == player.look
     return (
         look.gender == player.sex
         or look.code in owned
@@ -200,7 +211,9 @@ async def shelf(
     chosen = current_look(player)
     rows = []
     for look in looks_of_gender(sells):
-        if look.pro:
+        # Старая выдача и классовые образы на полку не идут: первую не
+        # продают вовсе, а второй и так твой с первого дня
+        if look.pro or look.starter:
             continue
         row = _row(look, player, owned, chosen, moment)
         mine = player.sex == sells

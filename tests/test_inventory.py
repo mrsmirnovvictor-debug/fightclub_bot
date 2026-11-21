@@ -813,8 +813,10 @@ async def test_the_wardrobe_shows_only_what_the_fighter_owns(db):
     await db.save_player(player)
 
     rows = await wardrobe(db, player)
-    # Три открытых своего пола: больше у новичка ничего и нет
-    assert {row["code"] for row in rows} == {"rookie", "worker", "racer"}
+    # Образ класса и три открытых своего пола: больше у новичка ничего нет
+    assert {row["code"] for row in rows} == {
+        "warrior_realistic", "rookie", "worker", "racer",
+    }
     assert all(row["owned"] for row in rows)
     assert {row["gender"] for row in rows} == {player.sex}
 
@@ -910,8 +912,8 @@ async def test_mini_app_serves_the_wardrobe_and_puts_on_what_is_yours(client, db
 
     listing = await client.get("/api/looks", headers=headers(1))
     body = await listing.json()
-    # Три открытых своего пола и один купленный
-    assert listing.status == 200 and len(body["looks"]) == 4
+    # Образ класса, три открытых своего пола и один купленный
+    assert listing.status == 200 and len(body["looks"]) == 5
 
     response = await client.post(
         "/api/look", json={"code": "veteran"}, headers=headers(1)
@@ -978,7 +980,11 @@ def test_every_look_points_at_its_own_transparent_picture():
     pictures = [look.picture for look in LOOKS]
     assert len(set(pictures)) == len(LOOKS)
     for look in LOOKS:
-        assert look.picture == f"{AVATARS}/{look.code}_transparent.png"
+        # Классовые рисовали отдельным заходом, и файлы у них лежат под
+        # своими именами, без `_transparent`. Прозрачность у них та же:
+        # образ ложится поверх машины, и квадрат её бы закрыл
+        tail = "" if look.starter else "_transparent"
+        assert look.picture == f"{AVATARS}/{look.code}{tail}.png"
 
 
 def test_a_look_costs_two_hundred_and_not_a_thousand():
@@ -993,7 +999,10 @@ def test_the_second_batch_gave_six_looks_to_each_gender():
     """По шестёрке на пол, и коды у них — имена файлов в бакете."""
     from bot.game.looks import FEMALE, LOOKS, MALE
 
-    second = [look for look in LOOKS if look.code[:4] in ("male", "fema")]
+    second = [
+        look for look in LOOKS
+        if look.code[:4] in ("male", "fema") and not look.starter
+    ]
     assert len(second) == 12
     assert sum(1 for look in second if look.gender == MALE) == 6
     assert sum(1 for look in second if look.gender == FEMALE) == 6
