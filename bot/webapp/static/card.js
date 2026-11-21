@@ -10455,7 +10455,13 @@ function strangerBox(data) {
 // шапку, что сейчас на виду.
 
 function paintWorkEntry(screen) {
-  document.querySelectorAll(".work-entry").forEach((one) => one.remove());
+  // Снимаем только свою кнопку: у «Рейда» тот же класс вида, и раньше
+  // этот обход уносил и её. Пока обе рисовались подряд, это сходило, но
+  // теперь кнопку работы перерисовывает и вид изнутри — а рейд ему
+  // перерисовывать нечем
+  document
+    .querySelectorAll(".work-entry:not(.raid-entry)")
+    .forEach((one) => one.remove());
   if (screen === "work" || screen === "hr") return;
   // Справочная — не дом, в неё не приходят ногами: её открывает кнопка
   // внизу, и стоять в ней нельзя. Кнопка «Работа» означает «ты сейчас
@@ -10463,15 +10469,27 @@ function paintWorkEntry(screen) {
   // боец читал рейтинг, а над рейтингом висела чужая смена
   if (screen === "club" && clubHouse === "info") return;
   if (!cardData || !cardData.work || !cardData.work.here) return;
-  const head = el(screen) && el(screen).querySelector(".screen-head");
-  if (!head) return;
+  // Место кнопки — поверх вида изнутри, в правом верхнем углу: это про
+  // сам дом, а не про экран, и читается она там как вывеска над
+  // прилавком. «Рейд» при этом остаётся под картинкой, в шапке: два
+  // дела одного дома не должны слипаться в один угол.
+  // Вида может и не быть — дом без картинки или упавший файл, — и тогда
+  // кнопка возвращается в шапку: висеть ей больше негде
+  const art = el(screen + "-interior");
+  const over = Boolean(art) && !art.classList.contains("hidden");
+  const host = over
+    ? art
+    : el(screen) && el(screen).querySelector(".screen-head");
+  if (!host) return;
 
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.className = "work-entry" + (cardData.work.on_shift ? " on" : "");
+  btn.className =
+    "work-entry" + (over ? " on-art" : "") +
+    (cardData.work.on_shift ? " on" : "");
   btn.textContent = cardData.work.on_shift ? "🕗 Смена" : "💼 Работа";
   btn.addEventListener("click", () => showTab("work"));
-  head.appendChild(btn);
+  host.appendChild(btn);
 }
 
 /** Кнопка «Рейд» в шапке дома, в котором идёт рейд.
@@ -21306,6 +21324,10 @@ function paintInterior() {
     // а картинка тяжёлая
     if (pic.getAttribute("src") !== src) pic.src = src;
   });
+  // Кнопка работы висит на виде изнутри, а он только что мог появиться
+  // или исчезнуть: без этой строки она оставалась бы в шапке до
+  // следующей смены экрана — или висела бы на убранной картинке
+  paintWorkEntry(lastTab);
 }
 
 // Файл не доехал — убираем рамку целиком: пустая полоса под заголовком

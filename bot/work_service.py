@@ -41,6 +41,7 @@ from bot.game.work import (
     DAY_HOURS,
     LICENCE,
     PASS_SHARE,
+    PAYDAY_HOUR,
     SHIFT_HOURS,
     SHIFT_SECONDS,
     VACANCIES,
@@ -53,6 +54,7 @@ from bot.game.work import (
     day_is_over,
     months_count,
     plural_months,
+    quit_block_until,
     work_day,
     shift_fits,
     vacancies_at,
@@ -829,7 +831,14 @@ async def _release(
     await db.leave_job(player.user_id, player.job_experience)
     await hand_back(db, player)
     await drop_service_cars(db, player)
-    await db.block_job(player.user_id, vacancy.code, now + COOLDOWN_SECONDS, reason)
+    # Ушёл сам — место закрыто до конца недели; уволили — на семь дней.
+    # Разница не в строгости, а в том, за что запрет: уход считается
+    # неделей, потому что неделей считается вся работа, а увольнение —
+    # наказание, и у него свой ровный срок
+    until = (
+        quit_block_until(now) if reason == "quit" else now + COOLDOWN_SECONDS
+    )
+    await db.block_job(player.user_id, vacancy.code, until, reason)
     player.job_code = ""
     player.job_since = 0
     player.job_week = 0
@@ -841,6 +850,14 @@ async def _release(
 
 def _block_text(block: dict, now: int) -> str:
     """Почему на эту вакансию сейчас нельзя."""
+    if block["reason"] == "quit":
+        # Срок ухода не в днях: место закрыто до конца недели, и «через
+        # 1 дн.» в воскресенье читалось бы как «завтра в это же время»,
+        # хотя открывается оно в девять утра
+        return (
+            "С этого места ты ушёл сам. Вернуться на него можно в "
+            f"понедельник с {PAYDAY_HOUR}:00 — другие места открыты."
+        )
     days = max(1, (block["until"] - now + 24 * 60 * 60 - 1) // (24 * 60 * 60))
     why = {
         "test": "Тест на это место ты уже провалил",

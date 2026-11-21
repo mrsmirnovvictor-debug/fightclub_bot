@@ -21445,3 +21445,75 @@ async def test_a_busy_trainer_keeps_his_row_with_the_button_dead(server):
         assert "занят" in await page.locator(".fight-note").inner_text()
         assert await page.get_by_role("button", name="Принять вызов").is_disabled()
         await browser.close()
+
+
+async def test_the_work_button_hangs_on_the_view_of_the_house(server):
+    """Кнопка работы стоит поверх вида изнутри, в правом верхнем углу.
+
+    Это кнопка про сам дом, а не про экран, и место ей на картинке дома.
+    «Рейд» при этом остаётся под картинкой, в шапке: два дела одного
+    дома не должны слипаться в один угол.
+    """
+    me = make_player("fight_club")
+    card = build_card(me, TOKEN, viewer_id=42)
+    assert card["place"]["interior"], "у клуба нет вида изнутри — проверять нечего"
+    card["work"] = {"here": True, "on_shift": False, "code": "fight_host"}
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, images=True, ladder=ladder_state(), club=a_rating(),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        # Сперва справочная: вида изнутри там нет, и кнопки тоже
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-ladder:not(.hidden)")
+        assert await page.locator("#club-interior").is_hidden()
+        assert await page.locator("#club .work-entry").count() == 0
+
+        # Теперь здание: картинка появляется — и кнопка переезжает на неё.
+        # Это разные отрисовки, и порядок их не гарантирован: кнопку
+        # рисует вкладка, а картинку — карточка дома
+        await page.evaluate("openClub()")
+        await page.wait_for_selector("#club-fights:not(.hidden)")
+        await page.wait_for_selector("#club-interior:not(.hidden)")
+
+        entry = page.locator("#club-interior .work-entry")
+        assert await entry.count() == 1, "кнопки на виде изнутри нет"
+        assert await entry.inner_text() == "💼 Работа"
+        # В шапке её больше нет: место одно, а не два
+        assert await page.locator("#club .screen-head .work-entry").count() == 0
+
+        # Угол именно правый верхний, и кнопка лежит внутри картинки
+        box = await entry.bounding_box()
+        art = await page.locator("#club-interior").bounding_box()
+        assert box["y"] < art["y"] + art["height"] / 2, "кнопка уехала вниз"
+        assert box["x"] > art["x"] + art["width"] / 2, "кнопка уехала влево"
+        assert box["y"] >= art["y"] and box["x"] + box["width"] <= (
+            art["x"] + art["width"] + 1
+        ), "кнопка вылезла за картинку"
+
+        # И нажимается она так же, как в шапке
+        await entry.click()
+        await page.wait_for_selector("#work:not(.hidden)")
+        await browser.close()
+
+
+async def test_without_a_view_the_work_button_returns_to_the_header(server):
+    """Дом без картинки — кнопка в шапке: висеть ей больше негде."""
+    player = make_player("strength_gym")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["place"]["interior"] = ""
+    card["work"] = {"here": True, "on_shift": False, "code": "trainer"}
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), gym=gym_state(),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "gym")
+        await page.wait_for_selector("#gym:not(.hidden)")
+
+        assert await page.locator("#gym-interior").is_hidden()
+        head = page.locator("#gym .screen-head")
+        assert await head.locator(".work-entry").count() == 1
+        await browser.close()

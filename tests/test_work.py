@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from math import ceil
+
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -37,9 +39,13 @@ from bot.game.work import (
     WEEK_SECONDS,
     get_vacancy,
     payday_after,
+    COOLDOWN_SECONDS,
+    get_vacancy,
+    payday_after,
     payday_before,
     vacancies_at,
     week_is_over,
+    week_of,
 )
 from bot.models import Player
 from bot.travel_service import LockedError, Travel
@@ -1819,3 +1825,104 @@ async def test_only_the_mayor_sees_the_chairs(db):
     assert chair["pay_min"] == 1_500 and chair["pay_max"] == 2_300
     assert chair["holder"] == {}
     assert [one["user_id"] for one in chair["candidates"]] == [93]
+
+
+# ---------- смена работы в рамках недели ----------
+
+
+async def test_a_job_can_be_changed_in_the_middle_of_the_week(db):
+    """Ушёл в среду — в среду же можно устроиться в другое место.
+
+    Неделя не запирает бойца на одном месте: правило «работа одна на
+    бойца» про то, чтобы не держать две сразу, а не про то, чтобы ждать
+    понедельника.
+    """
+    player = await hired(db, make_player(location=BAR), now=moment_at(day=5))
+    await start_shift(db, player, moment_at(day=5, hour=12))
+    await quit_job(db, player, moment_at(day=7, hour=10))
+
+    player.location = HR
+    await db.save_player(player)
+    got = await apply(
+        db, player, "postman", right_answers("postman"), moment_at(day=7, hour=11)
+    )
+
+    assert got.hired, "в другое место не берут до понедельника"
+    assert player.job_code == "postman"
+    # Неделя новой работы начинается той же неделей, а не следующей:
+    # устроился в среду — в понедельник и считают
+    assert player.job_week == week_of(moment_at(day=7, hour=11))
+    assert player.job_minutes == 0, "часы старой работы ушли с ней"
+
+
+async def test_leaving_pays_by_the_weekly_salary_for_the_hours_worked(db):
+    """Расчёт при уходе — доля недельного оклада за отработанные часы."""
+    player = await hired(db, make_player(location=BAR), now=moment_at(day=5))
+    bar = get_vacancy("bartender")
+    await start_shift(db, player, moment_at(day=5, hour=12))
+    await start_shift(db, player, moment_at(day=6, hour=12))
+
+    await quit_job(db, player, moment_at(day=7, hour=10))
+
+    # Четыре часа из десяти недельной нормы при окладе в 250
+    assert player.account_balance == ceil(bar.salary * 4 / bar.hours)
+    assert player.account_balance == 100
+
+
+async def test_the_place_you_left_waits_for_monday_nine(db):
+    """Своё место закрыто до девяти утра понедельника, и только своё."""
+    player = await hired(db, make_player(location=BAR), now=moment_at(day=5))
+
+    await quit_job(db, player, moment_at(day=7, hour=10))
+
+    blocks = await db.job_blocks_of(player.user_id, moment_at(day=7, hour=11))
+    assert "bartender" in blocks
+    assert blocks["bartender"]["until"] == payday_after(moment_at(day=7, hour=10))
+    # 7 октября 2026 — среда, значит ждать до 12 октября, девяти утра
+    assert blocks["bartender"]["until"] == moment_at(day=12, hour=9)
+
+    # Сутки спустя место всё ещё закрыто
+    player.location = BAR
+    await db.save_player(player)
+    with pytest.raises(WorkError, match="ушёл сам"):
+        await apply(
+            db, player, "bartender", right_answers("bartender"),
+            moment_at(day=8, hour=12),
+        )
+
+    # А в девять утра понедельника — открыто
+    assert not await db.job_blocks_of(player.user_id, moment_at(day=12, hour=9))
+
+
+async def test_the_refusal_names_monday_and_not_a_count_of_days(db):
+    """Отказ говорит про понедельник: «через 1 дн.» было бы неправдой.
+
+    Срок ухода мерится неделей, и в воскресенье до него остаются часы, а
+    не сутки: округлённые «дни» обещали бы не то время.
+    """
+    player = await hired(db, make_player(location=BAR), now=moment_at(day=5))
+    await quit_job(db, player, moment_at(day=11, hour=20))  # воскресенье
+
+    player.location = BAR
+    await db.save_player(player)
+    with pytest.raises(WorkError) as refused:
+        await apply(
+            db, player, "bartender", right_answers("bartender"),
+            moment_at(day=11, hour=21),
+        )
+
+    said = str(refused.value)
+    assert "понедельник" in said and "9:00" in said
+    assert "дн." not in said, said
+
+
+async def test_being_fired_still_costs_a_full_week(db):
+    """Уволенному ровные семь дней: уход — не наказание, увольнение — да."""
+    player = await hired(db, make_player(location=BAR), now=moment_at(day=5))
+    monday = moment_at(day=12, hour=10)
+
+    said = await settle(db, player, monday)
+
+    assert "уволили" in said
+    blocks = await db.job_blocks_of(player.user_id, monday)
+    assert blocks["bartender"]["until"] == monday + COOLDOWN_SECONDS
