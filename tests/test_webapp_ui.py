@@ -21397,7 +21397,12 @@ def trainer_call(open_now: bool = True) -> dict:
             "personal": False,
             "in_app": True,
             "open": open_now,
-            "note": "" if open_now else "Тренер сейчас занят. Загляни попозже.",
+            "note": (
+                "Выходит твоим отражением: тот же класс, уровень и "
+                "характеристики."
+                if open_now
+                else "Тренер сейчас занят. Загляни попозже."
+            ),
             "challenger": {
                 "user_id": -1, "name": "Тренер", "level": 3,
                 "emoji": "⚔️", "fclass": "Воин",
@@ -21417,8 +21422,8 @@ async def test_the_trainer_stands_in_the_ring_list_and_takes_the_fight(server):
         body = await page.locator("#fights-body").inner_text()
         assert "Тренер [3]" in body, body
         assert "кулачный бой" in body
-        # Подписи о занятости нет: Тренер свободен
-        assert await page.locator(".fight-note").count() == 0
+        # Подпись про отражение, а не про занятость: Тренер свободен
+        assert "отражением" in await page.locator(".fight-note").inner_text()
 
         async def catch(route):
             sent.append(route.request.post_data_json)
@@ -21516,4 +21521,86 @@ async def test_without_a_view_the_work_button_returns_to_the_header(server):
         assert await page.locator("#gym-interior").is_hidden()
         head = page.locator("#gym .screen-head")
         assert await head.locator(".work-entry").count() == 1
+        await browser.close()
+
+
+async def test_the_info_button_opens_the_rival_before_the_fight(server):
+    """ℹ️ стоит в строке вызова и открывает карточку того, кто зовёт.
+
+    Уровень в строке не говорит ни об уроне, ни об уворот: перед боем
+    надо знать, против кого выходишь. Кнопка та же, что в списке
+    игроков, и ведёт туда же.
+    """
+    ring = json.loads(json.dumps(EMPTY_RING))
+    ring["challenges"] = [
+        {
+            "id": 7,
+            "mode": {"code": "fist", "title": "кулачный бой", "emoji": "🥊"},
+            "mine": False,
+            "personal": False,
+            "in_app": True,
+            "challenger": {
+                "user_id": 43, "name": "Марла", "level": 7,
+                "emoji": "🗡", "fclass": "Ассасин",
+            },
+        }
+    ]
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, ring)
+
+        line = page.locator(".fight-card .fight-line")
+        assert "Марла [7]" in await line.inner_text()
+        info = line.locator(".fighter-info")
+        assert await info.count() == 1
+
+        await info.click()
+        await page.wait_for_selector(".sheet-doll")
+        assert "Марла [7]" in await page.locator("#sheet-title").inner_text()
+        # Кнопка «Принять вызов» при этом не нажалась: бой не начался
+        assert await page.locator(".fight-round").count() == 0
+        await browser.close()
+
+
+async def test_the_board_opens_the_rival_and_not_yourself(server):
+    """На табло боя ℹ️ стоит у соперника. У себя не стоит: своя рядом."""
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, ring_with_duel())
+        await page.wait_for_selector(".fight-board")
+
+        sides = page.locator(".fight-side")
+        assert await sides.count() == 2
+        mine = sides.locator("xpath=self::*[contains(@class,'you')]")
+        assert await mine.locator(".fighter-info").count() == 0
+        assert await page.locator(".fight-side .fighter-info").count() == 1
+
+        await page.locator(".fight-side .fighter-info").click()
+        await page.wait_for_selector(".sheet-doll")
+        assert "Марла" in await page.locator("#sheet-title").inner_text()
+        await browser.close()
+
+
+async def test_the_standoff_lets_you_read_the_rival_before_the_gong(server):
+    """Вызов принят, гонга ещё нет — карточку соперника можно открыть."""
+    waiting = ring_with_duel()
+    waiting["duel"]["started"] = False
+
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, waiting)
+        await page.wait_for_selector(".fight-standoff")
+
+        assert await page.locator(".fight-side .fighter-info").count() == 1
+        await page.locator(".fight-side .fighter-info").click()
+        await page.wait_for_selector(".sheet-doll")
+        assert "Марла" in await page.locator("#sheet-title").inner_text()
+        await browser.close()
+
+
+async def test_the_trainers_row_says_he_is_your_mirror(server):
+    """У заявки Тренера есть подпись про отражение и та же кнопка ℹ️."""
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, trainer_call())
+
+        note = await page.locator(".fight-note").inner_text()
+        assert "отражением" in note, note
+        assert await page.locator(".fight-line .fighter-info").count() == 1
         await browser.close()

@@ -735,9 +735,13 @@ async def test_the_trainer_calls_from_the_ring_list(arena):
 
     assert row is not None, "Тренера на ринге нет"
     assert body["challenges"][0] is row, "заявка Тренера стоит не первой"
-    assert row["open"] is True and row["note"] == ""
+    assert row["open"] is True
+    assert "отражением" in row["note"], row["note"]
     assert row["challenger"]["name"] == "Тренер"
-    assert row["challenger"]["level"] == 3 + 2, "уровень не на два выше ученика"
+    # Отражение: уровень и класс — ученика, и так и написано в строке
+    assert row["challenger"]["level"] == 3
+    assert row["challenger"]["fclass"] == "Воин"
+    assert row["mirror"] is True
     assert row["mode"]["code"] == "fist"
     assert row["mine"] is False and row["personal"] is False
 
@@ -800,3 +804,38 @@ async def test_above_the_fourth_level_the_trainer_is_not_shown_at_all(arena, db)
 
     status, denied = await act(client, 44, action="lesson")
     assert status == 409 and "новичков" in denied["error"]
+
+
+async def test_the_trainer_card_shows_the_mirror_and_not_his_own_record(arena, db):
+    """Карточка Тренера — тот Тренер, который выйдет, а не запись в базе.
+
+    Выходит он отражением смотрящего, и числа его собственного тела на
+    ринге не встречаются вовсе. Показывать их значило бы готовить бойца
+    не к тому бою.
+    """
+    from bot.game.trainer import TRAINER_ID, body_stats
+
+    client, _, _ = arena
+    me = await db.get_player(42)
+    assert me.base_stats != body_stats(), "ученик собран как тело Тренера"
+    # Кнопка ℹ️ стоит в строке заявки, а заявка заводит и запись Тренера:
+    # до первого взгляда на ринг его в базе нет вовсе
+    await state(client, 42)
+
+    response = await client.get(
+        f"/api/card?user_id={TRAINER_ID}", headers=headers(42)
+    )
+    assert response.status == 200
+    card = await response.json()
+
+    assert card["name"] == "Тренер"
+    assert card["level"] == me.level
+    assert card["fclass"]["code"] == me.class_code
+    assert card["is_self"] is False
+    mine = {row["code"]: row["base"] for row in card["stats"]}
+    assert mine == {
+        "strength": me.strength,
+        "agility": me.agility,
+        "intuition": me.intuition,
+        "endurance": me.endurance,
+    }, mine

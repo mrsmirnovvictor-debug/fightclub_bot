@@ -8,7 +8,7 @@ import pytest
 from bot.config import Config
 from bot.duel_service import DuelError, DuelService
 from bot.game.classes import ALL_ZONES, Stats
-from bot.game.trainer import TRAINER_ID, TRAINER_NAME, trainer_level
+from bot.game.trainer import TRAINER_ID, TRAINER_NAME
 from bot.models import Player
 from bot.trainer_service import ensure_trainer
 
@@ -57,7 +57,13 @@ async def test_the_trainer_takes_the_fight_at_once(duels, db):
     assert session.npc == TRAINER_ID
     assert set(session.order) == {learner.user_id, TRAINER_ID}
     assert session.fighters[TRAINER_ID].name == TRAINER_NAME
-    assert session.fighters[TRAINER_ID].level == trainer_level(learner.level)
+    # Отражение: уровень, класс и запас здоровья — ученика
+    coach = session.fighters[TRAINER_ID]
+    mine = session.fighters[learner.user_id]
+    assert coach.level == learner.level
+    assert coach.fclass.code == learner.class_code
+    assert coach.max_hp == mine.max_hp
+    assert coach.stats == mine.stats
 
 
 async def test_the_trainer_has_already_moved_when_the_round_opens(duels, db):

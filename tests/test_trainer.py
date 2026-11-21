@@ -4,30 +4,22 @@
 в тестах боёв.
 """
 
-from bot.game.classes import get_class
-from bot.game.combat import derive
+import random
+import statistics
+
+from bot.game.classes import FIGHTER_CLASSES, get_class
+from bot.game.combat import NO_GONG, Fighter, derive, random_action, resolve_round
+from bot.game.reference import developed_stats
 from bot.game.trainer import (
     BODY_LEVEL,
     LEARNER_LEVELS,
-    LEVEL_GAP,
     TRAINER_CLASS,
     WIN_SHARES,
+    body_stats,
+    lesson_exp,
     may_learn,
-    trainer_level,
-    trainer_stats,
     win_share,
 )
-
-
-def body(level: int):
-    return derive(get_class(TRAINER_CLASS), trainer_stats(level), 0)
-
-
-def test_the_trainer_steps_out_two_levels_above_his_pupil():
-    """Уровень Тренера — уровень ученика плюс два, и это всё правило."""
-    assert trainer_level(1) == 3
-    assert trainer_level(4) == 6
-    assert trainer_level(4) == LEARNER_LEVELS[1] + LEVEL_GAP
 
 
 def test_only_the_first_four_levels_are_let_in_to_him():
@@ -37,49 +29,56 @@ def test_only_the_first_four_levels_are_let_in_to_him():
     assert not may_learn(0), "нулевого уровня не бывает, но и пускать некого"
 
 
-def test_the_trainer_keeps_one_body_for_every_pupil():
-    """Запас здоровья у Тренера один на все бои.
+def test_his_own_body_is_a_real_fighters_body():
+    """Запись Тренера — не заглушка: по ней считается его здоровье.
 
-    Здоровье у него копится между боями и затягивается по часам клуба.
-    Если бы запас менялся от соперника, «восстановилось до ста
-    процентов» означало бы каждый раз другое число, и накопленное было
-    бы не с чем сравнивать.
+    На ринг эти числа не выходят (там тело ученика), но запас по ним
+    затягивается между боями, и запись с нулевой выносливостью сделала
+    бы «сто процентов здоровья» бессмысленным.
     """
-    pools = {body(level).max_hp for level in range(3, BODY_LEVEL + 1)}
-    assert len(pools) == 1, f"тело гуляет от уровня к уровню: {pools}"
+    mine = body_stats()
+    assert mine == developed_stats(get_class(TRAINER_CLASS), BODY_LEVEL)
+    body = derive(get_class(TRAINER_CLASS), mine, 0)
+    assert body.max_hp > 0
+    assert body.damage_max > 0
 
 
-def test_he_grows_in_dodging_and_crits_and_not_in_muscle():
-    """Заточка — перекос, а не отказ от силы.
+def test_a_mirror_fight_is_won_half_the_time_by_every_class():
+    """Отражение даёт половину побед — и каждому классу, и на каждом уровне.
 
-    Чистая заточка «только уворот и крит» оставляет его без силы и
-    выносливости, и на четвёртом уровне ученик оказывается крепче
-    учителя. Поэтому три очка из четырёх идут в проворство и
-    интуицию, а четвёртое — в силу и выносливость по очереди.
+    Это не подогнанное число: бой симметричный, и другим он быть не
+    может. Прогон держим коротким, но достаточным, чтобы заметить
+    перекос самого движка — вроде преимущества того, кто стоит первым.
     """
-    low, high = body(3), body(BODY_LEVEL)
-    assert high.dodge_chance > low.dodge_chance
-    assert high.crit_chance > low.crit_chance
-    # Сила тоже растёт, просто медленнее
-    assert high.damage_max > low.damage_max
-
-    # И уворот у него выше, чем у игрока того же уровня с ровной
-    # раскладкой очков: иначе заточки не видно вовсе
-    even = derive(get_class(TRAINER_CLASS), _even_stats(BODY_LEVEL), 0)
-    assert high.dodge_chance > even.dodge_chance
-    assert high.crit_chance > even.crit_chance
-
-
-def test_he_is_not_tougher_than_the_pupil_he_teaches():
-    """Против старшего ученика Тренер берёт не запасом, а уворотом.
-
-    Если бы он был крепче по всем числам, бой перестал бы быть уроком
-    и стал бы стеной.
-    """
-    pupil = derive(get_class(TRAINER_CLASS), _even_stats(4), 0)
-    teacher = body(trainer_level(4))
-    assert teacher.max_hp < pupil.max_hp, "учитель толще ученика"
-    assert teacher.dodge_chance > pupil.dodge_chance
+    rng = random.Random(20261121)
+    runs = 150
+    shares = []
+    for fclass in FIGHTER_CLASSES.values():
+        for level in range(LEARNER_LEVELS[0], LEARNER_LEVELS[1] + 1):
+            stats = developed_stats(fclass, level)
+            wins = {1: 0, 2: 0, None: 0}
+            for _ in range(runs):
+                pupil = Fighter(1, "Ученик", fclass, stats, level)
+                coach = Fighter(2, "Тренер", fclass, stats, level)
+                number = 1
+                while True:
+                    result = resolve_round(
+                        pupil, random_action(pupil, rng),
+                        coach, random_action(coach, rng),
+                        number, rng, gong=NO_GONG,
+                    )
+                    if result.finished:
+                        wins[result.winner_id] += 1
+                        break
+                    number += 1
+            share = (wins[1] + wins[None] / 2) / runs
+            shares.append(share)
+            assert 0.35 <= share <= 0.65, (
+                f"{fclass.title} ур.{level}: ученик берёт {share:.0%}"
+            )
+    assert 0.45 <= statistics.mean(shares) <= 0.55, (
+        f"в среднем {statistics.mean(shares):.0%}"
+    )
 
 
 def test_the_first_two_wins_a_day_pay_and_the_rest_do_not():
@@ -91,17 +90,9 @@ def test_the_first_two_wins_a_day_pay_and_the_rest_do_not():
     assert list(WIN_SHARES) == [1.0, 0.5]
 
 
-def _even_stats(level: int):
-    """Боец того же класса с ровной раздачей очков — для сравнения."""
-    from bot.game.classes import Stats
-    from bot.game.economy import MICRO_UPS_PER_LEVEL, POINTS_PER_UP
-
-    base = get_class(TRAINER_CLASS).base_stats
-    points = POINTS_PER_UP * MICRO_UPS_PER_LEVEL * max(0, level - 1)
-    share, rest = divmod(points, 4)
-    return Stats(
-        strength=base.strength + share + (1 if rest > 0 else 0),
-        agility=base.agility + share + (1 if rest > 1 else 0),
-        intuition=base.intuition + share + (1 if rest > 2 else 0),
-        endurance=base.endurance + share,
-    )
+def test_the_share_of_the_day_turns_into_whole_experience():
+    """Доли опыта: полный, половина, ноль — и половина не обнуляется."""
+    assert lesson_exp(100, 0) == 100
+    assert lesson_exp(100, 1) == 50
+    assert lesson_exp(100, 2) == 0
+    assert lesson_exp(1, 1) == 1

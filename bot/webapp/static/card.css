@@ -2828,6 +2828,14 @@ body.dark .bar-tab.active .bar-icon {
 }
 /* Значок ℹ️ рисует сам шрифт эмодзи: наклон и жирность ему только мешают,
    а кружок вокруг цветной картинки выглядит обводкой по обводке */
+/* Та же кнопка в строке вызова и на табло боя: там она стоит в абзаце,
+   а не в строке-флексе, и её надо выровнять по тексту руками */
+.fight-line .fighter-info,
+.fight-name .fighter-info {
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
 .fighter-info {
   width: 24px;
   height: 24px;

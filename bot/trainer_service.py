@@ -21,9 +21,8 @@ from bot.game.trainer import (
     TRAINER_CLASS,
     TRAINER_ID,
     TRAINER_NAME,
+    body_stats,
     may_learn,
-    trainer_level,
-    trainer_stats,
 )
 from bot.models import Player
 
@@ -37,7 +36,7 @@ async def ensure_trainer(db: Database) -> Player:
     trainer = await db.get_player(TRAINER_ID)
     if trainer is not None:
         return trainer
-    stats = trainer_stats(BODY_LEVEL)
+    stats = body_stats()
     trainer = Player(
         user_id=TRAINER_ID,
         nickname=TRAINER_NAME,
@@ -70,23 +69,42 @@ def calls(trainer: Player, busy: bool, now: int | None = None) -> bool:
     return not busy and rested(trainer, now)
 
 
-def shaped_for(trainer: Player, learner: Player) -> Player:
-    """Тренер, каким он выходит против этого ученика.
+def health_share(trainer: Player, now: int | None = None) -> float:
+    """Какую долю своего запаса Тренер накопил к этому мигу.
 
-    Уровень — на два выше ученика, и по нему же собраны характеристики.
-    Выносливость при этом не меняется: тело у Тренера одно, и здоровье,
-    накопленное между боями, остаётся тем же самым числом.
+    Доля, а не число единиц: на ринг он выходит с телом ученика, и
+    запас там каждый раз другой. Побитый Тренер против танка выглядел бы
+    целым, если переносить число.
     """
-    level = trainer_level(learner.level)
-    stats = trainer_stats(level)
-    return replace(
+    if trainer.max_hp <= 0:  # pragma: no cover - тела без запаса не бывает
+        return 1.0
+    return min(1.0, max(0.0, trainer.current_hp(now) / trainer.max_hp))
+
+
+def shaped_for(trainer: Player, learner: Player, now: int | None = None) -> Player:
+    """Тренер, каким он выходит против этого ученика: его отражением.
+
+    Класс, уровень и характеристики — ученика. Бой от этого получается
+    ровный: одно и то же тело, тот же урон, тот же уворот, и решает его
+    только то, кто куда бил. Половина побед у любого класса выходит не
+    подгонкой чисел, а симметрией — свести к половине воина с одной
+    заточкой нельзя вовсе, он еда для танка и стена для воина.
+
+    Здоровье переносится долей: накопил половину своего запаса — выйдет
+    с половиной запаса ученика.
+    """
+    share = health_share(trainer, now)
+    mirror = replace(
         trainer,
-        level=level,
-        strength=stats.strength,
-        agility=stats.agility,
-        intuition=stats.intuition,
-        endurance=stats.endurance,
+        class_code=learner.class_code,
+        level=learner.level,
+        strength=learner.strength,
+        agility=learner.agility,
+        intuition=learner.intuition,
+        endurance=learner.endurance,
     )
+    mirror.set_hp(round(mirror.max_hp * share), now)
+    return mirror
 
 
 def refuse(learner: Player) -> str:
@@ -99,6 +117,7 @@ def refuse(learner: Player) -> str:
 __all__ = [
     "TRAINER_CHALLENGE_ID",
     "calls",
+    "health_share",
     "ensure_trainer",
     "refuse",
     "rested",

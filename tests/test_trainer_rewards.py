@@ -24,7 +24,7 @@ from bot.game.trainer import (
 )
 from bot.models import Player
 from bot.quest_service import journal, take
-from bot.trainer_service import ensure_trainer
+from bot.trainer_service import ensure_trainer, rested
 
 
 class FakeBot:
@@ -128,10 +128,13 @@ async def test_a_loss_leaves_the_learner_with_nothing(duels, db):
 
 
 async def test_the_lesson_is_counted_by_the_learners_level(duels, db):
-    """Опыт считается от уровня ученика, а не от уровня Тренера.
+    """Опыт считается от уровня ученика — и формулой, а не совпадением.
 
-    Тренер выходит на два уровня выше, и ставка по старшему из двоих
-    была бы платой за эти два уровня, которых ученик не брал.
+    Тренер выходит отражением, так что его уровень и так равен уровню
+    ученика. Но считать опыт от своего уровня — правило этого боя, а не
+    следствие того, каким Тренер собран: собери его иначе, и опыт
+    должен остаться тем же. Поэтому проверка сверяет начисленное с
+    формулой, посчитанной по уровню ученика с обеих сторон.
     """
     learner = a_learner(level=4, user_id=44)
     await db.save_player(learner)
@@ -139,22 +142,20 @@ async def test_the_lesson_is_counted_by_the_learners_level(duels, db):
     session.fighters[learner.user_id].damage_dealt = 40
     fighter = session.fighters[learner.user_id]
     teacher = session.fighters[TRAINER_ID]
-    assert teacher.level > fighter.level, "Тренер вышел не старше ученика"
+    assert teacher.level == fighter.level, "Тренер вышел не отражением"
 
     from bot.game.economy import win_exp
 
     by_learner = win_exp(40, learner.level, learner.level,
                          fighter.max_hp + teacher.max_hp, 2)
-    by_trainer = win_exp(40, learner.level, teacher.level,
-                         fighter.max_hp + teacher.max_hp, 2)
-    assert by_learner < by_trainer, "уровни считаются одинаково, проверка слепа"
+    # Для сравнения: та же формула по старшему уровню дала бы больше —
+    # значит, уровень в ней и правда что-то решает
+    assert by_learner < win_exp(40, learner.level, learner.level + 2,
+                                fighter.max_hp + teacher.max_hp, 2)
 
     await duels._apply_results(session, a_verdict(learner.user_id))
     after = await db.get_player(learner.user_id)
-    assert after.total_exp == by_learner, (
-        f"начислили {after.total_exp}: по ученику {by_learner}, "
-        f"по Тренеру {by_trainer}"
-    )
+    assert after.total_exp == by_learner, f"начислили {after.total_exp}"
 
 
 async def test_the_lesson_goes_into_raids_and_not_into_wins(duels, db):
@@ -212,16 +213,24 @@ async def test_the_lesson_closes_the_bartenders_first_quest(duels, db):
 
 
 async def test_a_beaten_trainer_keeps_his_wounds_after_the_lesson(duels, db):
-    """Здоровье Тренера после боя сохраняется: по нему он и зовёт."""
+    """Здоровье Тренера после боя сохраняется — долей, а не числом.
+
+    На ринге у него было тело ученика, и записанное число единиц
+    означало бы в его собственном теле совсем другую долю: против
+    крепкого ученика побитый Тренер вернулся бы почти целым.
+    """
     learner = a_learner()
     await db.save_player(learner)
 
     session = await duels.start_trainer_duel(learner)
-    session.fighters[TRAINER_ID].hp = 7
+    coach = session.fighters[TRAINER_ID]
+    coach.hp = coach.max_hp // 4
     await duels._apply_results(session, a_verdict(learner.user_id))
 
     trainer = await db.get_player(TRAINER_ID)
-    assert trainer.current_hp() == 7, "побитый Тренер вернулся целым"
+    left = trainer.current_hp() / trainer.max_hp
+    assert 0.2 <= left <= 0.3, f"доля не сохранилась: {left:.0%}"
+    assert not rested(trainer), "побитый Тренер снова зовёт на бой"
 
 
 async def test_the_day_counter_starts_at_moscow_midnight(duels, db):

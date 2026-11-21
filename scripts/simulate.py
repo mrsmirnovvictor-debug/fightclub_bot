@@ -5,6 +5,7 @@
     python scripts/simulate.py --gear 8    # то же, но в полной экипировке
     python scripts/simulate.py --triangle  # ворота контента: круг классов
     python scripts/simulate.py --progress  # сколько боёв уходит до потолка
+    python scripts/simulate.py --trainer   # винрейт ученика против Тренера
 
 **Бой здесь идёт до победы, как и в игре.** Это важнее, чем кажется:
 `resolve_round` без довода `gong` берёт старое поведение, где гонг равен
@@ -36,6 +37,7 @@ from bot.game.classes import (  # noqa: E402
     Stat,
 )
 from bot.game.economy import MAX_LEVEL, MICRO_UPS_PER_LEVEL, win_exp  # noqa: E402
+from bot.game.trainer import LEARNER_LEVELS, TRAINER_NAME  # noqa: E402
 from bot.game.reference import (  # noqa: E402
     developed_stats,
     kit_price,
@@ -52,6 +54,9 @@ from bot.game.equipment import Equipment  # noqa: E402
 from bot.game.narrator import duel_intro, finish_report, round_report  # noqa: E402
 
 TAGS = re.compile(r"</?[a-z][^>]*>")
+
+# Уровни, которых Тренер берёт в ученики
+LEARNER_LEVELS_RANGE = range(LEARNER_LEVELS[0], LEARNER_LEVELS[1] + 1)
 
 
 def plain(text: str) -> str:
@@ -359,6 +364,48 @@ def _spend(hero, rng: random.Random) -> None:
     hero.apply_stats(stats)
 
 
+def trainer(runs: int, seed: int) -> None:
+    """Винрейт ученика против Тренера — по классам и уровням.
+
+    Тренер выходит отражением: его класс, уровень и характеристики — те
+    же, что у ученика. Бой от этого симметричный, и половина побед у
+    каждого класса здесь не подогнанное число, а проверка того, что
+    отражение и правда отражение — и что сам движок не даёт форы тому,
+    кто стоит первым.
+    """
+    rng = random.Random(seed)
+    shares: list[float] = []
+    print(f"(зерно {seed}, боёв на пару {runs})\n")
+    print(f"{'класс':10} " + "  ".join(f"ур.{lvl}" for lvl in LEARNER_LEVELS_RANGE))
+    for fclass in FIGHTER_CLASSES.values():
+        row: list[float] = []
+        for level in LEARNER_LEVELS_RANGE:
+            stats = developed_stats(fclass, level)
+            wins = {1: 0, 2: 0, None: 0}
+            for _ in range(runs):
+                pupil = Fighter(1, "Ученик", fclass, stats, level)
+                coach = Fighter(2, TRAINER_NAME, fclass, stats, level)
+                number = 1
+                while True:
+                    result = resolve_round(
+                        pupil, random_action(pupil, rng),
+                        coach, random_action(coach, rng),
+                        number, rng, gong=NO_GONG,
+                    )
+                    if result.finished:
+                        wins[result.winner_id] += 1
+                        break
+                    number += 1
+            share = (wins[1] + wins[None] / 2) / runs
+            row.append(share)
+            shares.append(share)
+        print(f"{fclass.title:10} " + "  ".join(f"{one:4.0%}" for one in row))
+    print(
+        f"\nсреднее {statistics.mean(shares):.0%}, "
+        f"от {min(shares):.0%} до {max(shares):.0%}"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Симулятор боёв бойцовского клуба")
     parser.add_argument("--balance", action="store_true", help="прогнать все пары классов")
@@ -371,6 +418,9 @@ def main() -> None:
     parser.add_argument(
         "--triangle", action="store_true", help="держится ли круг классов"
     )
+    parser.add_argument(
+        "--trainer", action="store_true", help="винрейт ученика против Тренера"
+    )
     parser.add_argument("--runs", type=int, default=500, help="боёв на пару (для --balance)")
     parser.add_argument("--seed", type=int, default=None, help="зерно генератора")
     parser.add_argument("--first", default="warrior", choices=sorted(FIGHTER_CLASSES))
@@ -378,7 +428,9 @@ def main() -> None:
     args = parser.parse_args()
 
     seed = args.seed if args.seed is not None else random.randrange(10**6)
-    if args.triangle:
+    if args.trainer:
+        trainer(args.runs, seed)
+    elif args.triangle:
         # У круга свои зёрна: без --seed он считается по всем четырём
         triangle(max(50, args.runs // 2), args.seed)
     elif args.gear:

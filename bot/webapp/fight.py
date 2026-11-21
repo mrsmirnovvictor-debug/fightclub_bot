@@ -42,11 +42,9 @@ from bot.game.abilities import (
 from bot.game.scout import advise
 from bot.game.trainer import (
     TRAINER_ART,
-    TRAINER_CLASS,
     TRAINER_ID,
     TRAINER_NAME,
     may_learn,
-    trainer_level,
 )
 from bot.models import Player
 from bot.trainer_service import TRAINER_CHALLENGE_ID, calls
@@ -184,7 +182,10 @@ def trainer_row(
     if not may_learn(learner.level):
         return None
     open_now = calls(trainer, busy=busy)
-    fclass = get_class(TRAINER_CLASS)
+    # Класс и уровень — ученика: Тренер выходит его отражением, и в
+    # строке должно стоять то, с чем он выйдет, а не то, что лежит в
+    # его записи
+    fclass = get_class(learner.class_code)
     return {
         "id": TRAINER_CHALLENGE_ID,
         "npc": True,
@@ -193,13 +194,22 @@ def trainer_row(
         "personal": False,
         "in_app": True,
         "open": open_now,
-        "note": "" if open_now else "Тренер сейчас занят. Загляни попозже.",
+        # Пока свободен — подпись объясняет, с чем он выйдет: класс в
+        # строке совпадает с твоим не по ошибке. Занят — подпись про
+        # это, а отражение к тому времени уже прочитано
+        "note": (
+            "Выходит твоим отражением: тот же класс, уровень и характеристики."
+            if open_now
+            else "Тренер сейчас занят. Загляни попозже."
+        ),
+        # Отражение — то, что о бое надо знать заранее: подпись говорит
+        # это словами, а кнопка ℹ️ рядом открывает его карточку, где те
+        # же числа стоят целиком
+        "mirror": True,
         "challenger": {
             "user_id": TRAINER_ID,
             "name": TRAINER_NAME,
-            # Уровень — тот, каким он выйдет против этого ученика, а не
-            # тот, что лежит в его записи: в бою будет именно этот
-            "level": trainer_level(learner.level),
+            "level": learner.level,
             "emoji": fclass.emoji,
             "fclass": fclass.title,
         },

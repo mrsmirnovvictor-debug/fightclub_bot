@@ -20,7 +20,7 @@ from bot.game.art import LOADING, REDESIGN, combat_base
 from bot.battle_service import BattleError
 from bot.duel_service import DuelError, DuelService
 from bot.game.trainer import TRAINER_ID
-from bot.trainer_service import ensure_trainer
+from bot.trainer_service import ensure_trainer, shaped_for
 from bot.raid_service import RaidError
 from bot.game.classes import ALL_STATS, ALL_ZONES, FIGHTER_CLASSES, Stat, Zone
 from bot.game.combat import Fighter, Outcome, RoundResult, Strike
@@ -532,6 +532,14 @@ async def api_card(request: web.Request) -> web.Response:
             },
             status=404,
         )
+    if player.user_id == TRAINER_ID and viewer.user_id != TRAINER_ID:
+        # Карточка Тренера — это тот Тренер, который выйдет против
+        # смотрящего, а не запись из таблицы. Выходит он отражением, и
+        # числа его собственного тела на ринге не встречаются вовсе:
+        # показывать их значило бы готовить бойца не к тому бою
+        me = await db.get_player(viewer.user_id)
+        if me is not None:
+            player = shaped_for(player, me)
     # Классовый приём выдаётся при первом же взгляде на карточку. Так он
     # доходит и до тех, кто завёл бойца до появления приёмов: догонять их
     # отдельной разовой раздачей пришлось бы ровно один раз, а забыть о

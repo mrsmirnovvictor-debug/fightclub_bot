@@ -4073,6 +4073,37 @@ function myChallenge(challenge) {
   return box;
 }
 
+/** Кнопка ℹ️ рядом с именем соперника: открывает его карточку.
+ *
+ * Та же кнопка и то же место, куда она ведёт из списка игроков. Перед
+ * боем надо знать, против кого выходишь, а не только как его звать:
+ * уровень в строке не говорит ни об уроне, ни об уворот, ни о том,
+ * чем соперник закрывается.
+ *
+ * Строка боя и строка вызова описывают бойца одинаково — `name`,
+ * `emoji` и класс одной строкой, — а карточке нужен объект, как в
+ * списке игроков. Переклад один на все места, где эта кнопка стоит.
+ */
+function rivalInfo(one) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "fighter-info";
+  btn.textContent = "ℹ️";
+  btn.title = "Карточка бойца";
+  btn.setAttribute("aria-label", "Карточка бойца " + one.name);
+  btn.addEventListener("click", () => {
+    showFighter({
+      user_id: one.user_id,
+      nickname: one.name,
+      level: one.level,
+      fclass: { emoji: one.emoji, title: one.fclass },
+      pro: Boolean(one.pro),
+      badge: one.badge || "",
+    });
+  });
+  return btn;
+}
+
 function challengeList(data) {
   const box = document.createElement("div");
   const head = document.createElement("h2");
@@ -4084,13 +4115,17 @@ function challengeList(data) {
     card.className = "fight-card";
     const line = document.createElement("p");
     line.className = "fight-line";
-    line.textContent =
+    const said = document.createElement("span");
+    said.textContent =
       challenge.mode.emoji + " " + challenge.challenger.emoji + " " +
       challenge.challenger.name + " [" + challenge.challenger.level + "] — " +
       challenge.mode.title + (challenge.personal ? ", лично тебе" : "");
+    line.appendChild(said);
+    line.appendChild(rivalInfo(challenge.challenger));
     card.appendChild(line);
-    // Заявка Тренера висит и когда он занят: подпись говорит, почему
-    // сейчас нельзя, — иначе строка пропадала бы без объяснений
+    // У заявки Тренера есть подпись: свободен — про отражение, занято —
+    // почему сейчас нельзя. Без неё совпадение класса с твоим читалось
+    // бы как ошибка, а исчезающая строка — как сбой
     if (challenge.npc && challenge.note) {
       const note = document.createElement("p");
       note.className = "fight-note";
@@ -4131,7 +4166,12 @@ function fighterSide(fighter) {
   box.className = "fight-side" + (fighter.you ? " you" : "");
   const name = document.createElement("p");
   name.className = "fight-name";
-  name.textContent = fighter.emoji + " " + fighter.name + " [" + fighter.level + "]";
+  const said = document.createElement("span");
+  said.textContent = fighter.emoji + " " + fighter.name + " [" + fighter.level + "]";
+  name.appendChild(said);
+  // Карточка соперника — и до гонга, и во время боя. Своей рядом нет:
+  // она в одном нажатии на вкладке бойца, а табло узкое
+  if (!fighter.you) name.appendChild(rivalInfo(fighter));
   const hp = document.createElement("p");
   hp.className = "fight-hp";
   hp.textContent = fighter.hp + "/" + fighter.max_hp;

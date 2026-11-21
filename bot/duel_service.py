@@ -1012,8 +1012,10 @@ class DuelService:
         fighter = session.fighters[learner_id]
         teacher = session.fighters[session.npc]
         won = result.winner_id == learner_id
-        # Уровень ученика стоит с обеих сторон формулы: ставка берётся по
-        # старшему из двоих, и уровень Тренера задрал бы её даром
+        # Уровень ученика стоит с обеих сторон формулы. Тренер выходит
+        # отражением, и его уровень и так равен уровню ученика, — но
+        # считать опыт от своего уровня правило этого боя, а не
+        # следствие того, каким Тренер собран
         full_exp = win_exp(
             fighter.damage_dealt,
             player.level,
@@ -1037,10 +1039,14 @@ class DuelService:
         await self.db.save_player(player)
 
         # Побитый Тренер остаётся побитым: по его здоровью решается, зовёт
-        # ли он следующего, и затягивается оно обычными часами клуба
+        # ли он следующего, и затягивается оно обычными часами клуба.
+        # Записываем долю, а не число: на ринге у него было тело ученика,
+        # и семьдесят единиц от танка — это совсем не то же, что
+        # семьдесят от новичка
         teacher_row = await self.db.get_player(session.npc)
         if teacher_row is not None:
-            teacher_row.set_hp(teacher.hp)
+            left = teacher.hp / teacher.max_hp if teacher.max_hp else 0.0
+            teacher_row.set_hp(round(teacher_row.max_hp * left))
             await self.db.save_player(teacher_row)
 
         # Первый бой у бармена этот урок закрывает: задание про то, чтобы
