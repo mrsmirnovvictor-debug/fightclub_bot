@@ -43,6 +43,7 @@ from bot.game.scout import advise
 from bot.game.trainer import (
     LEVEL_GAP,
     TRAINER_ART,
+    TRAINER_EMOJI,
     TRAINER_ID,
     TRAINER_NAME,
     may_learn,
@@ -212,7 +213,11 @@ def trainer_row(
             "user_id": TRAINER_ID,
             "name": TRAINER_NAME,
             "level": trainer_level(learner.level),
-            "emoji": fclass.emoji,
+            # Значок свой, а не классовый: класс в строке — ученика, и
+            # его значок читался бы как «он твой же боец». Класс при
+            # этом остаётся названием: подпись под строкой объясняет,
+            # почему он совпал с твоим
+            "emoji": TRAINER_EMOJI,
             "fclass": fclass.title,
         },
     }

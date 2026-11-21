@@ -19,6 +19,7 @@ from bot.database import Database
 from bot.game.trainer import (
     BODY_LEVEL,
     TRAINER_CLASS,
+    TRAINER_EMOJI,
     TRAINER_ID,
     TRAINER_NAME,
     body_stats,
@@ -42,6 +43,9 @@ async def ensure_trainer(db: Database) -> Player:
     trainer = Player(
         user_id=TRAINER_ID,
         nickname=TRAINER_NAME,
+        # Значок — свой, не классовый: в бою он выходит в классе
+        # ученика, и классовый значок соврал бы про него
+        avatar=TRAINER_EMOJI,
         class_code=TRAINER_CLASS,
         strength=stats.strength,
         agility=stats.agility,

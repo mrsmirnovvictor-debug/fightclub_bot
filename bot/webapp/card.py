@@ -52,6 +52,7 @@ from bot.game.health import (
 )
 from bot.game.locations import Service, get_location
 from bot.game.looks import DEFAULT_LOOK, get_look
+from bot.game.trainer import TRAINER_EMOJI, TRAINER_ID, TRAINER_NAME
 from bot.game import pro
 from bot.game.presence import is_online, plural, presence_text
 from bot.game.pro import current_offer
@@ -1047,6 +1048,20 @@ def avatar_payload(player: Player, avatar_url: str) -> dict:
     Загруженное фото важнее образа: боец поставил своё лицо осознанно.
     Нет фото — показываем картинку образа, нет и её — значок образа.
     """
+    from bot.game import art
+
+    if player.user_id == TRAINER_ID:
+        # У Тренера свой портрет и никакого образа: гардероб — это
+        # товар, а он не игрок и купить ничего не может. Значок под
+        # портретом свой, не классовый: в бою он выходит в классе
+        # ученика, и классовый значок соврал бы про него
+        return {
+            "emoji": TRAINER_EMOJI,
+            "url": art.TRAINER_AVATAR,
+            "look": "",
+            "look_title": TRAINER_NAME,
+            "photo": False,
+        }
     look = get_look(player.look)
     # Образ не выбирали — оставляем всё как было: значок бойца
     own_face = bool(player.avatar_file_id) or look is None

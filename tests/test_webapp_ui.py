@@ -21405,7 +21405,7 @@ def trainer_call(open_now: bool = True) -> dict:
             ),
             "challenger": {
                 "user_id": -1, "name": "Тренер", "level": 5,
-                "emoji": "⚔️", "fclass": "Воин",
+                "emoji": "🥋", "fclass": "Воин",
             },
         }
     ]

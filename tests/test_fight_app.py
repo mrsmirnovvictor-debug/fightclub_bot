@@ -862,3 +862,34 @@ async def test_a_female_fighter_goes_into_the_scene_as_female(arena, db):
 
     lines = {row["name"]: row["art_line"] for row in body["duel"]["fighters"]}
     assert lines == {"Марла": "female", "Боб": "tank"}, lines
+
+
+async def test_the_trainer_has_his_own_portrait_and_mark(arena, db):
+    """В карточке Тренера стоит его портрет, а не образ из гардероба.
+
+    Гардероб — товар, купить его Тренер не может, и образа у него нет
+    вовсе. Значок под портретом тоже свой: класс в бою он берёт у
+    ученика, и классовый значок читался бы как «он твой же боец».
+    """
+    from bot.game.art import TRAINER_AVATAR
+    from bot.game.trainer import TRAINER_EMOJI, TRAINER_ID
+
+    client, _, _ = arena
+    await state(client, 42)
+
+    response = await client.get(
+        f"/api/card?user_id={TRAINER_ID}", headers=headers(42)
+    )
+    card = await response.json()
+
+    assert card["avatar"]["url"] == TRAINER_AVATAR
+    assert card["avatar"]["url"].endswith(".png"), "портрет с прозрачным фоном"
+    assert card["avatar"]["emoji"] == TRAINER_EMOJI
+    assert card["avatar"]["photo"] is False, "это не загруженное фото"
+    assert card["avatar"]["look"] == "", "гардероб Тренеру не положен"
+
+    # В строке заявки — тот же значок, а не значок класса ученика
+    body = await state(client, 42)
+    row = npc_row(body)
+    assert row["challenger"]["emoji"] == TRAINER_EMOJI
+    assert row["challenger"]["fclass"] == "Воин", "класс остался классом ученика"

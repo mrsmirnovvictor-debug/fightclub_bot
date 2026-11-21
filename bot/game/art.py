@@ -165,6 +165,13 @@ def avatar(code: str, ext: str = "jpeg") -> str:
     return f"{AVATARS}/{code}.{ext}"
 
 
+# Портрет Тренера. Лежит в папке образов, но образом игрока не
+# является: выбрать его нельзя, гардероб — это товар, а Тренер не
+# игрок. Поэтому адрес стоит здесь целиком, а не считается по коду
+# образа
+TRAINER_AVATAR = f"{AVATARS}/martial_arts_trainer_realistic.png"
+
+
 def look_avatar(code: str) -> str:
     """Образ бойца: avatars/rookie_transparent.png.
 
