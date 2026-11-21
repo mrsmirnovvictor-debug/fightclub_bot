@@ -4089,13 +4089,25 @@ function challengeList(data) {
       challenge.challenger.name + " [" + challenge.challenger.level + "] — " +
       challenge.mode.title + (challenge.personal ? ", лично тебе" : "");
     card.appendChild(line);
+    // Заявка Тренера висит и когда он занят: подпись говорит, почему
+    // сейчас нельзя, — иначе строка пропадала бы без объяснений
+    if (challenge.npc && challenge.note) {
+      const note = document.createElement("p");
+      note.className = "fight-note";
+      note.textContent = challenge.note;
+      card.appendChild(note);
+    }
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "btn wide";
     btn.textContent = "Принять вызов";
-    btn.disabled = !data.can_fight;
+    btn.disabled = !data.can_fight || (challenge.npc && !challenge.open);
     btn.addEventListener("click", () =>
-      fightAction({ action: "join", challenge_id: challenge.id })
+      fightAction(
+        challenge.npc
+          ? { action: "lesson" }
+          : { action: "join", challenge_id: challenge.id }
+      )
     );
     card.appendChild(btn);
     box.appendChild(card);

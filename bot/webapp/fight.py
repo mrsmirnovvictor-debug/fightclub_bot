@@ -16,7 +16,13 @@ from typing import Any
 from bot.duel_service import Challenge, DuelService, DuelSession
 from bot.game import art
 from bot.game.clock import club_date
-from bot.game.classes import ALL_ZONES, BLOCK_WIDTH, block_button, block_combos
+from bot.game.classes import (
+    ALL_ZONES,
+    BLOCK_WIDTH,
+    block_button,
+    block_combos,
+    get_class,
+)
 from bot.game.equipment import BARE_HANDS_ICON
 from bot.game.combat import (
     TURNS_PER_ROUND,
@@ -34,7 +40,16 @@ from bot.game.abilities import (
     energy_gain,
 )
 from bot.game.scout import advise
+from bot.game.trainer import (
+    TRAINER_ART,
+    TRAINER_CLASS,
+    TRAINER_ID,
+    TRAINER_NAME,
+    may_learn,
+    trainer_level,
+)
 from bot.models import Player
+from bot.trainer_service import TRAINER_CHALLENGE_ID, calls
 
 # Кнопки удара одни и те же на весь клуб: зон пять, и от снаряжения их
 # число не зависит. А вот сколько будет столбцов ударов и какой ширины
@@ -116,7 +131,13 @@ def fighter_payload(fighter: Fighter, ready: bool, you: bool) -> dict[str, Any]:
         # соответствие живёт в одном месте, `bot.game.art`. Присылаем
         # готовое имя, чтобы в браузере не завелась вторая копия карты:
         # разойдутся, и сцена молча начнёт грузить не того бойца
-        "art_line": art.ART_LINES.get(fighter.fclass.code, fighter.fclass.code),
+        # Тренер дерётся воином, а выглядит собой: у него нарисован
+        # отдельный комплект, и по классу его не найти
+        "art_line": (
+            TRAINER_ART
+            if fighter.user_id == TRAINER_ID
+            else art.ART_LINES.get(fighter.fclass.code, fighter.fclass.code)
+        ),
         "hp": fighter.hp,
         "max_hp": fighter.max_hp,
         "percent": round(fighter.hp_percent * 100),
@@ -142,6 +163,45 @@ def challenge_payload(challenge: Challenge, viewer_id: int) -> dict[str, Any]:
             "level": challenge.challenger.level,
             "emoji": challenge.challenger.fclass.emoji,
             "fclass": challenge.challenger.fclass.title,
+        },
+    }
+
+
+def trainer_row(
+    trainer: Player, learner: Player, busy: bool
+) -> dict[str, Any] | None:
+    """Заявка Тренера для списка вызовов. None — показывать нечего.
+
+    Выше четвёртого уровня её не видно вовсе: учиться у Тренера уже
+    нельзя, и вечно серая строка в списке только мешала бы. А вот пока
+    он занят или не затянулся, строка остаётся — с подписью, почему
+    сейчас нельзя: иначе заявка то появлялась бы, то исчезала, и по
+    экрану нельзя было бы понять, что в клубе вообще есть Тренер.
+
+    Выглядит она как обычный вызов, потому что это он и есть. Отличает
+    её `npc`: кнопка уходит другим действием, живого вызова за ней нет.
+    """
+    if not may_learn(learner.level):
+        return None
+    open_now = calls(trainer, busy=busy)
+    fclass = get_class(TRAINER_CLASS)
+    return {
+        "id": TRAINER_CHALLENGE_ID,
+        "npc": True,
+        "mode": mode_payload(FightMode.FIST),
+        "mine": False,
+        "personal": False,
+        "in_app": True,
+        "open": open_now,
+        "note": "" if open_now else "Тренер сейчас занят. Загляни попозже.",
+        "challenger": {
+            "user_id": TRAINER_ID,
+            "name": TRAINER_NAME,
+            # Уровень — тот, каким он выйдет против этого ученика, а не
+            # тот, что лежит в его записи: в бою будет именно этот
+            "level": trainer_level(learner.level),
+            "emoji": fclass.emoji,
+            "fclass": fclass.title,
         },
     }
 
@@ -303,7 +363,11 @@ def at_club(player: Player) -> bool:
     return place is not None and place.allows(Service.FIGHT)
 
 
-def build_fights(player: Player, service: DuelService | None) -> dict[str, Any]:
+def build_fights(
+    player: Player,
+    service: DuelService | None,
+    trainer: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Всё, что нужно вкладке «Бои», одним ответом."""
     body: dict[str, Any] = {
         "attacks": [dict(row) for row in ATTACK_BUTTONS],
@@ -333,7 +397,9 @@ def build_fights(player: Player, service: DuelService | None) -> dict[str, Any]:
     own = service.challenge_of_user(player.user_id)
     if own is not None:
         body["challenge"] = challenge_payload(own, player.user_id)
-    body["challenges"] = [
+    # Заявка Тренера стоит первой: в пустом клубе это единственный бой,
+    # который новичку доступен, и искать его под чужими вызовами незачем
+    body["challenges"] = ([trainer] if trainer else []) + [
         challenge_payload(challenge, player.user_id)
         for challenge in service.open_challenges()
         if service.challenge_for(player.user_id, challenge)

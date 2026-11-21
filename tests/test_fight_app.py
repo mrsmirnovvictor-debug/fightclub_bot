@@ -54,6 +54,16 @@ async def state(client, user_id: int) -> dict:
     return await response.json()
 
 
+def live(body: dict) -> list[dict]:
+    """Вызовы живых бойцов из ответа вкладки.
+
+    Заявка Тренера висит в том же списке и висит всегда: она следует из
+    его состояния, а не из чьего-то вызова. Тестам про живых бойцов она
+    только мешает, поэтому отбирается здесь, в одном месте.
+    """
+    return [row for row in body["challenges"] if not row.get("npc")]
+
+
 async def act(client, user_id: int, **payload) -> tuple[int, dict]:
     response = await client.post("/api/fight", json=payload, headers=headers(user_id))
     return response.status, await response.json()
@@ -81,8 +91,8 @@ async def test_a_fight_is_opened_and_joined_without_leaving_the_app(arena):
 
     # соперник видит вызов в общем списке
     theirs = await state(client, 43)
-    assert [row["id"] for row in theirs["challenges"]] == [mine["challenge"]["id"]]
-    assert theirs["challenges"][0]["challenger"]["name"] == "Тайлер"
+    assert [row["id"] for row in live(theirs)] == [mine["challenge"]["id"]]
+    assert live(theirs)[0]["challenger"]["name"] == "Тайлер"
 
     status, joined = await act(
         client, 43, action="join", challenge_id=mine["challenge"]["id"]
@@ -105,7 +115,7 @@ async def test_your_own_challenge_is_not_offered_back_to_you(arena):
 
     mine = await state(client, 42)
 
-    assert mine["challenges"] == []  # принимать свой вызов нечего
+    assert live(mine) == []  # принимать свой вызов нечего
     assert mine["challenge"]["mine"]
 
 
@@ -701,3 +711,92 @@ async def test_the_analyst_follows_the_fight(arena):
     after = (await state(client, 42))["duel"]["scout"]
     assert after != opening
     assert "В прошлом ходу" in after["block"]
+
+
+# ---------- заявка Тренера ----------
+
+
+def npc_row(body: dict) -> dict | None:
+    """Заявка Тренера из ответа вкладки, если она там есть."""
+    return next((row for row in body["challenges"] if row.get("npc")), None)
+
+
+async def test_the_trainer_calls_from_the_ring_list(arena):
+    """Заявка Тренера висит в списке вызовов без всяких условий.
+
+    Её никто не бросал: она следует из состояния Тренера, и в пустом
+    клубе это единственный бой, который новичку доступен. Поэтому она
+    стоит первой и приходит с тем уровнем, каким Тренер выйдет.
+    """
+    client, _, _ = arena
+
+    body = await state(client, 42)
+    row = npc_row(body)
+
+    assert row is not None, "Тренера на ринге нет"
+    assert body["challenges"][0] is row, "заявка Тренера стоит не первой"
+    assert row["open"] is True and row["note"] == ""
+    assert row["challenger"]["name"] == "Тренер"
+    assert row["challenger"]["level"] == 3 + 2, "уровень не на два выше ученика"
+    assert row["mode"]["code"] == "fist"
+    assert row["mine"] is False and row["personal"] is False
+
+
+async def test_the_lesson_starts_straight_from_the_app(arena):
+    """Кнопка под заявкой выводит на ринг сразу, без гонга."""
+    client, duels, _ = arena
+
+    status, body = await act(client, 42, action="lesson")
+
+    assert status == 200
+    duel = body["duel"]
+    assert duel is not None and duel["started"] is True
+    assert {row["name"] for row in duel["fighters"]} == {"Тайлер", "Тренер"}
+    assert duels.duel_of_user(42) is not None
+
+
+async def test_the_trainer_in_the_scene_wears_his_own_line(arena):
+    """Сцена боя берёт Тренеру отдельный комплект образов, не классовый."""
+    client, _, _ = arena
+
+    _, body = await act(client, 42, action="lesson")
+
+    lines = {row["name"]: row["art_line"] for row in body["duel"]["fighters"]}
+    assert lines["Тренер"] == "master", lines
+    # А ученик остался при своём классе
+    assert lines["Тайлер"] == "warrior"
+
+
+async def test_a_busy_trainer_stays_in_the_list_with_a_word_about_it(arena):
+    """Занятый Тренер не исчезает: строка остаётся, кнопка гаснет.
+
+    Иначе заявка то появлялась бы, то исчезала, и по экрану нельзя было
+    бы понять, что Тренер в клубе вообще есть.
+    """
+    client, _, _ = arena
+    await act(client, 42, action="lesson")
+
+    body = await state(client, 43)
+    row = npc_row(body)
+
+    assert row is not None, "занятый Тренер пропал с ринга"
+    assert row["open"] is False
+    assert "занят" in row["note"]
+
+    status, denied = await act(client, 43, action="lesson")
+    assert status == 409 and "занят" in denied["error"]
+
+
+async def test_above_the_fourth_level_the_trainer_is_not_shown_at_all(arena, db):
+    """Старшим Тренер не нужен: вечно серой строки в списке не будет."""
+    client, _, _ = arena
+    grown = make_player(44, "Боб")
+    grown.level = 5
+    await db.save_player(grown)
+
+    body = await state(client, 44)
+
+    assert npc_row(body) is None, "заявка висит у того, кого Тренер не берёт"
+
+    status, denied = await act(client, 44, action="lesson")
+    assert status == 409 and "новичков" in denied["error"]

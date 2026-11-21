@@ -21380,3 +21380,68 @@ async def test_a_whole_row_opens_the_fighter_card(server):
         await row.click()
         await page.wait_for_selector(".sheet-doll")
         await browser.close()
+
+
+# ---------- заявка Тренера на ринге ----------
+
+
+def trainer_call(open_now: bool = True) -> dict:
+    """Ринг, на котором висит одна заявка — от Тренера."""
+    ring = json.loads(json.dumps(EMPTY_RING))
+    ring["challenges"] = [
+        {
+            "id": -1,
+            "npc": True,
+            "mode": {"code": "fist", "title": "кулачный бой", "emoji": "🥊"},
+            "mine": False,
+            "personal": False,
+            "in_app": True,
+            "open": open_now,
+            "note": "" if open_now else "Тренер сейчас занят. Загляни попозже.",
+            "challenger": {
+                "user_id": -1, "name": "Тренер", "level": 3,
+                "emoji": "⚔️", "fclass": "Воин",
+            },
+        }
+    ]
+    return ring
+
+
+async def test_the_trainer_stands_in_the_ring_list_and_takes_the_fight(server):
+    """Заявка Тренера читается как чужой вызов, а кнопка ведёт на урок."""
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, trainer_call())
+
+        body = await page.locator("#fights-body").inner_text()
+        assert "Тренер [3]" in body, body
+        assert "кулачный бой" in body
+        # Подписи о занятости нет: Тренер свободен
+        assert await page.locator(".fight-note").count() == 0
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(ring_with_duel()),
+            )
+
+        await page.route("**/api/fight", catch)
+        await page.get_by_role("button", name="Принять вызов").click()
+        await page.wait_for_selector(".fight-round")
+
+        assert sent == [{"action": "lesson"}], sent
+        await browser.close()
+
+
+async def test_a_busy_trainer_keeps_his_row_with_the_button_dead(server):
+    """Занят — строка на месте, под ней причина, кнопка не нажимается."""
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, trainer_call(open_now=False))
+
+        body = await page.locator("#fights-body").inner_text()
+        assert "Тренер [3]" in body, body
+        assert "занят" in await page.locator(".fight-note").inner_text()
+        assert await page.get_by_role("button", name="Принять вызов").is_disabled()
+        await browser.close()

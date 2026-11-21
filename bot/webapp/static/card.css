@@ -3349,6 +3349,9 @@ body.dark .bar-tab.active .bar-icon {
   margin-bottom: 8px;
 }
 .fight-line { margin: 0 0 8px; font-size: 14px; }
+/* Почему вызов сейчас не принять: подпись под строкой заявки.
+   Нужна Тренеру — его заявка остаётся на экране и занятой */
+.fight-note { margin: -4px 0 8px; font-size: 12px; color: var(--muted); }
 .fight-panel { display: grid; gap: 10px; }
 .fight-round { margin: 0; font-weight: 600; font-size: 14px; }
 /* Один на один доска осталась прежней: обе половины здесь одинаковой

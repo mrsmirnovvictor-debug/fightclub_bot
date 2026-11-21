@@ -18,7 +18,9 @@ from bot.abilities_service import learn as learn_ability
 from bot.database import Database
 from bot.game.art import LOADING, REDESIGN, combat_base
 from bot.battle_service import BattleError
-from bot.duel_service import DuelError
+from bot.duel_service import DuelError, DuelService
+from bot.game.trainer import TRAINER_ID
+from bot.trainer_service import ensure_trainer
 from bot.raid_service import RaidError
 from bot.game.classes import ALL_STATS, ALL_ZONES, FIGHTER_CLASSES, Stat, Zone
 from bot.game.combat import Fighter, Outcome, RoundResult, Strike
@@ -49,7 +51,12 @@ from bot.upgrade_service import UpgradeError, spend_points
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
 from bot.market_service import MarketError, buy_lot, sell_lot, withdraw_lot
 from bot.webapp.battle import build_battle
-from bot.webapp.fight import build_fight_log, build_fights, build_history
+from bot.webapp.fight import (
+    build_fight_log,
+    build_fights,
+    build_history,
+    trainer_row,
+)
 from bot.webapp.raid import build_raid, gate_payload, plates_payload, raid_row
 from bot.webapp.hospital import build_hospital
 from bot.game.gym import MAX_UPGRADES, moscow_day, schedule_from
@@ -1338,6 +1345,25 @@ async def _fighter(request: web.Request):
     return player
 
 
+async def _trainer_call(
+    request: web.Request, player: Player, duels: DuelService | None
+) -> dict[str, Any] | None:
+    """Заявка Тренера для вкладки «Бои», если её есть кому показать.
+
+    Здоровье Тренера лежит в базе и затягивается часами клуба, поэтому
+    заявку нельзя собрать из одной сессии боёв: за ней нужно сходить к
+    его записи. Записи может ещё не быть — она и заводится здесь, при
+    первом взгляде на ринг.
+
+    Кому заявку видно, решает `trainer_row`, а не эта ручка: правило
+    одно, и второй его копией они однажды разошлись бы.
+    """
+    if duels is None:
+        return None
+    trainer = await ensure_trainer(request.app[DB_KEY])
+    return trainer_row(trainer, player, busy=duels.is_busy(TRAINER_ID))
+
+
 async def api_fights(request: web.Request) -> web.Response:
     """Состояние вкладки «Бои» целиком: вызовы, свой вызов или идущий бой.
 
@@ -1345,7 +1371,10 @@ async def api_fights(request: web.Request) -> web.Response:
     полный: по нему видно, что рисовать, и не нужно помнить, что было.
     """
     player = await _fighter(request)
-    return web.json_response(build_fights(player, request.app.get(DUELS_KEY)))
+    duels = request.app.get(DUELS_KEY)
+    return web.json_response(
+        build_fights(player, duels, await _trainer_call(request, player, duels))
+    )
 
 
 async def api_fight(request: web.Request) -> web.Response:
@@ -1366,6 +1395,10 @@ async def api_fight(request: web.Request) -> web.Response:
             await duels.withdraw_challenge(player.user_id)
         elif action == "join":
             await duels.accept_challenge(_int_field(data, "challenge_id"), player)
+        elif action == "lesson":
+            # Урок у Тренера. Живого вызова за ним нет: заявка следует из
+            # его состояния, и принять её — значит сразу встать на ринг
+            await duels.start_trainer_duel(player)
         elif action == "go":
             # Гонг даёт тот, кто звал: соперник вышел, и его надо разглядеть
             duel = duels.duel_of_user(player.user_id)
@@ -1418,7 +1451,10 @@ async def api_fight(request: web.Request) -> web.Response:
         return web.json_response({"error": str(error)}, status=409)
 
     fresh = await request.app[DB_KEY].get_player(player.user_id)
-    return web.json_response(build_fights(fresh or player, duels))
+    whom = fresh or player
+    return web.json_response(
+        build_fights(whom, duels, await _trainer_call(request, whom, duels))
+    )
 
 
 # ---------- комиссионка ----------
