@@ -935,17 +935,19 @@ async def test_the_end_of_the_fight_is_told_in_the_judges_feed(arena):
     duel = (await state(client, 42))["duel"]
     last = duel["log"][-1]["lines"]
 
-    assert any("Победа за:" in one for one in last), last
+    assert any("Победа за " in one for one in last), last
     # И череп над упавшим: по ленте читают бой, а в групповом по этой
     # же строке считают, кого уже нет
-    assert any("💀 Выбывает из боя:" in one for one in last), last
-    who = next(one for one in last if "Победа за:" in one)
+    assert any("💀 Для " in one and "бой закончен" in one for one in last), last
+    who = next(one for one in last if "Победа за " in one)
     winner = next(
         row["name"] for row in duel["fighters"]
         if row["user_id"] == duel["log"][-1]["winner_id"]
     )
     assert winner in who, who
-    # Рассказ о последнем ударе тоже здесь, и разметки в нём нет
+    # Рассказ о нокауте в ленту не идёт: он остаётся в ветке. В ленте
+    # две строки по делу, и разметки в них нет
+    assert not any("больше не встанет" in one for one in last), last
     assert len(last) > len(duel["log"][-1]["strikes"])
     assert not any("<b>" in one for one in last), last
 
@@ -959,4 +961,59 @@ async def test_the_judges_feed_survives_into_the_history(arena, db):
     rows = await db.fights_of(42)
     kept = await db.duel_log(rows[0]["id"])
 
-    assert any("Победа за:" in one for one in kept[-1]["lines"]), kept[-1]
+    assert any("Победа за " in one for one in kept[-1]["lines"]), kept[-1]
+
+
+async def test_the_screen_result_holds_no_bookkeeping(arena, db):
+    """На итоге нет ни кредитов, ни апов, ни урезания за повторный бой.
+
+    У каждого из этих чисел своё место в карточке, и под итогом они
+    повторяют сами себя. Бой кончился: сколько ударил, сколько взял
+    опыта, куда уехал рейтинг — и всё.
+    """
+    client, duels, _ = arena
+
+    # Дерёмся дважды подряд: второй бой урезает награду, и в ветке об
+    # этом сказано — а на экране этой строки быть не должно
+    for _ in range(2):
+        await start_fight(client, duels)
+        await fight_to_the_end(duels, duels.duel_of_user(42))
+        await act(client, 42, action="done")
+        await act(client, 43, action="done")
+        for user_id in (42, 43):
+            fresh = await db.get_player(user_id)
+            fresh.set_hp(fresh.max_hp)
+            await db.save_player(fresh)
+
+    await start_fight(client, duels)
+    await fight_to_the_end(duels, duels.duel_of_user(42))
+    summary = "\n".join((await state(client, 42))["duel"]["summary"])
+
+    assert "Нанесено урона" in summary and "опыта" in summary
+    assert "рейтинг" in summary
+    for extra in ("💰", "ап:", "Свободных очков", "награда урезана", "Отлежаться"):
+        assert extra not in summary, (extra, summary)
+
+
+async def test_the_panel_carries_the_number_of_the_exchange(arena):
+    """Номер размена приезжает своим числом, а не собирается из раундов.
+
+    Над сценой стоит он один: раунды и удары в них считает ветка, где
+    бой идёт сообщениями. Собирать его на странице из «раунда» и
+    «удара» значило бы завести вторую копию правила счёта.
+    """
+    client, duels, _ = arena
+    await start_fight(client, duels)
+    session = duels.duel_of_user(42)
+
+    first = (await state(client, 42))["duel"]
+    assert first["number"] == session.round_number == 1
+
+    # Размен целиком: обе стороны выбирают удар и блок
+    for index, user_id in enumerate(session.order):
+        await duels.handle_choice(session.id, user_id, "attack", "head")
+        await duels.handle_choice(
+            session.id, user_id, "block", "chest" if index else "belly"
+        )
+    second = (await state(client, 42))["duel"]
+    assert second["number"] == 2, second["number"]

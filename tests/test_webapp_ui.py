@@ -3872,6 +3872,7 @@ def ring_with_duel(chosen=None) -> dict:
             "yours_to_start": True,
             "finished": False,
             "summary": [],
+            "number": 2,
             "round": 1,
             "turn": 2,
             "turns_per_round": 3,
@@ -4347,9 +4348,10 @@ async def test_the_fight_panel_shows_the_board_and_two_columns_of_choices(server
     async with async_playwright() as pw:
         browser, page = await open_ring(pw, server, ring_with_duel())
 
-        assert "Раунд 1 из 6, удар 2 из 3" in await page.locator(
-            ".fight-round"
-        ).inner_text()
+        # Над сценой только номер размена: раунды и удары в них считает
+        # ветка, а на экране бой виден целиком
+        said = await page.locator(".fight-round").inner_text()
+        assert said == "🔔 Ход 2", said
         board = await page.locator(".fight-board").inner_text()
         for line in ("Растафарайчик", "VS.", "Марла", "40/100", "✅ Готов", "⏳ Думает"):
             assert line in board
@@ -21611,19 +21613,19 @@ async def test_the_trainers_row_says_who_he_is(server):
         await browser.close()
 
 
-async def test_the_feed_ends_with_the_verdict_and_not_with_a_punch(server):
-    """Последними в ленте стоят конец боя и строка о победителе.
+async def test_the_feed_starts_with_the_verdict_and_not_with_a_punch(server):
+    """Первыми в ленте стоят победа и строка о том, для кого бой кончен.
 
-    Лента ринга читается сверху вниз, как разговор судьи, и кончаться
-    она должна тем же, чем кончился бой: сперва рассказ про последний
-    удар, под ним — кто бой взял. Без этих строк судья замолкал ровно
-    там, где должен был объявить победителя.
+    Лента идёт свежим сверху, и порядок в ней теперь один на всю
+    длину: и размены от нового к старому, и строки внутри размена.
+    Прежде внутри размена они шли в прямом порядке, и лента читалась
+    то вниз, то вверх — понять, что случилось позже, было нельзя.
     """
     over = ring_with_duel()
     over["duel"]["finished"] = True
     over["duel"]["log"][0]["lines"] += [
-        "Марла больше не встанет. Бой окончен!",
-        "🏆 Победа за: Растафарайчик",
+        "💀 Для Марла бой закончен",
+        "🏆 Победа за Растафарайчик",
     ]
     over["duel"]["summary"] = [
         "🏆 Победа: Растафарайчик (Воин)",
@@ -21637,14 +21639,18 @@ async def test_the_feed_ends_with_the_verdict_and_not_with_a_punch(server):
         await page.wait_for_selector(".fight-log")
 
         said = await page.locator(".fight-log .log-line").all_inner_texts()
-        assert said[-2] == "Марла больше не встанет. Бой окончен!", said
-        assert said[-1] == "🏆 Победа за: Растафарайчик", said
+        # Лента идёт свежим сверху — и между разменами, и внутри
+        # размена: первой стоит победа, под ней — для кого бой кончился
+        assert said[0] == "🏆 Победа за Растафарайчик", said
+        assert said[1] == "💀 Для Марла бой закончен", said
 
         # А на самом итоге их нет: там приговор и что унесли
         card = await page.locator(".fight-finish").inner_text()
         assert "Победа: Растафарайчик" in card
         assert "больше не встанет" not in card, card
         assert "Отлежаться" not in card, card
+        # И удары из ленты на итог не переезжают
+        assert "ловит момент" not in card, card
         await browser.close()
 
 

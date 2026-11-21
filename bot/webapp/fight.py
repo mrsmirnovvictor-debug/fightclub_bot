@@ -235,6 +235,9 @@ def duel_payload(session: DuelSession, viewer_id: int) -> dict[str, Any]:
         # Бой доигран: панель держится на экране, пока итог не закроют
         "finished": session.finished,
         "summary": session.summary,
+        # Номер размена подряд, от первого удара: по нему экран и
+        # считает ход. Раунд и удар в нём остаются — их считает ветка
+        "number": session.round_number,
         "round": boxing_round(session.round_number) if session.round_number else 0,
         "turn": turn_in_round(session.round_number) if session.round_number else 0,
         "turns_per_round": TURNS_PER_ROUND,

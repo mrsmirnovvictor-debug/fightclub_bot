@@ -855,7 +855,7 @@ async def test_the_feed_of_a_group_fight_names_everyone_who_won(bot, db):
     await fight_to_the_end(service, session)
 
     last = session.rounds[-1]["lines"]
-    said = [one for one in last if "Победа за:" in one]
+    said = [one for one in last if "Победа за " in one]
     assert said, last
     # В строке стоят все, кто устоял, и никого лишнего
     standing = [

@@ -516,7 +516,7 @@ def round_report(
 
 
 def fallen_line(fallen: list[Fighter]) -> str:
-    """Кто выбыл из боя — строкой в ленту судьи. Пусто — никто.
+    """Для кого бой кончился — строкой в ленту судьи. Пусто — ни для кого.
 
     Череп тут не украшение: по ленте читают бой, и в групповом по ней
     же считают, кого уже нет. Удар, которым боец упал, от обычного
@@ -525,20 +525,19 @@ def fallen_line(fallen: list[Fighter]) -> str:
     if not fallen:
         return ""
     names = ", ".join(mention(one) for one in fallen)
-    return f"💀 Выбывает из боя: {names}"
+    return f"💀 Для {names} бой закончен"
 
 
 def winners_line(champions: list[Fighter]) -> str:
     """Кто взял бой — строкой в ленту судьи. Пусто — ничья.
 
     Имена через запятую: в дуэли победитель один, в групповом бою их
-    столько, сколько устояло. Двоеточие стоит не для красоты — прозвища
-    не склоняются, и «Победа за Victor» читается обрубком.
+    столько, сколько устояло.
     """
     if not champions:
         return ""
     names = ", ".join(mention(one) for one in champions)
-    return f"🏆 Победа за: {names}"
+    return f"🏆 Победа за {names}"
 
 
 def fight_verdict(
@@ -768,6 +767,39 @@ def broken_gear_report(broken: list[tuple["Player", list]]) -> list[str]:
                 "до дыр — вещь рассыпалась в труху."
             )
     return lines
+
+
+def screen_rewards(
+    rows: list[tuple["Player", "ProgressReport"]],
+    damage: dict[int, int] | None = None,
+) -> str:
+    """Итог боя для экрана бойца: урон, опыт и рейтинг — и всё.
+
+    В ветке под итогом стоит ещё многое: кредиты, апы, свободные очки,
+    урезание за повторный бой, отлёживание. На экране это лишнее —
+    и не потому, что мелко, а потому, что у каждого из этих чисел своё
+    место в карточке, и под итогом они повторяют сами себя. Бой
+    кончился: сколько ударил, сколько взял опыта, куда уехал рейтинг.
+    """
+    lines = ["📊 <b>Итоги</b>"]
+    for player, report in rows:
+        parts: list[str] = []
+        dealt = (damage or {}).get(player.user_id)
+        if dealt is not None:
+            parts.append(f"Нанесено урона {dealt}")
+        parts.append(
+            f"получено +{report.exp} опыта" if report.exp else "получено 0 опыта"
+        )
+        if report.rating_delta:
+            sign = "+" if report.rating_delta > 0 else "−"
+            parts.append(f"рейтинг {player.rating} ({sign}{abs(report.rating_delta)})")
+        else:
+            # Ничья: рейтинг на месте, и «(+0)» рядом с ним только сбивает
+            parts.append(f"рейтинг {player.rating} — без изменений")
+        lines.append(
+            f"{player.avatar} <b>{player_link(player)}</b>: " + ", ".join(parts)
+        )
+    return "\n".join(lines)
 
 
 def rewards_report(

@@ -4517,11 +4517,14 @@ function duelPanel(data) {
 
   const head = document.createElement("p");
   head.className = "fight-round";
+  // Над сценой — только номер размена. Раунды и удары в них считает
+  // ветка: там бой идёт сообщениями, и по ним надо понимать, где он.
+  // На экране бой виден целиком, и три числа в шапке объясняли не бой,
+  // а устройство счётчика
   head.textContent = duel.finished
     ? "🔔 Бой окончен"
     : duel.started
-      ? "🔔 Раунд " + duel.round + " из " + duel.rounds +
-        ", удар " + duel.turn + " из " + duel.turns_per_round
+      ? "🔔 Ход " + duel.number
       : "🥊 Бойцы сошлись. Гонга ещё не было";
   box.appendChild(head);
 
@@ -4949,15 +4952,21 @@ function judgeLines(turn, into, newestFirst) {
 }
 
 function fightLog(duel) {
-  // Слова судьи сплошным текстом, свежее сверху. Раундов не считаем: в
-  // ветке их держит заголовок сообщения, а здесь лента и так короткая.
+  // Слова судьи сплошным текстом, свежее сверху — и между разменами, и
+  // внутри размена. Размены и раньше шли от нового к старому, а строки
+  // внутри одного оставались в прямом порядке: лента читалась то вниз,
+  // то вверх, и понять, что случилось позже, было нельзя. Теперь конец
+  // боя стоит в ней первым: сперва кто победил, под ним — для кого бой
+  // кончился, и только потом удары, которыми всё решилось.
+  // Раундов не считаем: в ветке их держит заголовок сообщения, а здесь
+  // лента и так короткая.
   const box = document.createElement("div");
   box.className = "fight-log";
   const head = document.createElement("h2");
   head.className = "shelf-head";
   head.textContent = "Ход боя";
   box.appendChild(head);
-  duel.log.slice().reverse().forEach((turn) => judgeLines(turn, box));
+  duel.log.slice().reverse().forEach((turn) => judgeLines(turn, box, true));
   return box;
 }
 

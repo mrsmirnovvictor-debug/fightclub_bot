@@ -65,6 +65,7 @@ from bot.game.narrator import (
     ready_mark,
     fallen_line,
     rewards_report,
+    screen_rewards,
     winners_line,
     plain,
     round_report,
@@ -1017,7 +1018,7 @@ class DuelService:
         # На экране у рассказа своё место — лента судьи, рядом с ударом,
         # которым всё кончилось. Туда же идёт и строка о том, кто взял
         # бой: лента читается сверху вниз и без неё обрывается ударом
-        self._log_the_end(session, result, story)
+        self._log_the_end(session, result)
 
         # А на самом экране итога остаётся приговор и то, что бойцы
         # унесли. Шкалы здоровья с него ушли: они стоят на табло того же
@@ -1035,10 +1036,9 @@ class DuelService:
         except Exception:
             logger.exception("Бой %s не записался в историю", session.id)
 
-    def _log_the_end(
-        self, session: DuelSession, result: RoundResult, story: str
-    ) -> None:
+    def _log_the_end(self, session: DuelSession, result: RoundResult) -> None:
         """Дописать конец боя в ленту судьи — к тому ходу, где он случился.
+
 
         Лента и в приложении, и в записи боя одна и та же: дописанное
         здесь останется и в разборе старого боя. Хода может и не быть —
@@ -1060,7 +1060,12 @@ class DuelService:
             for uid in session.order
             if uid in session.fighters and not session.fighters[uid].alive
         ]
-        said = [story, fallen_line(down), winners_line(champions)]
+        # Рассказ о нокауте в ленту не идёт: он остаётся в ветке, где
+        # итог — единственное сообщение о конце боя. В ленте его место
+        # занимают две строки по делу: для кого бой кончился и кто его
+        # взял. Лента читается свежим сверху, поэтому в ней они
+        # перевернутся: первой встанет победа, под ней — череп
+        said = [fallen_line(down), winners_line(champions)]
         lines = session.rounds[-1].setdefault("lines", [])
         lines.extend(plain(one) for one in said if one)
 
@@ -1169,13 +1174,15 @@ class DuelService:
         """Один и тот же расчёт двумя текстами: в ветку и на экран.
 
         Считать итоги дважды нельзя — внутри начисление, — а показывать
-        их надо по-разному: в ветке под ними стоит строка про
-        отлёживание, на экране её нет. Поэтому собираем оба текста из
-        одних и тех же строк отчёта.
+        их надо по-разному. В ветке итог единственное сообщение о конце
+        боя, и в нём стоит всё: кредиты, апы, свободные очки, урезание
+        за повторный бой, отлёживание. На экране у каждого из этих
+        чисел своё место в карточке, и под итогом они повторяют сами
+        себя — там остаются урон, опыт и рейтинг.
         """
         return Rewards(
             report=rewards_report(rows, *args, **kwargs),
-            screen=rewards_report(rows, *args, recovery=False, **kwargs),
+            screen=screen_rewards(rows, damage=kwargs.get("damage")),
         )
 
     async def _apply_results(
