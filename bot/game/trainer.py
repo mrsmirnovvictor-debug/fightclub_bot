@@ -19,7 +19,9 @@
 
 from __future__ import annotations
 
-from bot.game.classes import Stats, get_class
+import random
+
+from bot.game.classes import ALL_ZONES, Stats, Zone, block_combo, get_class
 from bot.game.economy import MICRO_UPS_PER_LEVEL, POINTS_PER_UP
 
 # Запись Тренера лежит в той же таблице, что и живые бойцы: так ему
@@ -101,6 +103,25 @@ def trainer_stats(level: int) -> Stats:
     )
 
 
+def trainer_moves(
+    hands: int = 1, block_width: int = 2, rng: random.Random | None = None
+) -> tuple[dict[int, Zone], tuple[Zone, ...]]:
+    """Что Тренер делает в этом ходу: куда бьёт и чем закрывается.
+
+    Наугад, и это не заглушка до лучшего ИИ. Предсказуемый соперник
+    учит одному — своей привычке: разгадав её, ученик выносит Тренера
+    вслепую и не узнаёт о бое ничего. Случайный заставляет смотреть на
+    каждый ход заново, а это и есть то, чему тут учат.
+
+    `rng` — чтобы в проверках случайность была известной. В бою его не
+    передают, и Тренер берёт общий генератор.
+    """
+    dice = rng or random
+    attacks = {hand: dice.choice(ALL_ZONES) for hand in range(max(1, hands))}
+    block = block_combo(dice.choice(ALL_ZONES), block_width)
+    return attacks, block
+
+
 def _points(level: int) -> int:
     """Сколько очков боец этого уровня успел раздать."""
     return POINTS_PER_UP * MICRO_UPS_PER_LEVEL * max(0, level - 1)
@@ -135,6 +156,7 @@ __all__ = [
     "WIN_SHARES",
     "may_learn",
     "trainer_level",
+    "trainer_moves",
     "trainer_stats",
     "win_share",
 ]

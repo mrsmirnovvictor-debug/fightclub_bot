@@ -23,6 +23,8 @@ from bot.game.combat import heal_line
 from bot.game.health import now_ts
 from bot.game.modes import FightMode
 from bot.game.scout import SCOUT_FIGHTS, Habits, read_habits
+from bot.game.trainer import TRAINER_ID, trainer_moves
+from bot.trainer_service import calls, ensure_trainer, refuse, shaped_for
 from bot.game.combat import (
     MAX_MISSED_TURNS,
     NO_GONG,
@@ -194,6 +196,9 @@ class DuelSession:
     # ровно в тот момент, когда игроку и надо прочитать итог.
     summary: list[str] = field(default_factory=list)
     finished: bool = False
+    # Кто в этом бою дерётся сам, без игрока за кнопками. Пока такой
+    # один — Тренер, и ходит он наугад. Пусто — обе стороны живые
+    npc: int | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
@@ -611,11 +616,45 @@ class DuelService:
         await self._start_round(session)
         return session
 
+    async def start_trainer_duel(self, learner: Player) -> DuelSession:
+        """Вывести ученика против Тренера.
+
+        Стойки тут нет и гонга ждать не от кого: Тренер принимает бой
+        сразу — на то он и висит в клубе заявкой. В чат при этом не
+        уходит ни слова: заявка от него не новость, а обстановка, и
+        каждый её приём превращал бы ветку в ленту уведомлений.
+        """
+        said = refuse(learner)
+        if said:
+            raise DuelError(said)
+        if self._busy.get(learner.user_id) == "duel":
+            raise DuelError("Ты уже на ринге в другом бою.")
+        if not learner.can_fight():
+            raise DuelError(health_warning(learner))
+
+        trainer = await ensure_trainer(self.db)
+        if not calls(trainer, busy=bool(self._busy.get(TRAINER_ID))):
+            raise DuelError("Тренер сейчас занят. Загляни попозже.")
+        if self._busy.get(learner.user_id) == "challenge":
+            # Висел свой вызов — снимаем: урок начинается сейчас
+            await self._withdraw_challenges_of(learner.user_id)
+
+        session = self._make_session(
+            None, None, learner, shaped_for(trainer, learner), mode=FightMode.FIST
+        )
+        session.npc = TRAINER_ID
+        session.started = True
+        await self._start_round(session)
+        return session
+
     async def _start_round(self, session: DuelSession) -> None:
         session.round_number += 1
         session.choices = {}
         session.resolving = False
         session.resting = False
+        # За Тренера никто не нажимает: он выбирает сразу, как начался
+        # ход, и дальше бой ждёт только живого бойца
+        self._move_npc(session)
         message = await self._send(
             session.chat_id,
             session.thread_id,
@@ -626,6 +665,18 @@ class DuelService:
         session.timer = asyncio.create_task(
             self._round_timer(session, session.round_number)
         )
+
+    def _move_npc(self, session: DuelSession) -> None:
+        """Сделать ход за того, кто дерётся сам."""
+        if session.npc is None:
+            return
+        fighter = session.fighters.get(session.npc)
+        if fighter is None:  # pragma: no cover - бойца в бою не стало
+            return
+        attacks, block = trainer_moves(
+            fighter.attacks_per_round, fighter.block_width
+        )
+        session.choices[session.npc] = Choice(attacks=attacks, block=block)
 
     def _prompt_text(self, session: DuelSession) -> str:
         first, second = (session.fighters[uid] for uid in session.order)
