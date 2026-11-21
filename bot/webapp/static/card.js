@@ -3915,8 +3915,8 @@ function clubSections() {
     ];
   }
   return [
-    ["fights", "Бои"],
-    ["battle", "Отряд"],
+    ["fights", "Одиночные бои"],
+    ["battle", "Групповые бои"],
   ];
 }
 
@@ -3945,10 +3945,11 @@ function renderClubSections() {
   const box = el("club-sections");
   box.textContent = "";
   const desk = clubHouse === "info";
-  // В справочной переключатель один на три раздела и должен влезать в
-  // одну строку на самом узком экране: там он сегментированный, а не
-  // россыпью пузырьков, как в остальных домах
-  box.classList.toggle("segments", desk);
+  // Переключатель разделов везде один и тот же — сегментированная
+  // дорожка: и в справочной на три раздела, и в здании клуба на два.
+  // Россыпь пузырьков рядом с ней читалась как другой орган
+  // управления, хотя делает ровно то же
+  box.classList.add("segments");
   el("club-title").textContent = CLUB_HOUSES[clubHouse].title;
   // Над меню справочной не остаётся ничего: шапка со счётчиком и
   // заголовок уезжают, их место занимает подложка. Заголовок на ней
@@ -4065,7 +4066,11 @@ function openForm(data) {
   data.modes.forEach((mode) => {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "btn wide";
+    // Выйти на ринг — главное дело этого экрана, и кнопка у него своя:
+    // голубой с фиолетовым, та же пара, что на шкале опыта и на
+    // выбранном приёме. Ровная заливка акцентом осталась там, где
+    // кнопка служебная
+    btn.className = "btn neon wide";
     btn.textContent = mode.emoji + " Вызвать на " + mode.title;
     btn.disabled = !data.can_fight;
     btn.addEventListener("click", () =>
@@ -4086,7 +4091,7 @@ function myChallenge(challenge) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "btn secondary wide";
-  btn.textContent = "Отозвать";
+  btn.textContent = "Отозвать";  // отмена — не вход на ринг, цвет ей не нужен
   btn.addEventListener("click", () => fightAction({ action: "cancel" }));
   box.appendChild(btn);
   return box;
@@ -4153,7 +4158,7 @@ function challengeList(data) {
     }
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "btn wide";
+    btn.className = "btn neon wide";
     btn.textContent = "Принять вызов";
     btn.disabled = !data.can_fight || (challenge.npc && !challenge.open);
     btn.addEventListener("click", () =>

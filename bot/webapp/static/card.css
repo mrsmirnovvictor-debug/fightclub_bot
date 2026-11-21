@@ -1358,6 +1358,25 @@ body.dark .bar-tab.active .bar-icon {
   color: var(--accent);
   border: 1px solid var(--accent);
 }
+
+/* Кнопка, которая выводит на ринг. Голубой с фиолетовым — та же пара,
+   что на шкале опыта и на выбранном приёме: в клубе это цвет самого
+   дела, а не украшение. Ровная заливка акцентом осталась у служебных
+   кнопок — «Отозвать», «Завершить бой», — и разница между ними теперь
+   видна до чтения надписи */
+.btn.neon {
+  border: 1px solid rgba(120, 200, 255, 0.45);
+  background: linear-gradient(135deg, var(--cyan), var(--violet));
+  box-shadow: 0 0 14px rgba(90, 170, 255, 0.22);
+}
+/* Нельзя — значит нельзя: погасшая кнопка не должна светиться. Правило
+   длиннее общего нарочно — у `.btn[disabled]` тот же вес, и без
+   третьего имени победил бы тот, кто написан ниже */
+.btn.neon[disabled] {
+  border-color: transparent;
+  background: var(--hp-track);
+  box-shadow: none;
+}
 .btn:active { transform: scale(0.98); }
 .btn[disabled] {
   background: var(--hp-track);

@@ -737,7 +737,7 @@ async def test_the_trainer_calls_from_the_ring_list(arena):
     assert row is not None, "Тренера на ринге нет"
     assert body["challenges"][0] is row, "заявка Тренера стоит не первой"
     assert row["open"] is True
-    assert "старше" in row["note"], row["note"]
+    assert row["note"] == "Твой учитель, который поможет набраться опыта."
     assert row["challenger"]["name"] == "Тренер"
     # Класс — ученика, уровень — его плюс фора, и так и написано в строке
     assert row["challenger"]["level"] == 3 + LEVEL_GAP
@@ -786,7 +786,7 @@ async def test_a_busy_trainer_stays_in_the_list_with_a_word_about_it(arena):
 
     assert row is not None, "занятый Тренер пропал с ринга"
     assert row["open"] is False
-    assert "занят" in row["note"]
+    assert row["note"] == "Твой учитель сейчас занят. Загляни позже."
 
     status, denied = await act(client, 43, action="lesson")
     assert status == 409 and "занят" in denied["error"]

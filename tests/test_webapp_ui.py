@@ -4317,14 +4317,14 @@ async def test_the_club_building_offers_fights_and_squads(server):
 
         sections = await page.locator("#club-sections .chip").all_inner_texts()
         # рейда среди пузырей нет: в подвал спускаются из казино
-        assert sections == ["Бои", "Отряд"]
+        assert sections == ["Одиночные бои", "Групповые бои"]
         assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
         assert await page.locator("#club-fights").is_visible()
         assert await page.locator("#club-players").is_hidden()
         # В здание пришли ногами — значит, есть куда вернуться
         assert await page.locator("#club-back").is_visible()
 
-        await page.get_by_role("button", name="Отряд", exact=True).click()
+        await page.get_by_role("button", name="Групповые бои", exact=True).click()
         # Смотрим на класс, а не на пиксели: пока состав не приехал,
         # раздел пуст, и «видимым» его не считает даже открытым
         await page.wait_for_selector("#club-battle:not(.hidden)", state="attached")
@@ -6190,7 +6190,7 @@ async def open_squad(pw, server, battle=None):
     # Отряд собирают в здании клуба, а не под кнопкой внизу: кнопка
     # ведёт в справочную, где рейтинг и статистика
     await page.evaluate("openClub()")
-    await page.get_by_role("button", name="Отряд", exact=True).click()
+    await page.get_by_role("button", name="Групповые бои", exact=True).click()
     await page.wait_for_selector("#club-battle:not(.hidden)", state="attached")
     # Раздел открывается сразу, а содержимое приезжает ответом сервера.
     # Без этого ожидания проверка читала пустой `#battle-body` — не
@@ -8003,7 +8003,7 @@ async def test_the_club_keeps_all_its_sections_away_from_the_ring(server):
         await page.wait_for_selector("#club:not(.hidden)")
 
         chips = await page.locator("#club-sections .chip").all_inner_texts()
-        assert chips == ["Бои", "Отряд"]
+        assert chips == ["Одиночные бои", "Групповые бои"]
         # и стоят они по центру экрана, а не прижаты к левому краю
         box = await page.locator("#club-sections").bounding_box()
         first = await page.locator("#club-sections .chip").first.bounding_box()
@@ -21404,10 +21404,9 @@ def trainer_call(open_now: bool = True) -> dict:
             "in_app": True,
             "open": open_now,
             "note": (
-                "Твой класс, но на 2 уровня старше и с полной прокачкой. "
-                "Он учитель."
+                "Твой учитель, который поможет набраться опыта."
                 if open_now
-                else "Тренер сейчас занят. Загляни попозже."
+                else "Твой учитель сейчас занят. Загляни позже."
             ),
             "challenger": {
                 "user_id": -1, "name": "Тренер", "level": 5,
@@ -21428,8 +21427,8 @@ async def test_the_trainer_stands_in_the_ring_list_and_takes_the_fight(server):
         body = await page.locator("#fights-body").inner_text()
         assert "Тренер [5]" in body, body
         assert "кулачный бой" in body
-        # Подпись про фору, а не про занятость: Тренер свободен
-        assert "старше" in await page.locator(".fight-note").inner_text()
+        # Подпись про учителя, а не про занятость: Тренер свободен
+        assert "учитель" in await page.locator(".fight-note").inner_text()
 
         async def catch(route):
             sent.append(route.request.post_data_json)
@@ -21601,13 +21600,13 @@ async def test_the_standoff_lets_you_read_the_rival_before_the_gong(server):
         await browser.close()
 
 
-async def test_the_trainers_row_says_he_is_two_levels_above(server):
-    """У заявки Тренера есть подпись про фору и та же кнопка ℹ️."""
+async def test_the_trainers_row_says_who_he_is(server):
+    """У заявки Тренера есть подпись о нём и та же кнопка ℹ️."""
     async with async_playwright() as pw:
         browser, page = await open_ring(pw, server, trainer_call())
 
         note = await page.locator(".fight-note").inner_text()
-        assert "старше" in note and "учитель" in note, note
+        assert note == "Твой учитель, который поможет набраться опыта.", note
         assert await page.locator(".fight-line .fighter-info").count() == 1
         await browser.close()
 
@@ -21697,4 +21696,64 @@ async def test_the_result_waits_for_the_scene_to_play_out(server):
         card = await page.locator(".fight-finish").inner_text()
         assert "Победа: Марла" in card
         assert await page.evaluate("() => fightAwaits") is False
+        await browser.close()
+
+
+async def test_the_club_wears_the_same_segmented_switch_as_the_desk(server):
+    """Разделы здания — та же дорожка, что в справочной, а не россыпь.
+
+    Переключатель один и тот же орган управления, и выглядеть он обязан
+    одинаково: россыпь пузырьков рядом с дорожкой читается как другая
+    кнопка, хотя делает ровно то же.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, None)
+
+        box = page.locator("#club-sections")
+        assert "segments" in (await box.get_attribute("class")), await box.get_attribute(
+            "class"
+        )
+        # Обе надписи в одну строку, и выбранная отмечена
+        chips = box.locator(".chip")
+        assert await chips.count() == 2
+        boxes = [await chips.nth(i).bounding_box() for i in range(2)]
+        assert abs(boxes[0]["y"] - boxes[1]["y"]) < 2, "разделы встали в два ряда"
+        assert await box.locator(".chip.on").inner_text() == "Одиночные бои"
+
+        # В справочной она такая же — это и есть «тот же орган»
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-ladder:not(.hidden)")
+        assert "segments" in (await box.get_attribute("class"))
+        await browser.close()
+
+
+async def test_the_ring_buttons_wear_the_club_colours(server):
+    """Кнопки выхода на ринг — в цветах клуба, служебные — нет.
+
+    Голубой с фиолетовым в этой игре значит «дело клуба»: та же пара на
+    шкале опыта и на выбранном приёме. Ровная заливка акцентом осталась
+    у служебных кнопок, и разницу видно до чтения надписи.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, trainer_call())
+
+        calls = page.locator(".fight-open .btn")
+        assert await calls.count() == 1  # в заготовке один режим
+        for name in ("fight-open", "fight-card"):
+            btn = page.locator(f".{name} .btn").first
+            assert "neon" in (await btn.get_attribute("class")), name
+            paint = await btn.evaluate("one => getComputedStyle(one).backgroundImage")
+            assert paint.startswith("linear-gradient"), (name, paint)
+
+        # А «Отозвать» и «Завершить бой» остаются служебными
+        over = ring_with_duel()
+        over["duel"]["finished"] = True
+        over["duel"]["summary"] = ["🏆 Победа: Марла (Ассасин)"]
+        await page.route("**/api/fights*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(over)
+        ))
+        await page.evaluate("() => loadFights()")
+        await page.wait_for_selector(".fight-finish .btn")
+        close = page.locator(".fight-finish .btn")
+        assert "neon" not in (await close.get_attribute("class"))
         await browser.close()
