@@ -23,6 +23,8 @@ from bot.game.trainer import (
     TRAINER_NAME,
     body_stats,
     may_learn,
+    trainer_level,
+    trainer_stats,
 )
 from bot.models import Player
 
@@ -82,29 +84,35 @@ def health_share(trainer: Player, now: int | None = None) -> float:
 
 
 def shaped_for(trainer: Player, learner: Player, now: int | None = None) -> Player:
-    """Тренер, каким он выходит против этого ученика: его отражением.
+    """Тренер, каким он выходит против этого ученика.
 
-    Класс, уровень и характеристики — ученика. Бой от этого получается
-    ровный: одно и то же тело, тот же урон, тот же уворот, и решает его
-    только то, кто куда бил. Половина побед у любого класса выходит не
-    подгонкой чисел, а симметрией — свести к половине воина с одной
-    заточкой нельзя вовсе, он еда для танка и стена для воина.
+    Класс — ученика, уровень — его плюс `LEVEL_GAP`, характеристики —
+    эталонная прокачка этого класса на этот уровень: все очки роздано.
+    Он учитель, и сильнее по устройству, а не по случайности броска.
+
+    Класс зеркалится, чтобы фора была одинаковой для всех четырёх: своя
+    заточка у Тренера оказывалась едой для танка и стеной для воина, и
+    ровнять её пришлось бы таблицей на каждую пару «класс × уровень».
 
     Здоровье переносится долей: накопил половину своего запаса — выйдет
-    с половиной запаса ученика.
+    с половиной того запаса, с каким вышел на этот ринг.
     """
     share = health_share(trainer, now)
-    mirror = replace(
+    level = trainer_level(learner.level)
+    stats = trainer_stats(learner.class_code, level)
+    shaped = replace(
         trainer,
         class_code=learner.class_code,
-        level=learner.level,
-        strength=learner.strength,
-        agility=learner.agility,
-        intuition=learner.intuition,
-        endurance=learner.endurance,
+        level=level,
+        strength=stats.strength,
+        agility=stats.agility,
+        intuition=stats.intuition,
+        endurance=stats.endurance,
+        # Свободных очков у учителя не бывает: всё роздано
+        free_points=0,
     )
-    mirror.set_hp(round(mirror.max_hp * share), now)
-    return mirror
+    shaped.set_hp(round(shaped.max_hp * share), now)
+    return shaped
 
 
 def refuse(learner: Player) -> str:

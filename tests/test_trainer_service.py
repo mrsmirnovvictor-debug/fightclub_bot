@@ -7,7 +7,13 @@
 
 from bot.game.classes import Stats
 from bot.game.health import now_ts
-from bot.game.trainer import BODY_LEVEL, TRAINER_ID, TRAINER_NAME
+from bot.game.trainer import (
+    BODY_LEVEL,
+    TRAINER_ID,
+    TRAINER_NAME,
+    trainer_level,
+    trainer_stats,
+)
 from bot.models import Player
 from bot.trainer_service import (
     calls,
@@ -74,12 +80,12 @@ async def test_his_wounds_heal_by_the_usual_club_clock(db):
     assert calls(trainer, busy=False, now=moment)
 
 
-async def test_he_steps_out_as_the_mirror_of_the_one_who_came(db):
-    """Класс, уровень и характеристики Тренера — те же, что у ученика.
+async def test_he_steps_out_in_the_pupils_class_two_levels_above(db):
+    """Класс — ученика, уровень — его плюс фора, прокачка — полная.
 
-    На этом и стоит ровный бой: одно и то же тело, тот же урон и тот же
-    уворот с обеих сторон. Победа любого класса выходит половиной не
-    подгонкой чисел, а симметрией.
+    Класс зеркалится, чтобы фора была одинаковой для всех четырёх
+    классов: своя заточка у Тренера оказывалась едой для танка и стеной
+    для воина. Уровень выше — он учитель, и сильнее по устройству.
     """
     trainer = await ensure_trainer(db)
 
@@ -87,17 +93,15 @@ async def test_he_steps_out_as_the_mirror_of_the_one_who_came(db):
         for code in ("warrior", "rogue", "assassin", "tank"):
             learner = a_learner(level)
             learner.class_code = code
-            learner.strength = 4 + level
-            learner.agility = 3 + level
-            learner.intuition = 3
-            learner.endurance = 4 + level
+            learner.free_points = 5  # ученик свои очки ещё не роздал
 
             shaped = shaped_for(trainer, learner)
 
             assert shaped.class_code == code
-            assert shaped.level == level
-            assert shaped.base_stats == learner.base_stats
-            assert shaped.max_hp == learner.max_hp
+            assert shaped.level == trainer_level(level)
+            assert shaped.base_stats == trainer_stats(code, shaped.level)
+            assert shaped.max_hp > learner.max_hp, "учитель не крепче ученика"
+            assert shaped.free_points == 0, "у учителя остались свободные очки"
             # Остался при этом Тренером: номер и прозвище свои
             assert shaped.user_id == TRAINER_ID
             assert shaped.nickname == TRAINER_NAME
@@ -118,10 +122,9 @@ async def test_the_trainer_brings_his_wounds_as_a_share(db):
     learner.endurance = 20  # ученик много крепче его собственного тела
     shaped = shaped_for(trainer, learner)
 
-    assert shaped.max_hp == learner.max_hp
-    assert shaped.current_hp() != trainer.current_hp(), "перенесли число"
     share = shaped.current_hp() / shaped.max_hp
     assert 0.45 <= share <= 0.55, f"доля не сохранилась: {share:.0%}"
+    assert shaped.current_hp() == round(shaped.max_hp * health_share(trainer))
 
 
 async def test_a_whole_trainer_steps_out_whole(db):

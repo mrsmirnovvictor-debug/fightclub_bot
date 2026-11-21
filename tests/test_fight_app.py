@@ -11,6 +11,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from bot.config import Config
 from bot.game.classes import Stats
 from bot.game.modes import FightMode
+from bot.game.trainer import LEVEL_GAP
 from bot.models import Player
 from bot.webapp.server import create_app
 from tests.test_duel_flow import FakeBot as DuelBot, make_service
@@ -736,10 +737,10 @@ async def test_the_trainer_calls_from_the_ring_list(arena):
     assert row is not None, "Тренера на ринге нет"
     assert body["challenges"][0] is row, "заявка Тренера стоит не первой"
     assert row["open"] is True
-    assert "отражением" in row["note"], row["note"]
+    assert "старше" in row["note"], row["note"]
     assert row["challenger"]["name"] == "Тренер"
-    # Отражение: уровень и класс — ученика, и так и написано в строке
-    assert row["challenger"]["level"] == 3
+    # Класс — ученика, уровень — его плюс фора, и так и написано в строке
+    assert row["challenger"]["level"] == 3 + LEVEL_GAP
     assert row["challenger"]["fclass"] == "Воин"
     assert row["mirror"] is True
     assert row["mode"]["code"] == "fist"
@@ -809,11 +810,16 @@ async def test_above_the_fourth_level_the_trainer_is_not_shown_at_all(arena, db)
 async def test_the_trainer_card_shows_the_mirror_and_not_his_own_record(arena, db):
     """Карточка Тренера — тот Тренер, который выйдет, а не запись в базе.
 
-    Выходит он отражением смотрящего, и числа его собственного тела на
-    ринге не встречаются вовсе. Показывать их значило бы готовить бойца
-    не к тому бою.
+    Выходит он в классе смотрящего и на два уровня старше, и числа его
+    собственного тела на ринге не встречаются вовсе. Показывать их
+    значило бы готовить бойца не к тому бою.
     """
-    from bot.game.trainer import TRAINER_ID, body_stats
+    from bot.game.trainer import (
+        TRAINER_ID,
+        body_stats,
+        trainer_level,
+        trainer_stats,
+    )
 
     client, _, _ = arena
     me = await db.get_player(42)
@@ -829,16 +835,11 @@ async def test_the_trainer_card_shows_the_mirror_and_not_his_own_record(arena, d
     card = await response.json()
 
     assert card["name"] == "Тренер"
-    assert card["level"] == me.level
+    assert card["level"] == trainer_level(me.level)
     assert card["fclass"]["code"] == me.class_code
     assert card["is_self"] is False
     mine = {row["code"]: row["base"] for row in card["stats"]}
-    assert mine == {
-        "strength": me.strength,
-        "agility": me.agility,
-        "intuition": me.intuition,
-        "endurance": me.endurance,
-    }, mine
+    assert mine == trainer_stats(me.class_code, card["level"]).as_dict(), mine
 
 
 async def test_a_female_fighter_goes_into_the_scene_as_female(arena, db):

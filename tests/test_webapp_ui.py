@@ -21398,13 +21398,13 @@ def trainer_call(open_now: bool = True) -> dict:
             "in_app": True,
             "open": open_now,
             "note": (
-                "Выходит твоим отражением: тот же класс, уровень и "
-                "характеристики."
+                "Твой класс, но на 2 уровня старше и с полной прокачкой. "
+                "Он учитель."
                 if open_now
                 else "Тренер сейчас занят. Загляни попозже."
             ),
             "challenger": {
-                "user_id": -1, "name": "Тренер", "level": 3,
+                "user_id": -1, "name": "Тренер", "level": 5,
                 "emoji": "⚔️", "fclass": "Воин",
             },
         }
@@ -21420,10 +21420,10 @@ async def test_the_trainer_stands_in_the_ring_list_and_takes_the_fight(server):
         browser, page = await open_ring(pw, server, trainer_call())
 
         body = await page.locator("#fights-body").inner_text()
-        assert "Тренер [3]" in body, body
+        assert "Тренер [5]" in body, body
         assert "кулачный бой" in body
-        # Подпись про отражение, а не про занятость: Тренер свободен
-        assert "отражением" in await page.locator(".fight-note").inner_text()
+        # Подпись про фору, а не про занятость: Тренер свободен
+        assert "старше" in await page.locator(".fight-note").inner_text()
 
         async def catch(route):
             sent.append(route.request.post_data_json)
@@ -21446,7 +21446,7 @@ async def test_a_busy_trainer_keeps_his_row_with_the_button_dead(server):
         browser, page = await open_ring(pw, server, trainer_call(open_now=False))
 
         body = await page.locator("#fights-body").inner_text()
-        assert "Тренер [3]" in body, body
+        assert "Тренер [5]" in body, body
         assert "занят" in await page.locator(".fight-note").inner_text()
         assert await page.get_by_role("button", name="Принять вызов").is_disabled()
         await browser.close()
@@ -21595,12 +21595,12 @@ async def test_the_standoff_lets_you_read_the_rival_before_the_gong(server):
         await browser.close()
 
 
-async def test_the_trainers_row_says_he_is_your_mirror(server):
-    """У заявки Тренера есть подпись про отражение и та же кнопка ℹ️."""
+async def test_the_trainers_row_says_he_is_two_levels_above(server):
+    """У заявки Тренера есть подпись про фору и та же кнопка ℹ️."""
     async with async_playwright() as pw:
         browser, page = await open_ring(pw, server, trainer_call())
 
         note = await page.locator(".fight-note").inner_text()
-        assert "отражением" in note, note
+        assert "старше" in note and "учитель" in note, note
         assert await page.locator(".fight-line .fighter-info").count() == 1
         await browser.close()

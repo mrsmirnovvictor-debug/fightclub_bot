@@ -128,13 +128,10 @@ async def test_a_loss_leaves_the_learner_with_nothing(duels, db):
 
 
 async def test_the_lesson_is_counted_by_the_learners_level(duels, db):
-    """Опыт считается от уровня ученика — и формулой, а не совпадением.
+    """Опыт считается от уровня ученика, а не от уровня Тренера.
 
-    Тренер выходит отражением, так что его уровень и так равен уровню
-    ученика. Но считать опыт от своего уровня — правило этого боя, а не
-    следствие того, каким Тренер собран: собери его иначе, и опыт
-    должен остаться тем же. Поэтому проверка сверяет начисленное с
-    формулой, посчитанной по уровню ученика с обеих сторон.
+    Тренер выходит старше, и ставка по старшему из двоих была бы платой
+    за его фору, которой ученик не брал.
     """
     learner = a_learner(level=4, user_id=44)
     await db.save_player(learner)
@@ -142,16 +139,15 @@ async def test_the_lesson_is_counted_by_the_learners_level(duels, db):
     session.fighters[learner.user_id].damage_dealt = 40
     fighter = session.fighters[learner.user_id]
     teacher = session.fighters[TRAINER_ID]
-    assert teacher.level == fighter.level, "Тренер вышел не отражением"
+    assert teacher.level > fighter.level, "Тренер вышел не старше ученика"
 
     from bot.game.economy import win_exp
 
     by_learner = win_exp(40, learner.level, learner.level,
                          fighter.max_hp + teacher.max_hp, 2)
-    # Для сравнения: та же формула по старшему уровню дала бы больше —
-    # значит, уровень в ней и правда что-то решает
-    assert by_learner < win_exp(40, learner.level, learner.level + 2,
-                                fighter.max_hp + teacher.max_hp, 2)
+    by_trainer = win_exp(40, learner.level, teacher.level,
+                         fighter.max_hp + teacher.max_hp, 2)
+    assert by_learner < by_trainer, "уровни считаются одинаково, проверка слепа"
 
     await duels._apply_results(session, a_verdict(learner.user_id))
     after = await db.get_player(learner.user_id)

@@ -41,10 +41,12 @@ from bot.game.abilities import (
 )
 from bot.game.scout import advise
 from bot.game.trainer import (
+    LEVEL_GAP,
     TRAINER_ART,
     TRAINER_ID,
     TRAINER_NAME,
     may_learn,
+    trainer_level,
 )
 from bot.models import Player
 from bot.trainer_service import TRAINER_CHALLENGE_ID, calls
@@ -182,9 +184,8 @@ def trainer_row(
     if not may_learn(learner.level):
         return None
     open_now = calls(trainer, busy=busy)
-    # Класс и уровень — ученика: Тренер выходит его отражением, и в
-    # строке должно стоять то, с чем он выйдет, а не то, что лежит в
-    # его записи
+    # Класс — ученика, уровень — его плюс фора: в строке должно стоять
+    # то, с чем Тренер выйдет, а не то, что лежит в его записи
     fclass = get_class(learner.class_code)
     return {
         "id": TRAINER_CHALLENGE_ID,
@@ -195,21 +196,22 @@ def trainer_row(
         "in_app": True,
         "open": open_now,
         # Пока свободен — подпись объясняет, с чем он выйдет: класс в
-        # строке совпадает с твоим не по ошибке. Занят — подпись про
-        # это, а отражение к тому времени уже прочитано
+        # строке совпадает с твоим не по ошибке, а уровень выше твоего не
+        # по ошибке тем более. Занят — подпись про это
         "note": (
-            "Выходит твоим отражением: тот же класс, уровень и характеристики."
+            f"Твой класс, но на {LEVEL_GAP} уровня старше и с полной "
+            "прокачкой. Он учитель."
             if open_now
             else "Тренер сейчас занят. Загляни попозже."
         ),
-        # Отражение — то, что о бое надо знать заранее: подпись говорит
-        # это словами, а кнопка ℹ️ рядом открывает его карточку, где те
-        # же числа стоят целиком
+        # Фора — то, что о бое надо знать заранее: подпись говорит это
+        # словами, а кнопка ℹ️ рядом открывает его карточку, где те же
+        # числа стоят целиком
         "mirror": True,
         "challenger": {
             "user_id": TRAINER_ID,
             "name": TRAINER_NAME,
-            "level": learner.level,
+            "level": trainer_level(learner.level),
             "emoji": fclass.emoji,
             "fclass": fclass.title,
         },

@@ -37,7 +37,13 @@ from bot.game.classes import (  # noqa: E402
     Stat,
 )
 from bot.game.economy import MAX_LEVEL, MICRO_UPS_PER_LEVEL, win_exp  # noqa: E402
-from bot.game.trainer import LEARNER_LEVELS, TRAINER_NAME  # noqa: E402
+from bot.game.trainer import (  # noqa: E402
+    LEARNER_LEVELS,
+    LEVEL_GAP,
+    TRAINER_NAME,
+    trainer_level,
+    trainer_stats,
+)
 from bot.game.reference import (  # noqa: E402
     developed_stats,
     kit_price,
@@ -367,24 +373,28 @@ def _spend(hero, rng: random.Random) -> None:
 def trainer(runs: int, seed: int) -> None:
     """Винрейт ученика против Тренера — по классам и уровням.
 
-    Тренер выходит отражением: его класс, уровень и характеристики — те
-    же, что у ученика. Бой от этого симметричный, и половина побед у
-    каждого класса здесь не подогнанное число, а проверка того, что
-    отражение и правда отражение — и что сам движок не даёт форы тому,
-    кто стоит первым.
+    Тренер выходит бойцом класса ученика, но на `LEVEL_GAP` уровня
+    старше и с полной прокачкой. Класс он зеркалит затем, чтобы фора
+    была одинаковой для всех четырёх: своя заточка оказывалась едой для
+    танка и стеной для воина. Прогон и показывает, во что эта фора
+    обходится ученику — и что она одна и та же, чей бы боец ни вышел.
     """
     rng = random.Random(seed)
     shares: list[float] = []
-    print(f"(зерно {seed}, боёв на пару {runs})\n")
+    print(f"(зерно {seed}, боёв на пару {runs}, фора {LEVEL_GAP} ур.)\n")
     print(f"{'класс':10} " + "  ".join(f"ур.{lvl}" for lvl in LEARNER_LEVELS_RANGE))
     for fclass in FIGHTER_CLASSES.values():
         row: list[float] = []
         for level in LEARNER_LEVELS_RANGE:
             stats = developed_stats(fclass, level)
+            coach_level = trainer_level(level)
+            coach_stats = trainer_stats(fclass.code, coach_level)
             wins = {1: 0, 2: 0, None: 0}
             for _ in range(runs):
                 pupil = Fighter(1, "Ученик", fclass, stats, level)
-                coach = Fighter(2, TRAINER_NAME, fclass, stats, level)
+                coach = Fighter(
+                    2, TRAINER_NAME, fclass, coach_stats, coach_level
+                )
                 number = 1
                 while True:
                     result = resolve_round(
