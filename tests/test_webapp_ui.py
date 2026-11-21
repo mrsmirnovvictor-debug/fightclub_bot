@@ -10059,7 +10059,7 @@ async def test_the_buttons_are_bare_words(server):
 
         said = await page.locator("#hero-tabs .hero-act").all_inner_texts()
 
-        assert said == ["Характеристики", "Квесты", "Документы", "Награды"]
+        assert said == ["Характеристики", "Квесты", "Документы", "Отряды"]
         # Двух документов на кнопке не видно: она про раздел, а не про счёт
         assert not any(ch.isdigit() for ch in "".join(said))
         await browser.close()
