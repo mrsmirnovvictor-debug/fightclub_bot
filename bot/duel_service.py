@@ -18,12 +18,13 @@ from bot.board_service import ARMED, FIST, Board, Pin
 from bot.config import Config
 from bot.database import Database
 from bot.game.classes import Zone, block_combo, block_title
-from bot.game.equipment import BARE_HANDS_ICON
+from bot.game.clock import day_opens
 from bot.game.combat import heal_line
+from bot.game.equipment import BARE_HANDS_ICON
 from bot.game.health import now_ts
 from bot.game.modes import FightMode
 from bot.game.scout import SCOUT_FIGHTS, Habits, read_habits
-from bot.game.trainer import TRAINER_ID, trainer_moves
+from bot.game.trainer import TRAINER_ID, lesson_exp, trainer_moves
 from bot.trainer_service import calls, ensure_trainer, refuse, shaped_for
 from bot.game.combat import (
     MAX_MISSED_TURNS,
@@ -979,8 +980,81 @@ class DuelService:
             log=session.rounds,
         )
 
+    async def _apply_lesson(self, session: DuelSession, result: RoundResult) -> str:
+        """Итоги урока у Тренера: опыт за победу и больше ничего.
+
+        Урок считается не по обычным правилам, и потому у него свой
+        расчёт, а не ветки внутри общего. Тренера нет: он не копит
+        опыт, не берёт уровни, не двигает ничей рейтинг и не получает
+        травм. А у ученика бой не попадает ни в победы с поражениями,
+        ни в ELO, ни в недельный рейтинг — иначе Тренер стал бы
+        бесплатной лестницей наверх, а список игроков заполнили бы те,
+        кто дрался только с ним.
+
+        Остаётся опыт — и он урезается по счёту побед за сутки, а не по
+        окну повторных боёв: окно считает бои, а сутки считают победы,
+        и мерить урок надо тем, за что его дают. Считается опыт от
+        уровня ученика с обеих сторон: Тренер выходит старше, и платить
+        за его два уровня было бы платой за чужую подачку.
+
+        В рейды бой идёт: это и правда бой против города, а не против
+        живого бойца, и в статистике ему место там.
+        """
+        assert session.npc is not None
+        learner_id = next(
+            user_id for user_id in session.order if user_id != session.npc
+        )
+        player = await self.db.get_player(learner_id)
+        if player is None:  # pragma: no cover - персонажа удалили по ходу боя
+            return ""
+        await record_injuries(self.db, result.injuries, {learner_id: player})
+
+        fighter = session.fighters[learner_id]
+        teacher = session.fighters[session.npc]
+        won = result.winner_id == learner_id
+        # Уровень ученика стоит с обеих сторон формулы: ставка берётся по
+        # старшему из двоих, и уровень Тренера задрал бы её даром
+        full_exp = win_exp(
+            fighter.damage_dealt,
+            player.level,
+            player.level,
+            fighter.max_hp + teacher.max_hp,
+            2,
+            exp_share=player.exp_share(),
+        )
+        # Победы за сутки считаются до того, как этот бой лёг в историю:
+        # запись идёт после итогов, и счёт здесь — счёт прошлых побед
+        wins_today = await self.db.count_wins_over(
+            learner_id, session.npc, day_opens(now_ts())
+        )
+        exp = lesson_exp(full_exp, wins_today) if won else 0
+
+        player.raid_fights += 1
+        if won:
+            player.raid_wins += 1
+        player.set_hp(fighter.hp)
+        report = player.grant_exp(exp)
+        await self.db.save_player(player)
+
+        # Побитый Тренер остаётся побитым: по его здоровью решается, зовёт
+        # ли он следующего, и затягивается оно обычными часами клуба
+        teacher_row = await self.db.get_player(session.npc)
+        if teacher_row is not None:
+            teacher_row.set_hp(teacher.hp)
+            await self.db.save_player(teacher_row)
+
+        # Первый бой у бармена этот урок закрывает: задание про то, чтобы
+        # выйти на ринг и дойти до результата, а с кем — не сказано
+        await notice(self.db, player, ring_mark(won))
+        return rewards_report(
+            [(player, report)],
+            damage={learner_id: fighter.damage_dealt},
+        )
+
     async def _apply_results(self, session: DuelSession, result: RoundResult) -> str:
         """Начислить опыт, кредиты и рейтинг. Вернуть блок текста с итогами."""
+        if session.npc is not None:
+            return await self._apply_lesson(session, result)
         players: dict[int, Player] = {}
         for user_id in session.order:
             player = await self.db.get_player(user_id)

@@ -79,6 +79,22 @@ def win_share(wins_today: int) -> float:
     return 0.0
 
 
+def lesson_exp(full: int, wins_today: int) -> int:
+    """Сколько опыта достанется за победу, если до неё их было столько.
+
+    `full` — опыт, посчитанный обычной формулой клуба. Доля берётся по
+    счёту побед за сутки, и третья победа даёт ровно ноль: тут не
+    урезание награды, а её конец. Половина при этом не обнуляется —
+    опыт за вторую победу есть всегда, пусть и мелкий.
+    """
+    share = win_share(wins_today)
+    if share <= 0.0:
+        return 0
+    if share >= 1.0:
+        return max(0, full)
+    return max(1, round(full * share))
+
+
 def trainer_stats(level: int) -> Stats:
     """Характеристики Тренера на этот уровень.
 
@@ -154,6 +170,7 @@ __all__ = [
     "TRAINER_ID",
     "TRAINER_NAME",
     "WIN_SHARES",
+    "lesson_exp",
     "may_learn",
     "trainer_level",
     "trainer_moves",

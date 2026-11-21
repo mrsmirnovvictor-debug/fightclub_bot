@@ -49,6 +49,18 @@ def club_day(moment: float) -> date:
     return datetime.fromtimestamp(moment, MOSCOW).date()
 
 
+def day_opens(moment: float) -> int:
+    """Полночь того дня клуба, которому принадлежит этот миг.
+
+    Сутки у клуба московские: «первая победа за сутки» считается от
+    полуночи по Москве, а не от полуночи того, кто смотрит на экран, и
+    не от суток в UTC.
+    """
+    here = datetime.fromtimestamp(moment, MOSCOW)
+    start = here.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(start.timestamp())
+
+
 def week_opens(moment: float) -> int:
     """Полдень того воскресенья, с которого идёт эта неделя клуба.
 
@@ -152,6 +164,7 @@ __all__ = [
     "club_day",
     "club_moment",
     "club_time",
+    "day_opens",
     "next_midnight",
     "read_stamp",
     "to_moscow",

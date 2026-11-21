@@ -1324,6 +1324,13 @@ CREATE INDEX IF NOT EXISTS ladder_places_owed
     ON ladder_places(period, paid_at);
 """
 
+# Списки и счётчики клуба — про людей. Боец с отрицательным номером
+# человеком не является: так заведён Тренер, у которого есть и запись, и
+# здоровье, и уровень, но нет ни места в рейтинге, ни строки в списке
+# игроков, ни карточки в поиске. У Телеграма отрицательных номеров не
+# бывает, и живого бойца это условие не отрежет никогда
+HUMANS = "user_id > 0"
+
 PLAYER_COLUMNS = (
     "user_id, nickname, class_code, avatar, avatar_file_id, look, strength, "
     "agility, intuition, endurance, free_points, level, exp, total_exp, "
@@ -2278,7 +2285,8 @@ class Database:
     async def find_by_nickname(self, nickname: str) -> Player | None:
         """Боец по прозвищу. Регистр не важен: прозвище — не пароль."""
         async with self.conn.execute(
-            f"SELECT {PLAYER_COLUMNS} FROM players WHERE lower(nickname) = lower(?)",
+            f"SELECT {PLAYER_COLUMNS} FROM players "
+            f"WHERE lower(nickname) = lower(?) AND {HUMANS}",
             (nickname,),
         ) as cursor:
             row = await cursor.fetchone()
@@ -2288,6 +2296,7 @@ class Database:
         async with self.conn.execute(
             f"""
             SELECT {PLAYER_COLUMNS} FROM players
+            WHERE {HUMANS}
             ORDER BY rating DESC, wins DESC, level DESC
             LIMIT ?
             """,
@@ -2309,7 +2318,7 @@ class Database:
         async with self.conn.execute(
             f"""
             SELECT {PLAYER_COLUMNS} FROM players
-            WHERE location = ? OR travel_to = ?
+            WHERE (location = ? OR travel_to = ?) AND {HUMANS}
             ORDER BY seen_at DESC
             LIMIT ?
             """,
@@ -2323,6 +2332,7 @@ class Database:
         async with self.conn.execute(
             f"""
             SELECT {PLAYER_COLUMNS} FROM players
+            WHERE {HUMANS}
             ORDER BY rating DESC, level DESC, wins DESC
             LIMIT ?
             """,
@@ -2343,12 +2353,14 @@ class Database:
         """
         if level > 0:
             async with self.conn.execute(
-                "SELECT COUNT(*) AS n FROM players WHERE level = ?", (level,)
+                f"SELECT COUNT(*) AS n FROM players "
+                f"WHERE level = ? AND {HUMANS}",
+                (level,),
             ) as cursor:
                 row = await cursor.fetchone()
             return int(row["n"]) if row else 0
         async with self.conn.execute(
-            "SELECT COUNT(*) AS n FROM players"
+            f"SELECT COUNT(*) AS n FROM players WHERE {HUMANS}"
         ) as cursor:
             row = await cursor.fetchone()
         return int(row["n"]) if row else 0
@@ -2380,7 +2392,7 @@ class Database:
         игроку то, чего там не найдётся.
         """
         async with self.conn.execute(
-            "SELECT DISTINCT level FROM players ORDER BY level"
+            f"SELECT DISTINCT level FROM players WHERE {HUMANS} ORDER BY level"
         ) as cursor:
             return [int(row["level"]) for row in await cursor.fetchall()]
 
@@ -2420,7 +2432,7 @@ class Database:
             if by_name
             else "rating DESC, level DESC, wins DESC, user_id ASC"
         )
-        where = "WHERE level = ?" if level > 0 else ""
+        where = f"WHERE {HUMANS}" + (" AND level = ?" if level > 0 else "")
         tail = ((level,) if level > 0 else ()) + (max(1, limit), max(0, offset))
         async with self.conn.execute(
             f"""
@@ -2457,7 +2469,7 @@ class Database:
         async with self.conn.execute(
             f"""
             SELECT {PLAYER_COLUMNS} FROM players
-            WHERE lower(nickname) LIKE ? ESCAPE '\\'
+            WHERE lower(nickname) LIKE ? ESCAPE '\\' AND {HUMANS}
             ORDER BY (lower(nickname) LIKE ? ESCAPE '\\') DESC,
                      length(nickname) ASC,
                      rating DESC,
@@ -8590,6 +8602,27 @@ class Database:
         ) as cursor:
             row = await cursor.fetchone()
         return int(row["fights"]) if row else 0
+
+    async def count_wins_over(
+        self, user_id: int, rival_id: int, since: int
+    ) -> int:
+        """Сколько раз этот боец побил того с указанного мига.
+
+        Нужно для Тренера: опыт за победу над ним урезается по счёту
+        побед за сутки, и считать их больше неоткуда — в самой записи
+        игрока бои с Тренером не откладываются.
+        """
+        async with self.conn.execute(
+            """
+            SELECT COUNT(*) AS wins FROM duels
+            WHERE winner_id = ?
+              AND (challenger_id = ? OR opponent_id = ?)
+              AND created_at >= datetime(?, 'unixepoch')
+            """,
+            (user_id, rival_id, rival_id, int(since)),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["wins"]) if row else 0
 
     async def recent_duels(self, chat_id: int, limit: int = 5) -> list[dict[str, Any]]:
         async with self.conn.execute(
