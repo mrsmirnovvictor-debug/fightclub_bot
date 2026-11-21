@@ -839,3 +839,25 @@ async def test_the_trainer_card_shows_the_mirror_and_not_his_own_record(arena, d
         "intuition": me.intuition,
         "endurance": me.endurance,
     }, mine
+
+
+async def test_a_female_fighter_goes_into_the_scene_as_female(arena, db):
+    """Женский боец выходит женским комплектом при любом классе.
+
+    Тело в сцене рисовали под пол, а не под класс: выбирать папку по
+    классу значило бы выпускать женщину мужским телом.
+    """
+    from bot.game.looks import FEMALE
+
+    client, _, _ = arena
+    her = make_player(45, "Марла", class_code="tank")
+    her.gender = FEMALE
+    await db.save_player(her)
+    await db.save_player(make_player(46, "Боб", class_code="tank"))
+
+    await act(client, 45, action="open", mode="fist")
+    _, joined = await act(client, 46, action="join", challenge_id=1)
+    _, body = await act(client, 45, action="go")
+
+    lines = {row["name"]: row["art_line"] for row in body["duel"]["fighters"]}
+    assert lines == {"Марла": "female", "Боб": "tank"}, lines

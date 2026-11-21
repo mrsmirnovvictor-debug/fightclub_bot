@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from bot.game.art import ART_LINES, combat_base
+from bot.game.art import ALL_ART_LINES, ART_LINES, FEMALE_LINE, MASTER_LINE, art_line, combat_base
 from bot.game.classes import ALL_ZONES, FIGHTER_CLASSES
 from bot.webapp.server import STATIC_DIR
 
@@ -41,9 +41,33 @@ def test_the_art_line_is_known_for_every_class_in_the_game():
     assert ART_LINES["rogue"] == "trickster", "папка зовётся названием класса"
 
 
-@pytest.mark.parametrize("code,line", sorted(ART_LINES.items()))
-def test_every_class_brings_a_full_set_of_frames(code: str, line: str):
-    """На класс — манифест, в нём пять наборов и ровно сто двадцать шесть кадров."""
+def test_the_female_body_is_one_line_for_every_class():
+    """Женский боец выходит одним комплектом, какого бы класса он ни был.
+
+    Тело рисовали под пол, а не под класс: четырёх женских комплектов
+    нет и не будет, и спрашивать класс при выборе папки незачем.
+    """
+    for code in FIGHTER_CLASSES:
+        assert art_line(code, female=True) == FEMALE_LINE
+        assert art_line(code) == ART_LINES[code], "мужской боец остался классовым"
+
+
+def test_every_line_the_scene_can_show_is_on_the_list():
+    """Список линий — полный: классовые, женская и линия Тренера.
+
+    По нему идут все проверки ниже. Линия, не попавшая в список,
+    осталась бы без единой проверки — и разъехалась бы с игрой молча.
+    """
+    assert set(ALL_ART_LINES) == set(ART_LINES.values()) | {
+        FEMALE_LINE, MASTER_LINE
+    }
+    for line in ALL_ART_LINES:
+        assert (FIGHT_DIR / line / "manifest.json").exists(), line
+
+
+@pytest.mark.parametrize("line", ALL_ART_LINES)
+def test_every_class_brings_a_full_set_of_frames(line: str):
+    """На линию — манифест, в нём пять наборов и ровно сто двадцать шесть кадров."""
     data = manifest(line)
     assert data["classCode"] == line, f"{line}: манифест не от своей линии"
 
@@ -52,8 +76,8 @@ def test_every_class_brings_a_full_set_of_frames(code: str, line: str):
     assert sum(counted.values()) == FRAMES, line
 
 
-@pytest.mark.parametrize("code,line", sorted(ART_LINES.items()))
-def test_the_zones_are_the_ones_the_engine_names(code: str, line: str):
+@pytest.mark.parametrize("line", ALL_ART_LINES)
+def test_the_zones_are_the_ones_the_engine_names(line: str):
     """Зоны манифеста — те же, что в правилах, и в том же порядке.
 
     Ряды атласа читаются по порядку зон: нулевой — голова, последний —
@@ -67,8 +91,8 @@ def test_the_zones_are_the_ones_the_engine_names(code: str, line: str):
         assert data["rowMap"][name] == game, f"{line}.{name}"
 
 
-@pytest.mark.parametrize("code,line", sorted(ART_LINES.items()))
-def test_each_atlas_lies_where_its_line_lies(code: str, line: str):
+@pytest.mark.parametrize("line", ALL_ART_LINES)
+def test_each_atlas_lies_where_its_line_lies(line: str):
     """Адрес атласа складывается из базы и пути манифеста, и путь — свой.
 
     Пути опубликованы относительными нарочно: бакет знает только
@@ -83,8 +107,8 @@ def test_each_atlas_lies_where_its_line_lies(code: str, line: str):
         assert combat_base().endswith("/"), "база склеивается с путём напрямую"
 
 
-@pytest.mark.parametrize("code,line", sorted(ART_LINES.items()))
-def test_every_frame_fits_inside_its_atlas(code: str, line: str):
+@pytest.mark.parametrize("line", ALL_ART_LINES)
+def test_every_frame_fits_inside_its_atlas(line: str):
     """Прямоугольник кадра не вылезает за край атласа.
 
     Вылезший кадр рисуется прозрачной пустотой: боец просто исчезает на

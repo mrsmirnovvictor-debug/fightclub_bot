@@ -46,6 +46,7 @@ from bot.game.abilities import (
     energy_gain,
 )
 from bot.game.equipment import BARE_HANDS, BARE_HANDS_ICON, Equipment, OwnedItem
+from bot.game.looks import FEMALE
 from bot.game.stats import (
     NO_LIMITS,
     BLOCK_BREAK_CHANCE,
@@ -237,6 +238,9 @@ class Fighter:
     # Лицо — только у нанятых и городской охраны. У игрока его нет: его
     # карточка и так рядом, а в шкалах боя место одно на строку
     picture: str = ""
+    # Женский боец. Нужно сцене: женское тело нарисовано одним
+    # комплектом на все классы, и выбрать его по классу нельзя
+    female: bool = False
     # Приёмы: что выучено, сколько энергии накоплено и что уже нажато.
     # Энергия живёт только внутри боя — в базу она не уходит
     loadout: Loadout = field(default_factory=Loadout)
@@ -546,6 +550,7 @@ class Fighter:
             equipment=equipment,
             extra_hp=getattr(player, "effect_hp", 0),
             badge=str(getattr(player, "badge", "") or ""),
+            female=str(getattr(player, "sex", "") or "") == FEMALE,
         )
         fighter.hp = max(1, min(player.current_hp(), fighter.max_hp))
         # Приёмы боец приносит с собой, а энергию — нет: она копится с нуля
