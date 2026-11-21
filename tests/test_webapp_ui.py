@@ -4594,9 +4594,12 @@ async def test_the_damage_is_coloured_by_the_kind_of_strike(server):
         # ждёт: без этой строки проверка иногда читала пустой список
         await page.wait_for_selector(".fight-log .dmg")
         marks = page.locator(".fight-log .dmg")
-        assert await marks.all_inner_texts() == ["−5", "−60"]
-        assert await marks.nth(0).get_attribute("class") == "dmg"
-        assert await marks.nth(1).get_attribute("class") == "dmg crit"
+        # Лента идёт свежим сверху и внутри размена, поэтому второй удар
+        # стоит первым. Подсветка при этом едет со своей строкой: удары
+        # и слова судьи связываются до переворота, а не по месту в ленте
+        assert await marks.all_inner_texts() == ["−60", "−5"]
+        assert await marks.nth(0).get_attribute("class") == "dmg crit"
+        assert await marks.nth(1).get_attribute("class") == "dmg"
 
         colours = [
             await marks.nth(index).evaluate("node => getComputedStyle(node).color")
