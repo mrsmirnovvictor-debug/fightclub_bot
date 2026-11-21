@@ -16,7 +16,7 @@ from bot.abilities_service import AbilityError, ensure_starter
 from bot.daily_service import DailyError, check_in, claim, ladder_view
 from bot.abilities_service import learn as learn_ability
 from bot.database import Database
-from bot.game.art import LOADING, REDESIGN, combat_base
+from bot.game.art import LOADING, REDESIGN, combat_base, daily_icon
 from bot.battle_service import BattleError
 from bot.duel_service import DuelError, DuelService
 from bot.game.trainer import TRAINER_ID
@@ -853,6 +853,12 @@ def daily_payload(visit) -> dict:
         "days": visit.days,
         "month": visit.month,
         "fresh": visit.fresh,
+        # Есть ли что забрать и каким значком это сказать на карточке.
+        # Адрес считает `art`, а не страница: все адреса картинок в
+        # игре живут в одном месте. Два состояния — два файла, и
+        # выбирает между ними сервер: он один знает про входы
+        "ready": visit.has_gift,
+        "icon": daily_icon(visit.has_gift),
         "next_day": visit.next_day,
         "resets_at": int(visit.resets_at),
         "ladder": ladder_view(visit),

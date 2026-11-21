@@ -330,3 +330,52 @@ async def test_the_window_counts_the_cells_by_the_month(db, fighter):
 
     assert len(short) == 28
     assert short[-1]["mod"] == LAST_DAY_MOD and short[-1]["credits"] == 200
+
+
+# ---------- значок на карточке ----------
+
+
+def test_the_visit_state_says_which_icon_to_show():
+    """Состояние входов несёт адрес значка, а не только лестницу.
+
+    Выбирать между «забрать» и «получено» на стороне страницы нечем:
+    про входы в клуб она не знает. Поэтому решение принимает сервер, а
+    адрес обеих картинок берётся в `bot.game.art` — там живут все
+    адреса картинок игры.
+    """
+    from bot.daily_service import VisitState
+    from bot.game.art import daily_icon
+    from bot.game.daily import Reward
+    from bot.webapp.server import daily_payload
+
+    gift = Reward(day=3, title="Награда", icon="🎁", note="", credits=100)
+    waiting = daily_payload(
+        VisitState(days=3, month="2026-09", fresh=True, waiting=(gift,))
+    )
+    assert waiting["ready"] is True
+    assert waiting["icon"] == daily_icon(True)
+    assert waiting["icon"].endswith("/daily_rewards/daily_reward_claim.webp")
+
+    taken = daily_payload(
+        VisitState(days=3, month="2026-09", fresh=False, waiting=())
+    )
+    assert taken["ready"] is False
+    assert taken["icon"] == daily_icon(False)
+    assert taken["icon"].endswith("/daily_rewards/daily_reward_claimed.webp")
+
+
+def test_a_counted_day_without_a_reward_is_not_a_waiting_gift():
+    """Новый день сам по себе забирать нечего.
+
+    Засчитанный вход и невзятая награда — разные вещи: до вехи
+    лестницы дней может быть ещё далеко. Значок говорит именно про
+    награду, иначе рука с подарком светилась бы каждый день впустую.
+    """
+    from bot.daily_service import VisitState
+    from bot.webapp.server import daily_payload
+
+    fresh = daily_payload(
+        VisitState(days=2, month="2026-09", fresh=True, waiting=())
+    )
+    assert fresh["fresh"] is True, "день засчитан"
+    assert fresh["ready"] is False, "а забирать нечего"

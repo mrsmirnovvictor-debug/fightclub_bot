@@ -9137,21 +9137,85 @@ async def test_the_chosen_section_is_the_only_lit_button(server):
         await browser.close()
 
 
-async def test_a_waiting_reward_puts_a_dot_on_its_button(server):
+async def test_a_waiting_reward_lights_up_the_icon_by_the_rating(server):
+    """Есть что забрать — значок с подарком, забрали — потухший.
+
+    Состояний два, и решает их сервер: картинок две, и выбирать между
+    ними на стороне страницы нечем — про входы в клуб она не знает.
+    """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
     card["daily"] = daily_state(days=2, waiting=True, fresh=False)
 
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, build_shop(player))
-        await page.wait_for_selector("#hero-daily")
+        await page.wait_for_selector("#hero-daily:not(.hidden)")
 
-        assert await page.locator("#hero-daily .hero-act-mark.dot").count() == 1
+        gate = page.locator("#hero-daily")
+        assert "taken" not in await gate.get_attribute("class")
+        src = await page.locator("#hero-daily-pic").get_attribute("src")
+        assert src.endswith("/daily_rewards/daily_reward_claim.webp"), src
         await browser.close()
 
 
-async def test_without_a_calendar_the_row_holds_only_three_buttons(server):
-    """Кнопка без содержимого — обещание, которого не будет."""
+async def test_a_taken_reward_dims_the_icon_but_keeps_it_in_place(server):
+    """Забранная награда значок не убирает: иначе ряд прыгал бы."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=2, waiting=False, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-daily:not(.hidden)")
+
+        gate = page.locator("#hero-daily")
+        assert await gate.is_visible()
+        assert "taken" in await gate.get_attribute("class")
+        src = await page.locator("#hero-daily-pic").get_attribute("src")
+        assert src.endswith("/daily_rewards/daily_reward_claimed.webp"), src
+        await browser.close()
+
+
+async def test_the_rating_keeps_four_fifths_of_the_row(server):
+    """Рейтинг занимает ряд, значок — пятую его часть.
+
+    Доли считает flex от остатка после зазора, и проверяем мы их на
+    настоящей ширине экрана, а не в коде стилей: ряд должен держать
+    пропорцию, а не отдельно взятое правило.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=2, waiting=True, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-daily:not(.hidden)")
+
+        rating = await page.locator("#hero-rating").bounding_box()
+        gate = await page.locator("#hero-daily").bounding_box()
+        share = gate["width"] / (rating["width"] + gate["width"])
+        assert 0.17 < share < 0.23, share
+        # И стоят они в одной строке, а не друг под другом
+        assert abs(rating["y"] - gate["y"]) < 2, (rating, gate)
+        await browser.close()
+
+
+async def test_another_fighter_card_has_no_reward_icon(server):
+    """Чужие входы в клуб — не наше дело, и забрать за соседа нечего."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id + 1)
+    card["daily"] = daily_state(days=2, waiting=True, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        assert await page.locator("#hero-daily").is_hidden()
+        await browser.close()
+
+
+async def test_without_a_calendar_the_icon_is_not_shown_at_all(server):
+    """Значок без содержимого — обещание, которого не будет."""
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
     card.pop("daily", None)
@@ -9160,17 +9224,14 @@ async def test_without_a_calendar_the_row_holds_only_three_buttons(server):
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#hero-tabs .hero-act")
 
-        assert await page.locator("#hero-tabs .hero-act").count() == 3
-        assert await page.locator("#hero-daily").count() == 0
-        # Три встают в один ряд: складывать нечего
-        assert "folded" not in await page.locator("#hero-tabs").get_attribute(
-            "class"
-        )
+        assert await page.locator("#hero-daily").is_hidden()
+        # А разделы стоят все четыре: они от календаря не зависят
+        assert await page.locator("#hero-tabs .hero-act").count() == 4
         await browser.close()
 
 
-async def test_the_hero_tab_opens_the_calendar_on_demand(server):
-    """Кнопка «Награды» открывает окно, когда игрок сам захочет."""
+async def test_the_reward_icon_opens_the_calendar_on_demand(server):
+    """Значок открывает окно, когда игрок сам захочет."""
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
     # окно само не всплывает: день засчитан, забирать нечего
@@ -9183,12 +9244,59 @@ async def test_the_hero_tab_opens_the_calendar_on_demand(server):
 
         gate = page.locator("#hero-daily")
         assert await gate.is_visible()
-        assert "Награды" in await gate.inner_text()
+        # Среди разделов его больше нет: он не раздел, а окно
+        said = await page.locator("#hero-tabs .hero-act").all_inner_texts()
+        assert not any("Награды" in one for one in said), said
 
         await gate.click()
 
         await page.wait_for_selector("#daily-veil:not(.hidden)")
         assert await page.locator("#daily-ladder .gift").count() == 30
+        await browser.close()
+
+
+async def test_the_word_stands_in_until_the_icon_arrives(server):
+    """Картинка не приехала — на кнопке слово, и вход на месте.
+
+    За значком лежит настоящая награда, и терять вход в календарь
+    из-за бакета, который не ответил, нельзя. То же правило, что у
+    медали призёра: не приехала — остаётся подпись.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=2, waiting=False, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        # Бакета в тестах нет, картинка не доедет — значит, слово
+        await page.wait_for_selector("#hero-daily:not(.hidden)")
+        assert "Награды" in await page.locator("#hero-daily").inner_text()
+
+        await page.locator("#hero-daily").click()
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+        await browser.close()
+
+
+async def test_the_squad_section_says_it_is_empty(server):
+    """«Отряды» — четвёртый раздел, и пока в нём никого."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-tabs .hero-act")
+
+        said = await page.locator("#hero-tabs .hero-act").all_inner_texts()
+        assert [one.strip() for one in said] == [
+            "Характеристики", "Квесты", "Документы", "Отряды",
+        ], said
+
+        await page.locator("#hero-tabs .hero-act", has_text="Отряды").click()
+        body = await page.locator("#hero-squad").inner_text()
+        assert body.strip() == "В вашем отряде пока нет бойцов", body
+        # И горит только он: раздел, а не окно
+        lit = await page.locator("#hero-tabs .hero-act.on").all_inner_texts()
+        assert len(lit) == 1 and "Отряды" in lit[0]
         await browser.close()
 
 
@@ -9908,16 +10016,17 @@ async def open_hero(pw, server, card=None):
     return browser, page
 
 
-async def test_the_character_screen_has_three_sections_and_starts_on_stats(server):
+async def test_the_character_screen_has_four_sections_and_starts_on_stats(server):
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server)
 
         tabs = await page.locator("#hero-tabs .hero-act").all_inner_texts()
-        assert tabs == ["Характеристики", "Квесты", "Документы"]
-        # Параметры открыты, квесты и документы свёрнуты
+        assert tabs == ["Характеристики", "Квесты", "Документы", "Отряды"]
+        # Параметры открыты, остальные три свёрнуты
         assert await page.locator("#hero-stats").is_visible()
         assert await page.locator("#hero-quests").is_hidden()
         assert await page.locator("#hero-papers").is_hidden()
+        assert await page.locator("#hero-squad").is_hidden()
         await browser.close()
 
 

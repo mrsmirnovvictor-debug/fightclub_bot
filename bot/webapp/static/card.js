@@ -1135,9 +1135,11 @@ let dailyQueued = false;
 
 function renderDaily(card) {
   const state = card.daily;
+  // Значок рядом с рейтингом: на чужой карточке его нет вовсе. Чужие
+  // входы в клуб — не наше дело, и забрать за соседа всё равно нечего
+  dressDaily(card.is_self === false ? null : state);
   if (!state) return;
   dailyState = state;
-  // Кнопку рисует `paintHeroTabs` — он идёт следом, уже зная про календарь
 
   const veil = el("daily-veil");
   if (dailyShown) {
@@ -1166,8 +1168,50 @@ function renderDaily(card) {
   });
 }
 
-// Кнопка «Ежедневные награды» на карточке: календарь можно открыть в любой
-// момент, а не только когда окно всплыло само
+/** Значок наград в ряду с рейтингом: показать, подписать, одеть.
+ *
+ * Состояний два, и решает их сервер: рука с подарком, пока награда
+ * ждёт, и забранная, когда на сегодня всё. Адрес обеих картинок
+ * приходит в `state.icon` — в коде страницы адресов картинок нет.
+ *
+ * `state` пустой — значка нет совсем: это чужая карточка или сервер,
+ * который про календарь ещё не знает.
+ */
+function dressDaily(state) {
+  const gate = el("hero-daily");
+  if (!gate) return;
+  gate.classList.toggle("hidden", !state);
+  if (!state) return;
+  gate.classList.toggle("taken", !state.ready);
+  gate.setAttribute(
+    "aria-label",
+    state.ready ? "Забрать награду за вход" : "Награда за вход получена"
+  );
+  const pic = el("hero-daily-pic");
+  if (!state.icon || pic.getAttribute("src") === state.icon) return;
+  // Картинка встаёт на место слова только после успешной загрузки, и
+  // слово возвращается, если она не доехала
+  pic.onload = () => {
+    pic.classList.remove("hidden");
+    el("hero-daily-word").classList.add("hidden");
+  };
+  pic.onerror = () => {
+    pic.classList.add("hidden");
+    el("hero-daily-word").classList.remove("hidden");
+  };
+  pic.src = state.icon;
+}
+
+// Значок открывает то же окно, что открывала кнопка в ряду разделов.
+// Слушатель вешается один раз: сам значок из разметки никуда не
+// девается, прячется и показывается он классом
+el("hero-daily").addEventListener("click", () => {
+  haptic((feedback) => feedback.selectionChanged());
+  openDaily();
+});
+
+// Окно наград за вход: календарь можно открыть в любой момент, а не
+// только когда оно всплыло само
 function openDaily() {
   if (!dailyState) return;
   dailyShown = true;
@@ -10652,6 +10696,10 @@ const HERO_TABS = [
   ["stats", "Характеристики"],
   ["quests", "Квесты"],
   ["papers", "Документы"],
+  // Отряд пока пустой у всех, но раздел стоит в ряду: по нему видно,
+  // что отряд вообще бывает. Прятать до первого бойца значило бы
+  // открыть его однажды без предупреждения
+  ["squad", "Отряды"],
 ];
 let heroTab = "stats";
 
@@ -10666,11 +10714,11 @@ function pickHeroTab(name) {
   paintHeroTabs();
 }
 
-/** Кнопка в ряду под бойцом. Одна вёрстка на все три.
+/** Кнопка в ряду под бойцом. Одна вёрстка на все четыре.
  *
  * `dot` — точка сбоку: есть что забрать. Больше на этих кнопках ничего
- * не пишется: три слова в ряд читаются с одного взгляда, а значки и
- * счётчики рядом с ними превращали ряд в три разные надписи.
+ * не пишется: слово в ряд читается с одного взгляда, а значки и
+ * счётчики рядом с ними превращали ряд в разные надписи.
  */
 function heroAct(label, on, onClick, dot) {
   const btn = document.createElement("button");
@@ -10698,18 +10746,10 @@ function paintHeroTabs() {
   HERO_TABS.forEach(([code, label]) => {
     tabs.appendChild(heroAct(label, heroTab === code, () => pickHeroTab(code)));
   });
-  // Награды — кнопка того же вида, но не раздел: она открывает окно и
-  // потому никогда не горит выбранной. Нечего показывать — её нет вовсе
-  if (dailyState) {
-    const btn = heroAct(
-      "Награды",
-      false,
-      openDaily,
-      Boolean(dailyState.fresh || dailyState.waiting.length)
-    );
-    btn.id = "hero-daily";
-    tabs.appendChild(btn);
-  }
+  // Наград в этом ряду больше нет: они не раздел, а окно, и среди
+  // вкладок читались пятым разделом, который ничего не переключает.
+  // Их значок стоит в ряду с рейтингом — см. `dressDaily`
+  //
   // Четвёртая кнопка в ряд не встаёт: «Характеристики» обрезались бы
   // многоточием. Четыре — складываем в два этажа по две
   tabs.classList.toggle("folded", tabs.children.length > 3);

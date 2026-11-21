@@ -243,6 +243,24 @@ def wallet_icon(code: str) -> str:
     return f"{ECONOMY}/{code}.webp"
 
 
+# Значок наград за вход на карточке бойца. Две картинки на два
+# состояния: открытая рука с подарком, пока награда ждёт, и забранная,
+# когда брать нечего. Лежат своей папкой, а не в редизайне: редизайн —
+# это выгрузка одного захода с датой в адресе, а эти два файла живут
+# сами по себе и меняться будут отдельно
+DAILY_REWARDS = f"{BUCKET}/ui/daily_rewards"
+
+
+def daily_icon(ready: bool) -> str:
+    """Значок наград за вход: ui/daily_rewards/daily_reward_claim.webp.
+
+    `ready` — есть ли что забрать. Решают это не здесь: состояние
+    входов считает `bot.daily_service`, а тут оно только превращается
+    в адрес.
+    """
+    return f"{DAILY_REWARDS}/daily_reward_{'claim' if ready else 'claimed'}.webp"
+
+
 def ability_placeholder(tier: int) -> str:
     """Тень невыученного приёма: items/ability_placeholder_3.webp.
 
@@ -415,6 +433,8 @@ __all__ = [
     "PDD",
     "REDESIGN",
     "ECONOMY",
+    "DAILY_REWARDS",
+    "daily_icon",
     "ability_placeholder",
     "wallet_icon",
     "POTIONS",
