@@ -69,7 +69,7 @@ function strike(over) {
   return Object.assign(
     {
       attacker_id: ME, defender_id: FOE, outcome: "hit", zone: "chest",
-      damage: 12, armor: 0, hp_after: 88, ability: "",
+      damage: 12, armor: 0, hp_after: 88, ability: "", ability_title: "",
     },
     over || {},
   );
@@ -194,7 +194,7 @@ check("спокойный режим не качает и не ведёт пла
 });
 
 check("приём подписан, и подпись не висит весь бой", () => {
-  const it = stage(turn([strike({ ability: "Двойка" })]));
+  const it = stage(turn([strike({ ability_title: "Двойка" })]));
   it.at(T.approach + 10);
   const shown = it.badge("left");
   ok(shown, "подпись есть");
@@ -711,11 +711,11 @@ check("критический урон виден отдельно от обыч
 check("догаданная зона контрудара подписана тусклее", () => {
   const told = stage(turn([strike({
     outcome: "counter", hp_after: 100, counter: 9, counter_hp_after: 91,
-    counter_zone: "head", defence_ability: "Уход",
+    counter_zone: "head", defence_ability_title: "Уход",
   })]));
   const guessed = stage(turn([strike({
     outcome: "counter", hp_after: 100, counter: 9, counter_hp_after: 91,
-    defence_ability: "Уход",
+    defence_ability_title: "Уход",
   })]));
   const when = T.approach + T.dodge + 10;
   const a = paint(told, when).words.filter((one) => one.text === "КОНТРУДАР");
@@ -752,7 +752,7 @@ check("защита подписана словом, если приёма не 
 
 check("названный приём вытесняет общее слово", () => {
   const it = stage(turn([strike({
-    outcome: "block", hp_after: 100, defence_ability: "Железная защита",
+    outcome: "block", hp_after: 100, defence_ability_title: "Железная защита",
   })]));
   const drawn = paint(it, T.approach + 10).words.map((one) => one.text);
   ok(drawn.indexOf("ЖЕЛЕЗНАЯ ЗАЩИТА") >= 0, drawn.join(","));
@@ -784,7 +784,7 @@ check("обычный удар синим, критический красным
 
 check("подписи крупные: читаются на телефоне", () => {
   const when = T.approach + T.contact + 10;
-  const drawn = paint(stage(turn([strike({ ability: "Двойка" })])), when);
+  const drawn = paint(stage(turn([strike({ ability_title: "Двойка" })])), when);
   const number = drawn.words.filter((one) => one.text[0] === "\u2212")[0];
   const named = drawn.words.filter((one) => one.text === "ДВОЙКА")[0];
   const hud = drawn.words.filter((one) => one.text === "Тайлер")[0];
@@ -800,7 +800,7 @@ check("подписи крупные: читаются на телефоне", (
 
 check("подписи не вылезают за края сцены", () => {
   const when = T.approach + T.contact + 10;
-  const drawn = paint(stage(turn([strike({ ability: "Двойка" })])), when);
+  const drawn = paint(stage(turn([strike({ ability_title: "Двойка" })])), when);
   for (const one of drawn.words) {
     ok(one.y > 0 && one.y < scene.logicalSize.height,
       "«" + one.text + "» по вертикали на сцене, y=" + one.y);

@@ -8,6 +8,7 @@
 """
 
 import random
+import re
 
 import pytest
 
@@ -1293,6 +1294,57 @@ def test_the_payload_carries_the_ability_of_each_side_separately():
     assert theirs["ability"] == "", "атакующий ничего не применял"
 
 
+def test_the_payload_names_the_ability_in_russian_next_to_its_code():
+    """Рядом с кодом приёма в ходе лежит его название.
+
+    Код — данные: по нему лежит история и по нему судья берёт название
+    в ветке. Но подпись над бойцом в анимации рисуется тем, что пришло
+    в ходе, и каталога приёмов на экране нет. Пока названия в ходе не
+    было, сцена подписывала событие кодом, и над головой проскакивало
+    латинское `nimble` вместо «Проворности».
+    """
+    from bot.game.fightlog import strike_payload
+
+    attacker = teach(make(user_id=1), "strong_hit")
+    attacker.use("strong_hit")
+    mine = strike_payload(hit(attacker, make(user_id=2), seed=7))
+    assert mine["ability"] == "strong_hit", "код остаётся на месте"
+    assert mine["ability_title"] == "Сильный удар"
+    assert mine["defence_ability_title"] == "", "защищавшийся ничего не применял"
+
+    tank = teach(make(TANK, user_id=2), "nimble", tier=3)
+    tank.use("nimble")
+    theirs = strike_payload(hit(make(ASSASSIN, user_id=1), tank, seed=3))
+    assert theirs["defence_ability"] == "nimble"
+    assert theirs["defence_ability_title"] == "Проворность"
+    # Ни одного латинского кода в том, что уедет на экран подписью
+    assert not re.search(r"[A-Za-z_]", theirs["defence_ability_title"])
+
+
+def test_an_unknown_ability_code_leaves_the_name_empty():
+    """Кода нет в каталоге — названия нет, и выдумывать его нечем.
+
+    Так лежат старые журналы и стенд сцены, куда приём передают
+    строкой. Пустое название сцена подписывает своим словом
+    («блок», «уворот»), и это честнее, чем показать код.
+    """
+    from bot.game.fightlog import strike_payload
+    from bot.game.combat import Strike, Outcome
+    from bot.game.classes import Zone
+
+    made = strike_payload(
+        Strike(
+            attacker_id=1,
+            defender_id=2,
+            zone=Zone.CHEST,
+            outcome=Outcome.HIT,
+            ability="нет такого приёма",
+        )
+    )
+    assert made["ability"] == "нет такого приёма", "что пришло, то и лежит"
+    assert made["ability_title"] == ""
+
+
 def test_a_plain_strike_says_it_had_no_abilities_at_all():
     """Без приёмов оба поля пусты, а не отсутствуют.
 
@@ -1305,6 +1357,8 @@ def test_a_plain_strike_says_it_had_no_abilities_at_all():
     plain = strike_payload(hit(make(user_id=1), make(user_id=2), seed=7))
     assert plain["ability"] == ""
     assert plain["defence_ability"] == ""
+    assert plain["ability_title"] == ""
+    assert plain["defence_ability_title"] == ""
 
 
 def test_every_ability_the_engine_can_name_is_in_the_catalogue():

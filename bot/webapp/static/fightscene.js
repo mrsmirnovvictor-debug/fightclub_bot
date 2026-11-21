@@ -71,11 +71,18 @@ function fightQueue() {
       return made;
     }
 
-    // Замах есть у всякого удара, чем бы он ни кончился
+    // Замах есть у всякого удара, чем бы он ни кончился.
+    //
+    // Подписью идёт название приёма, а не его код: над бойцом рисуется
+    // то, что положено здесь, и каталога приёмов на экране нет. Коды в
+    // ходе лежат рядом (`ability`), по ним лежит история, — но
+    // подписью они не становятся: иначе в анимации проскакивает
+    // латинское `nimble` вместо «Проворности». Названия нет (старый
+    // журнал) — подпишет сама сцена своим словом
     made.push({
       key: base + ":attack", kind: "attack", zone: zone,
       attacker: strike.attacker_id, defender: strike.defender_id,
-      ability: strike.ability || "", together: together,
+      ability: strike.ability_title || "", together: together,
     });
 
     if (outcome === "block") {
@@ -83,7 +90,7 @@ function fightQueue() {
       made.push({
         key: base + ":block", kind: "block", zone: zone,
         defender: strike.defender_id,
-        ability: strike.defence_ability || "", together: together,
+        ability: strike.defence_ability_title || "", together: together,
       });
       return made;
     }
@@ -92,7 +99,7 @@ function fightQueue() {
       made.push({
         key: base + ":dodge", kind: "dodge", zone: zone,
         defender: strike.defender_id,
-        ability: strike.defence_ability || "", together: together,
+        ability: strike.defence_ability_title || "", together: together,
       });
       if (outcome === "counter") {
         // Контрудар — ответ защищавшегося с близкой дистанции, и он
@@ -125,7 +132,7 @@ function fightQueue() {
       made.push({
         key: base + ":guard", kind: "block", zone: zone,
         defender: strike.defender_id, breaking: true,
-        ability: strike.defence_ability || "", together: together,
+        ability: strike.defence_ability_title || "", together: together,
       });
       made.push({
         key: base + ":hit", kind: "hit", zone: zone, broken: true,

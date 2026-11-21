@@ -52,6 +52,7 @@ function strike(over) {
       attacker_id: 1, defender_id: 2, zone: "head", block: [],
       outcome: "hit", weapon: "кулаки", damage: 12, counter: 0, armor: 0,
       hp_after: 88, counter_hp_after: 100, ability: "", defence_ability: "",
+      ability_title: "", defence_ability_title: "",
       missed_turn: false,
     },
     over || {},
@@ -234,13 +235,51 @@ check("приёмы доезжают до событий своей сторон
   const q = fightQueue().reset("d1");
   q.push(
     turn({
-      strikes: [strike({ ability: "strong_hit", defence_ability: "parry",
-                         outcome: "block" })],
+      strikes: [strike({
+        ability: "strong_hit", ability_title: "Сильный удар",
+        defence_ability: "parry", defence_ability_title: "Парирование",
+        outcome: "block",
+      })],
     }),
   );
   const events = q.drain();
-  same(events[0].ability, "strong_hit", "у замаха приём атакующего");
-  same(events[1].ability, "parry", "у блока приём защищающегося");
+  same(events[0].ability, "Сильный удар", "у замаха приём атакующего");
+  same(events[1].ability, "Парирование", "у блока приём защищающегося");
+});
+
+check("подпись приёма берётся из названия, а не из кода", () => {
+  // Над бойцом рисуется то, что адаптер положил в событие, и код
+  // приёма там читался латиницей: вместо «Проворности» в анимации
+  // проскакивало `nimble`. Коды в ходе остаются — по ним лежит
+  // история, — но подписью они больше не становятся
+  const q = fightQueue().reset("d1");
+  q.push(
+    turn({
+      strikes: [strike({
+        outcome: "dodge", damage: 0, hp_after: 100,
+        defence_ability: "nimble", defence_ability_title: "Проворность",
+      })],
+    }),
+  );
+  const dodge = q.drain().find((one) => one.kind === "dodge");
+  same(dodge.ability, "Проворность", "подпись по-русски");
+});
+
+check("приём без названия подписывается словом сцены, а не кодом", () => {
+  // Старые журналы лежат в базе без названий, и выдумывать их на
+  // экране нечем: пусть сцена скажет своё слово, как при приёме,
+  // которого не было вовсе
+  const q = fightQueue().reset("d1");
+  q.push(
+    turn({
+      strikes: [strike({
+        outcome: "dodge", damage: 0, hp_after: 100,
+        defence_ability: "nimble", defence_ability_title: undefined,
+      })],
+    }),
+  );
+  const dodge = q.drain().find((one) => one.kind === "dodge");
+  same(dodge.ability, "", "названия нет — и подписи нет");
 });
 
 if (failed) {

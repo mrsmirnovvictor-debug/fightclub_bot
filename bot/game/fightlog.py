@@ -29,6 +29,19 @@ OUTCOME_TITLES: dict[Outcome, tuple[str, str]] = {
 }
 
 
+def _ability_title(code: str) -> str:
+    """Название приёма по коду — или пусто, если кода нет в каталоге.
+
+    Импорт внутри: каталог приёмов лежит в `bot.content`, а он тянет за
+    собой правила, и на уровне модуля это замкнуло бы круг. Тем же
+    способом берёт название судья (`narrator.ability_marks`).
+    """
+    from bot.content.abilities import get_ability
+
+    ability = get_ability(code) if code else None
+    return ability.title if ability is not None else ""
+
+
 def strike_payload(strike: Strike) -> dict[str, Any]:
     """Один удар: кто, куда, чем кончилось и сколько снял."""
     emoji, title = OUTCOME_TITLES[strike.outcome]
@@ -62,6 +75,17 @@ def strike_payload(strike: Strike) -> dict[str, Any]:
         # плашку. Пусто — приёма не было, и показывать нечего
         "ability": strike.ability,
         "defence_ability": strike.defence_ability,
+        # Названия этих приёмов по-русски. Коды выше — данные: по ним
+        # лежит история, по ним же судья берёт название в ветке. Но на
+        # сцене подпись над бойцом рисуется тем, что пришло в ходе, и
+        # кода там быть не должно: вместо «Проворности» над головой
+        # проскакивало латинское `nimble`. Каталог приёмов на экран не
+        # уехал и уезжать не должен, поэтому название кладём рядом с
+        # кодом здесь. Пусто — приёма не было или код незнаком: в
+        # старых логах бывает и такое, и сцена тогда подписывает
+        # событие своим словом
+        "ability_title": _ability_title(strike.ability),
+        "defence_ability_title": _ability_title(strike.defence_ability),
         "missed_turn": strike.missed_turn,
     }
 
