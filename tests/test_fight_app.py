@@ -893,3 +893,67 @@ async def test_the_trainer_has_his_own_portrait_and_mark(arena, db):
     row = npc_row(body)
     assert row["challenger"]["emoji"] == TRAINER_EMOJI
     assert row["challenger"]["fclass"] == "Воин", "класс остался классом ученика"
+
+
+# ---------- экран итога: только приговор и итоги ----------
+
+
+async def test_the_result_screen_keeps_the_verdict_and_the_rewards_only(arena):
+    """На экране итога — кто победил и что унесли. Больше ничего.
+
+    Рассказ о последнем ударе уехал в ленту судьи, к самому удару.
+    Шкалы здоровья стоят на табло того же экрана, строкой выше, и под
+    итогом повторяли сами себя. Строка про отлёживание — в карточке
+    бойца, где здоровье и часы до готовности и живут.
+    """
+    client, duels, _ = arena
+    await start_fight(client, duels)
+    await fight_to_the_end(duels, duels.duel_of_user(42))
+
+    duel = (await state(client, 42))["duel"]
+    summary = "\n".join(duel["summary"])
+
+    assert "Победа" in summary, summary
+    assert "📊 Итоги" in summary and "Нанесено урона" in summary
+    # Шкал здоровья нет: ни «0/118», ни самих полосок
+    assert "/" not in summary.split("Итоги")[0], summary
+    assert "□" not in summary and "▰" not in summary
+    # И ничего про отлёживание
+    assert "Отлежаться" not in summary and "Отлеж" not in summary
+
+
+async def test_the_end_of_the_fight_is_told_in_the_judges_feed(arena):
+    """Чем бой кончился и кто его взял — последними строками ленты.
+
+    Лента читается сверху вниз и без этих строк обрывалась ударом:
+    судья замолкал ровно там, где должен был объявить победителя.
+    """
+    client, duels, _ = arena
+    await start_fight(client, duels)
+    await fight_to_the_end(duels, duels.duel_of_user(42))
+
+    duel = (await state(client, 42))["duel"]
+    last = duel["log"][-1]["lines"]
+
+    assert any("Победа за:" in one for one in last), last
+    who = next(one for one in last if "Победа за:" in one)
+    winner = next(
+        row["name"] for row in duel["fighters"]
+        if row["user_id"] == duel["log"][-1]["winner_id"]
+    )
+    assert winner in who, who
+    # Рассказ о последнем ударе тоже здесь, и разметки в нём нет
+    assert len(last) > len(duel["log"][-1]["strikes"])
+    assert not any("<b>" in one for one in last), last
+
+
+async def test_the_judges_feed_survives_into_the_history(arena, db):
+    """Дописанное в ленту остаётся и в разборе старого боя."""
+    client, duels, _ = arena
+    await start_fight(client, duels)
+    await fight_to_the_end(duels, duels.duel_of_user(42))
+
+    rows = await db.fights_of(42)
+    kept = await db.duel_log(rows[0]["id"])
+
+    assert any("Победа за:" in one for one in kept[-1]["lines"]), kept[-1]

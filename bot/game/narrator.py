@@ -515,13 +515,33 @@ def round_report(
     return "\n".join(head + said)
 
 
-def finish_report(
+def winners_line(champions: list[Fighter]) -> str:
+    """Кто взял бой — строкой в ленту судьи. Пусто — ничья.
+
+    Имена через запятую: в дуэли победитель один, в групповом бою их
+    столько, сколько устояло. Двоеточие стоит не для красоты — прозвища
+    не склоняются, и «Победа за Victor» читается обрубком.
+    """
+    if not champions:
+        return ""
+    names = ", ".join(mention(one) for one in champions)
+    return f"🏆 Победа за: {names}"
+
+
+def fight_verdict(
     result: RoundResult,
     fighters: dict[int, Fighter],
     rng: random.Random | None = None,
-) -> str:
+) -> tuple[str, str]:
+    """Чем бой кончился и кто его взял — двумя отдельными строками.
+
+    Рассказ и приговор ходят порознь, потому что живут в разных местах:
+    рассказ — в ленте судьи, рядом с ударом, которым всё кончилось, а
+    приговор — на экране итога, где он и есть итог. Броском судья
+    выбирает слова один раз: позвать это дважды — значит получить про
+    тот же нокаут два разных рассказа.
+    """
     rng = rng or random
-    lines: list[str] = []
     winner = fighters.get(result.winner_id) if result.winner_id else None
     loser = (
         next((f for f in fighters.values() if f.user_id != winner.user_id), None)
@@ -529,41 +549,62 @@ def finish_report(
         else None
     )
 
+    story, verdict = "", ""
     if result.end_reason is DuelEnd.KO and winner and loser:
-        lines.append(rng.choice(KO_LINES).format(loser=f"<b>{mention(loser)}</b>"))
-        lines.append("")
-        lines.append(f"🏆 Победа: {mention(winner)} ({winner.fclass.label})")
+        story = rng.choice(KO_LINES).format(loser=f"<b>{mention(loser)}</b>")
+        verdict = f"🏆 Победа: {mention(winner)} ({winner.fclass.label})"
     elif result.end_reason is DuelEnd.DOUBLE_KO:
-        lines.append("🤝 " + rng.choice(DRAW_LINES))
+        story = "🤝 " + rng.choice(DRAW_LINES)
     elif result.end_reason is DuelEnd.TECHNICAL:
         if winner and loser:
-            lines.append(
-                rng.choice(TECHNICAL_LINES).format(loser=f"<b>{mention(loser)}</b>")
+            story = rng.choice(TECHNICAL_LINES).format(
+                loser=f"<b>{mention(loser)}</b>"
             )
-            lines.append("")
-            lines.append(f"🏆 Техническая победа: {mention(winner)}")
+            verdict = f"🏆 Техническая победа: {mention(winner)}"
         else:
-            lines.append("🤝 Оба бойца перестали отвечать. Судья закрывает бой ничьёй.")
+            story = "🤝 Оба бойца перестали отвечать. Судья закрывает бой ничьёй."
     elif result.end_reason is DuelEnd.JUDGE:
-        lines.append(
+        story = (
             f"🔔 Финальный гонг! Все {boxing_round(result.number)} раундов позади, "
             "никто не упал — решение за судьёй."
         )
         if winner:
             other = next(f for f in fighters.values() if f.user_id != winner.user_id)
-            lines.append(
+            verdict = (
                 f"🏆 По нанесённому урону побеждает {mention(winner)} — "
                 f"{winner.damage_dealt} против {other.damage_dealt}."
             )
         else:
-            lines.append("🤝 Судья фиксирует ничью — бойцы неотличимы.")
+            verdict = "🤝 Судья фиксирует ничью — бойцы неотличимы."
     else:  # pragma: no cover - неизвестный исход
-        lines.append("🤝 Ничья.")
+        story = "🤝 Ничья."
+    return story, verdict
 
+
+def finish_text(story: str, verdict: str, fighters: dict[int, Fighter]) -> str:
+    """Итог боя для ветки: рассказ, приговор и шкалы здоровья.
+
+    В ветке итог — единственное сообщение о конце боя, и в нём стоит
+    всё сразу. На экране мини-аппа у рассказа и шкал своё место: лента
+    судьи и табло, — и там этот текст не нужен.
+    """
+    lines = [story]
+    if verdict:
+        lines += ["", verdict]
     lines.append("")
     for fighter in fighters.values():
         lines.append(hp_line(fighter))
     return "\n".join(lines)
+
+
+def finish_report(
+    result: RoundResult,
+    fighters: dict[int, Fighter],
+    rng: random.Random | None = None,
+) -> str:
+    """Итог боя для ветки целиком. Зовут те, кому части не нужны."""
+    story, verdict = fight_verdict(result, fighters, rng)
+    return finish_text(story, verdict, fighters)
 
 
 def health_line(player: "Player", now: int | None = None) -> str:
@@ -722,11 +763,17 @@ def rewards_report(
     previous_fights: int = 0,
     broken: list[tuple["Player", list]] | None = None,
     damage: dict[int, int] | None = None,
+    recovery: bool = True,
 ) -> str:
     """Что каждый унёс с ринга: урон, опыт, кредиты, рейтинг, апы и уровни.
 
     `damage` — сколько каждый боец успел нанести. Урон стоит первым: по нему
     судья и решает бой, дошедший до последнего гонга.
+
+    `recovery` — ставить ли в конце строку про отлёживание. В ветке она
+    нужна: там итог — единственное сообщение о конце боя. На экране
+    бойца она лишняя: здоровье и часы до готовности стоят в его
+    карточке, и повторять их под итогом значит говорить дважды.
     """
     lines = ["📊 <b>Итоги</b>"]
     events: list[str] = []
@@ -774,8 +821,9 @@ def rewards_report(
                 f"(всего {player.total_exp}), но новых уровней пока нет."
             )
 
-    lines.append("")
-    lines.append(recovery_line([player for player, _ in rows]))
+    if recovery:
+        lines.append("")
+        lines.append(recovery_line([player for player, _ in rows]))
 
     if share < 1.0:
         lines.append("")

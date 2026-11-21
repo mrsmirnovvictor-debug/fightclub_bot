@@ -59,10 +59,12 @@ from bot.game.narrator import (
     player_link,
     standoff_card,
     esc,
-    finish_report,
+    fight_verdict,
+    finish_text,
     health_warning,
     ready_mark,
     rewards_report,
+    winners_line,
     plain,
     round_report,
     strike_lines,
@@ -147,6 +149,22 @@ class Choice:
         ]
         lines.append(f"🛡 {block_title(self.block) if self.block else '—'}")
         return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class Rewards:
+    """Итоги боя в двух видах: для ветки и для экрана.
+
+    Считаются они один раз — внутри сидит начисление, — а показываются
+    по-разному: в ветке под итогом стоит строка про отлёживание, на
+    экране её нет. Поэтому не строка, а пара.
+    """
+
+    report: str = ""  # в ветку, целиком
+    screen: str = ""  # на экран, без строки про отлёживание
+
+    def __bool__(self) -> bool:
+        return bool(self.report or self.screen)
 
 
 @dataclass
@@ -942,16 +960,31 @@ class DuelService:
             await self._close_panel(session, "🔒 Бой окончен.")
         self._forget(session)
 
-        rewards = ""
+        rewards = Rewards()
         try:
             rewards = await self._apply_results(session, result)
         except Exception:
             logger.exception("Итоги боя %s не посчитались", session.id)
-        text = finish_report(result, session.fighters, self.rng)
-        if rewards:
-            text += "\n\n" + rewards
+
+        # Судья говорит это один раз: бросок выбирает слова, и второй
+        # заход дал бы про тот же нокаут другой рассказ
+        story, verdict = fight_verdict(result, session.fighters, self.rng)
+
+        # В ветку — всё сразу: там итог единственное сообщение о конце боя
+        text = finish_text(story, verdict, session.fighters)
+        if rewards.report:
+            text += "\n\n" + rewards.report
         await self._send(session.chat_id, session.thread_id, text)
-        self._remember_result(session, text)
+
+        # На экране у рассказа своё место — лента судьи, рядом с ударом,
+        # которым всё кончилось. Туда же идёт и строка о том, кто взял
+        # бой: лента читается сверху вниз и без неё обрывается ударом
+        self._log_the_end(session, result, story)
+
+        # А на самом экране итога остаётся приговор и то, что бойцы
+        # унесли. Шкалы здоровья с него ушли: они стоят на табло того же
+        # экрана, строкой выше, и под итогом повторяли сами себя
+        self._remember_result(session, self._screen_result(verdict, rewards))
         if session.on_finish is not None:
             try:
                 await session.on_finish(session, result)
@@ -963,6 +996,33 @@ class DuelService:
             await self._record(session, result)
         except Exception:
             logger.exception("Бой %s не записался в историю", session.id)
+
+    def _log_the_end(
+        self, session: DuelSession, result: RoundResult, story: str
+    ) -> None:
+        """Дописать конец боя в ленту судьи — к тому ходу, где он случился.
+
+        Лента и в приложении, и в записи боя одна и та же: дописанное
+        здесь останется и в разборе старого боя. Хода может и не быть —
+        бой, сорвавшийся до первого размена, — и тогда дописывать
+        некуда.
+        """
+        if not session.rounds:
+            return
+        champions = [
+            session.fighters[uid]
+            for uid in session.order
+            if uid == result.winner_id and uid in session.fighters
+        ]
+        said = [story, winners_line(champions)]
+        lines = session.rounds[-1].setdefault("lines", [])
+        lines.extend(plain(one) for one in said if one)
+
+    @staticmethod
+    def _screen_result(verdict: str, rewards: Rewards) -> str:
+        """Итог боя так, как он стоит на экране бойца."""
+        parts = [one for one in (verdict, rewards.screen) if one]
+        return "\n\n".join(parts)
 
     async def _record(self, session: DuelSession, result: RoundResult) -> None:
         """Положить бой в историю: по нему потом читают привычки бойца."""
@@ -980,7 +1040,9 @@ class DuelService:
             log=session.rounds,
         )
 
-    async def _apply_lesson(self, session: DuelSession, result: RoundResult) -> str:
+    async def _apply_lesson(
+        self, session: DuelSession, result: RoundResult
+    ) -> Rewards:
         """Итоги урока у Тренера: опыт за победу и больше ничего.
 
         Урок считается не по обычным правилам, и потому у него свой
@@ -1006,7 +1068,7 @@ class DuelService:
         )
         player = await self.db.get_player(learner_id)
         if player is None:  # pragma: no cover - персонажа удалили по ходу боя
-            return ""
+            return Rewards()
         await record_injuries(self.db, result.injuries, {learner_id: player})
 
         fighter = session.fighters[learner_id]
@@ -1051,13 +1113,29 @@ class DuelService:
         # Первый бой у бармена этот урок закрывает: задание про то, чтобы
         # выйти на ринг и дойти до результата, а с кем — не сказано
         await notice(self.db, player, ring_mark(won))
-        return rewards_report(
+        return self._two_ways(
             [(player, report)],
             damage={learner_id: fighter.damage_dealt},
         )
 
-    async def _apply_results(self, session: DuelSession, result: RoundResult) -> str:
-        """Начислить опыт, кредиты и рейтинг. Вернуть блок текста с итогами."""
+    @staticmethod
+    def _two_ways(rows, *args, **kwargs) -> Rewards:
+        """Один и тот же расчёт двумя текстами: в ветку и на экран.
+
+        Считать итоги дважды нельзя — внутри начисление, — а показывать
+        их надо по-разному: в ветке под ними стоит строка про
+        отлёживание, на экране её нет. Поэтому собираем оба текста из
+        одних и тех же строк отчёта.
+        """
+        return Rewards(
+            report=rewards_report(rows, *args, **kwargs),
+            screen=rewards_report(rows, *args, recovery=False, **kwargs),
+        )
+
+    async def _apply_results(
+        self, session: DuelSession, result: RoundResult
+    ) -> Rewards:
+        """Начислить опыт, кредиты и рейтинг. Вернуть итоги двумя текстами."""
         if session.npc is not None:
             return await self._apply_lesson(session, result)
         players: dict[int, Player] = {}
@@ -1066,7 +1144,7 @@ class DuelService:
             if player is not None:
                 players[user_id] = player
         if not players:  # pragma: no cover - персонажей удалили по ходу боя
-            return ""
+            return Rewards()
 
         # Травмы этого боя записываем первым делом: снятая травмой
         # экипировка меняет и запас здоровья, и то, что снашивается
@@ -1181,7 +1259,7 @@ class DuelService:
                 await notice(self.db, player, ring_mark(None if drawn else won))
             rows.append((player, report))
 
-        return rewards_report(
+        return self._two_ways(
             rows,
             share,
             previous_fights,

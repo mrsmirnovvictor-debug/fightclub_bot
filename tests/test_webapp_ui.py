@@ -21604,3 +21604,40 @@ async def test_the_trainers_row_says_he_is_two_levels_above(server):
         assert "старше" in note and "учитель" in note, note
         assert await page.locator(".fight-line .fighter-info").count() == 1
         await browser.close()
+
+
+async def test_the_feed_ends_with_the_verdict_and_not_with_a_punch(server):
+    """Последними в ленте стоят конец боя и строка о победителе.
+
+    Лента ринга читается сверху вниз, как разговор судьи, и кончаться
+    она должна тем же, чем кончился бой: сперва рассказ про последний
+    удар, под ним — кто бой взял. Без этих строк судья замолкал ровно
+    там, где должен был объявить победителя.
+    """
+    over = ring_with_duel()
+    over["duel"]["finished"] = True
+    over["duel"]["log"][0]["lines"] += [
+        "Марла больше не встанет. Бой окончен!",
+        "🏆 Победа за: Растафарайчик",
+    ]
+    over["duel"]["summary"] = [
+        "🏆 Победа: Растафарайчик (Воин)",
+        "",
+        "📊 Итоги",
+        "💀 Растафарайчик: Нанесено урона 133, получено +114 опыта",
+    ]
+
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, over)
+        await page.wait_for_selector(".fight-log")
+
+        said = await page.locator(".fight-log .log-line").all_inner_texts()
+        assert said[-2] == "Марла больше не встанет. Бой окончен!", said
+        assert said[-1] == "🏆 Победа за: Растафарайчик", said
+
+        # А на самом итоге их нет: там приговор и что унесли
+        card = await page.locator(".fight-finish").inner_text()
+        assert "Победа: Растафарайчик" in card
+        assert "больше не встанет" not in card, card
+        assert "Отлежаться" not in card, card
+        await browser.close()

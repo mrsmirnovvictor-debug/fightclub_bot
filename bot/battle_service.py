@@ -58,6 +58,7 @@ from bot.game.narrator import (
     battle_intro,
     battle_result,
     battle_rewards_report,
+    winners_line,
     battle_round_report,
     esc,
     fight_board,
@@ -756,7 +757,31 @@ class BattleService:
             text += "\n\n" + rewards
         await self.voice.send(session.chat_id, session.thread_id, text)
         session.summary = [plain(line) for line in text.split("\n")]
+        # Кто взял бой — последней строкой ленты судьи. Лента читается
+        # сверху вниз, как разговор, и кончаться должна тем же, чем
+        # кончился бой: в групповом победителей бывает несколько, и
+        # стоят они через запятую
+        self._log_the_winners(session, outcome)
         await self.db.add_battle(session, outcome)
+
+    @staticmethod
+    def _log_the_winners(session: BattleSession, outcome: BattleOutcome) -> None:
+        """Дописать строку о победителях к последнему размену боя.
+
+        Хода может и не быть — бой, развалившийся до первого размена, —
+        и тогда дописывать некуда.
+        """
+        if not session.rounds:
+            return
+        said = winners_line(
+            [
+                session.fighters[user_id]
+                for user_id in outcome.winners
+                if user_id in session.fighters
+            ]
+        )
+        if said:
+            session.rounds[-1].setdefault("lines", []).append(plain(said))
 
     async def _apply_results(
         self, session: BattleSession, outcome: BattleOutcome

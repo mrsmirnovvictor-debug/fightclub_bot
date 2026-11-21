@@ -835,3 +835,35 @@ async def test_a_duel_and_a_group_fight_do_not_share_a_journal_key(bot, db):
     rows = await db.rating_log_of(1)
     assert len(rows) == 2, "один из двух боёв пропал"
     assert {row["kind"] for row in rows} == {"duel", "battle"}
+
+
+async def test_the_feed_of_a_group_fight_names_everyone_who_won(bot, db):
+    """Последней строкой ленты стоят победители — через запятую.
+
+    В групповом бою их несколько, и лента, оборвавшаяся ударом, не
+    говорит главного: чья сторона устояла.
+    """
+    service = make_service(bot, db)
+    players = await fill(db, 4)
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2
+    )
+    for player, team in ((players[1], RED), (players[2], BLUE), (players[3], BLUE)):
+        await service.join(lobby.id, player, team)
+
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    await fight_to_the_end(service, session)
+
+    last = session.rounds[-1]["lines"]
+    said = [one for one in last if "Победа за:" in one]
+    assert said, last
+    # В строке стоят все, кто устоял, и никого лишнего
+    standing = [
+        one.name for one in session.fighters.values() if one.hp > 0
+    ]
+    assert standing, "бой кончился, а на ногах никого"
+    for name in standing:
+        assert name in said[0], (said[0], standing)
+    assert said[0].count(",") == len(standing) - 1, said[0]
+    assert "<b>" not in said[0], said[0]
+    await service.shutdown()
