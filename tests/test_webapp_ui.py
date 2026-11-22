@@ -14919,9 +14919,12 @@ async def test_the_taken_quest_waits_on_the_counter(server):
         await page.locator(".btn", has_text="Подойти к стойке").click()
         await page.wait_for_selector("#tavern-body .talk")
         hint = await page.locator(".talk-text").inner_text()
-        # Сперва «пока не всё», потом чем именно: напоминание без этой
-        # строки читалось бы как новое задание
-        assert "Пока не всё" in hint
+        # Сперва «рано», потом чем именно: напоминание без этой
+        # строки читалось бы как новое задание. Слова берём у самого
+        # бармена, а не переписываем сюда
+        from bot.content.bartender import NOT_YET
+
+        assert hint.startswith(NOT_YET)
         assert "элитном магазине" in hint
         assert await page.locator(".talk-replies .btn").all_inner_texts() == [
             "Отойти"
@@ -14985,7 +14988,9 @@ async def test_the_finished_quest_is_handed_over_at_the_counter(server):
 
         assert await page.locator("#tavern-npc-mark").inner_text() == "✅"
         # Разговор раскрыт сам: бармену есть что сказать
-        assert "дело сделано" in await page.locator(".talk-text").inner_text()
+        from bot.content.bartender import READY
+
+        assert await page.locator(".talk-text").inner_text() == READY
         assert await page.locator(".talk-replies .btn").all_inner_texts() == [
             "Сдать задание", "Отойти"
         ]
@@ -20365,7 +20370,9 @@ async def test_the_barman_sends_a_short_fighter_to_grow(server):
         await page.locator(".btn", has_text="Подойти к стойке").click()
         await page.wait_for_selector("#tavern-body .talk")
         said = await page.locator(".talk-text").inner_text()
-        assert "Достигни уровня 2" in said
+        from bot.content.bartender import grow_up
+
+        assert said == grow_up(2)
         await browser.close()
 
 

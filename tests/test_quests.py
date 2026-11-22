@@ -23,7 +23,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from bot.config import Config
-from bot.content.bartender import TALKS, quiz_of
+from bot.content.bartender import HELLO, IDLE, NOT_YET, TALKS, grow_up, quiz_of
 from bot.database import Database
 from bot.game.classes import Stats
 from bot.game.driving import School
@@ -280,6 +280,50 @@ def test_no_quest_reply_counts_quests_in_order_words():
         said = (talk.offer + talk.hint + talk.done).lower()
         for word in banned:
             assert word not in said, f"{code}: «{word}»"
+
+
+def test_no_quest_reply_talks_like_a_rulebook():
+    """Бармен говорит, а не зачитывает условия задания.
+
+    В первой версии его репликами была справка в кавычках: «для
+    задания достаточно ознакомиться», «покупать ничего не требуется»,
+    «нужна непустая твоя часть обмена». Правила там стояли верные, но
+    говорил их не человек за стойкой, а экран помощи. Слова остались
+    те же по смыслу, язык — другой.
+
+    Запрещаем не синонимы, а служебные обороты: про «задание» игрок
+    читает в журнале, у стойки с ним разговаривают.
+    """
+    banned = (
+        "для задания",
+        "ради задания",
+        "это задание",
+        "не требуется",
+        "необходимо",
+        "ознакомиться",
+        "осуществ",
+        "выполнить",
+        "является",
+        "данного",
+    )
+    for code, talk in TALKS.items():
+        said = (talk.offer + talk.hint + talk.done).lower()
+        for word in banned:
+            assert word not in said, f"{code}: «{word}»"
+
+
+def test_the_bartender_never_raises_his_voice():
+    """Ни одного восклицательного знака: он устал, а не рад.
+
+    Тон задан в самом модуле — короткие фразы, никакого «добро
+    пожаловать». Знак в конце строки ломает его быстрее любой
+    формулировки.
+    """
+    said = [HELLO, IDLE, NOT_YET, grow_up(2)]
+    for talk in TALKS.values():
+        said += [talk.offer, talk.hint, talk.done]
+    for one in said:
+        assert "!" not in one, one
 
 
 def test_no_quest_reply_promises_a_payback_or_a_discount():
@@ -546,7 +590,9 @@ async def test_a_wrong_answer_costs_nothing_and_can_be_repeated(db):
     )
     purse = (await db.get_player(42)).credits
     ok, said = await answer(db, player, 0, wrong)
-    assert not ok and "Не совсем" in said and "Попробуй ещё раз" in said
+    # Слова берём у самого бармена, а не переписываем сюда: это
+    # проверка про цену ошибки, а не про формулировку
+    assert not ok and said == question.wrong
     assert (await db.get_player(42)).credits == purse, "за ошибку списали"
 
     ok, said = await answer(db, player, 0, question.answer)
@@ -948,12 +994,12 @@ async def test_the_bartender_says_what_the_journal_says(db):
     screen = build_bar(player, log)
     assert screen["talk"]["kind"] == "offer"
     assert screen["npc"]["mark"] == "❗"
-    assert "Новое лицо" in screen["talk"]["text"]
+    assert screen["talk"]["text"].startswith(HELLO)
 
     await take(db, player, "ring")
     screen = build_bar(player, await journal(db, player))
     assert screen["talk"]["kind"] == "wait"
-    assert "Пока не всё" in screen["talk"]["text"]
+    assert screen["talk"]["text"].startswith(NOT_YET)
     assert screen["npc"]["mark"] == "🕓"
 
     await notice(db, player, ring_mark(True))
@@ -975,7 +1021,7 @@ async def test_the_bartender_sends_a_short_fighter_to_grow(db):
     screen = build_bar(player, await journal(db, player))
     assert screen["talk"]["kind"] == "grow"
     assert screen["talk"]["need_level"] == 2
-    assert "Достигни уровня 2" in screen["talk"]["text"]
+    assert screen["talk"]["text"] == grow_up(2)
     assert screen["npc"]["mark"] == "", "позвал к стойке, а дела нет"
 
 
@@ -985,7 +1031,7 @@ async def test_the_bartender_falls_silent_when_everything_is_done(db):
         await walk(db, player, code)
     screen = build_bar(player, await journal(db, player))
     assert screen["talk"]["kind"] == "idle"
-    assert "закончились" in screen["talk"]["text"]
+    assert screen["talk"]["text"] == IDLE
     assert screen["done"] == 20 and screen["total"] == 20
 
 
