@@ -14,7 +14,7 @@ from bot.game.classes import Stats
 from bot.game.clock import MOSCOW, day_opens
 from bot.game.combat import DuelEnd, RoundResult
 from bot.game.health import now_ts
-from bot.game.quests import ring_mark
+from bot.game.quests import blocks_held, ring_mark
 from bot.game.trainer import (
     TRAINER_ID,
     TRAINER_NAME,
@@ -329,3 +329,59 @@ async def test_the_history_reads_a_fight_against_the_trainer(duels, db):
     line = fight_row(rows[0], learner.user_id)
     assert line["caption"] == f"Победа — бой против {TRAINER_NAME}", line["caption"]
     assert line["result"] == "win"
+
+
+# ---------- блоки у Тренера идут в задание про защиту ----------
+
+
+def a_block(defender_id: int) -> dict:
+    """Ход, в котором этот боец удержал блок."""
+    return {
+        "strikes": [
+            {"defender_id": defender_id, "outcome": "block"},
+            # Чужой блок и свой сорванный в счёт не идут
+            {"defender_id": defender_id + 1, "outcome": "block"},
+            {"defender_id": defender_id, "outcome": "break"},
+        ]
+    }
+
+
+def test_only_held_blocks_of_this_fighter_are_counted(duels):
+    """Счёт блоков читается по ходам боя и только по своим удержанным."""
+    session = type("Session", (), {"rounds": [a_block(42), a_block(42)]})()
+    assert duels._blocks_of(session, 42) == 2
+    assert duels._blocks_of(session, 43) == 2, "у соседа свои два"
+    assert duels._blocks_of(session, 99) == 0
+
+
+async def test_blocks_against_the_trainer_close_the_defence_quest(duels, db):
+    """Урок у Тренера закрывает задание про защиту наравне с боем.
+
+    Задание прямо зовёт учиться защите и у него, и это единственный
+    бой, который новичок может провести, не дожидаясь соперника.
+    """
+    from bot.game.quests import BLOCK_HITS, chapter_quests
+    from tests.test_quests import walk
+
+    learner = a_learner(level=3)
+    # Задания берут у стойки, а не посреди города
+    learner.location = "bar"
+    await db.save_player(learner)
+    for chapter in ("city", "work"):
+        for quest in chapter_quests(chapter):
+            await walk(db, learner, quest.code)
+    await walk(db, learner, "knuckles")
+    await walk(db, learner, "ring_gift")
+    await take(db, learner, "armor_intro")
+
+    trainer = await ensure_trainer(db)
+    trainer.set_hp(trainer.max_hp)
+    await db.save_player(trainer)
+
+    session = await duels.start_trainer_duel(learner)
+    session.rounds.extend(a_block(learner.user_id) for _ in range(BLOCK_HITS))
+    result = a_verdict(learner.user_id)
+    await duels._apply_results(session, result)
+
+    marks = set((await journal(db, learner))["armor_intro"].marks)
+    assert blocks_held(marks) == BLOCK_HITS

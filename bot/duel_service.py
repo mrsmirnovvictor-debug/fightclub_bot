@@ -32,6 +32,7 @@ from bot.game.combat import (
     TURNS_PER_ROUND,
     Action,
     Fighter,
+    Outcome,
     RoundResult,
     boxing_round,
     resolve_round,
@@ -80,7 +81,7 @@ from bot.models import Player, ProgressReport
 # Квесты слушают город: службы зовут `notice` и больше о них
 # ничего не знают
 from bot.game.quests import ring_mark
-from bot.quest_service import notice
+from bot.quest_service import notice, notice_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -1164,9 +1165,31 @@ class DuelService:
         # Первый бой у бармена этот урок закрывает: задание про то, чтобы
         # выйти на ринг и дойти до результата, а с кем — не сказано
         await notice(self.db, player, ring_mark(won))
+        # Блоки у тренера считаются наравне с обычным боем: задание
+        # прямо зовёт учиться защите и у него
+        await notice_blocks(self.db, player, self._blocks_of(session, learner_id))
         return self._two_ways(
             [(player, report)],
             damage={learner_id: fighter.damage_dealt},
+        )
+
+    @staticmethod
+    def _blocks_of(session, user_id: int) -> int:
+        """Сколько раз этот боец удержал блок за весь бой.
+
+        Считаем по записанным ходам, а не по ходу боя: журнал ходов и
+        так собирается для экрана, и второй счётчик в движке означал бы
+        два места, где одно и то же может разойтись.
+
+        Сорванный блок (`break`) не в счёт: защитой он не был — удар
+        дошёл до тела.
+        """
+        return sum(
+            1
+            for turn in session.rounds
+            for strike in turn.get("strikes", ())
+            if strike.get("defender_id") == user_id
+            and strike.get("outcome") == Outcome.BLOCK.value
         )
 
     @staticmethod
@@ -1310,6 +1333,9 @@ class DuelService:
             # дуэль: задание про то, чтобы выйти один на один
             if session.mode is FightMode.FIST:
                 await notice(self.db, player, ring_mark(None if drawn else won))
+            # А блоки считаются в любом бою клуба, хоть на кулаках, хоть
+            # с оружием: держать защиту учатся не под один вид боя
+            await notice_blocks(self.db, player, self._blocks_of(session, user_id))
             rows.append((player, report))
 
         return self._two_ways(

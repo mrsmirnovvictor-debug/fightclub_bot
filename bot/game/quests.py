@@ -42,7 +42,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from bot.game.classes import Zone
 
 # Кто выдаёт. Пока один на весь город, но код стоит в записи: вторым
 # будет кто-нибудь ещё, и тогда список заданий у каждого станет своим
@@ -53,7 +52,17 @@ GYM_DAYS = 1
 
 # Сколько зон тела должна прикрывать броня в задании про экипировку.
 # Зон, а не вещей: три вещи на одну зону оставляют остальные открытыми
-ARMOR_ZONES = 3
+# Сколько ударов надо удержать блоком, чтобы закрыть задание про защиту.
+#
+# Это первое счётное условие в городе: прочие закрываются одним
+# событием — вошёл, принёс, записался, — а это копится. Поэтому отметки
+# у него нумерованные (`block:1` … `block:5`): журнал хранит множество
+# строк, и пять одинаковых в нём стали бы одной.
+#
+# Считаем только удержанный блок. Сорванный защитой не был — удар дошёл
+# до тела, — и засчитывать его значило бы учить ровно тому, от чего
+# задание отговаривает.
+BLOCK_HITS = 5
 
 # Услуга HR-агентства: там оформляют приём на работу. Нужна обходу
 # задания про смену — тому, кто уже работает в другом месте
@@ -74,7 +83,7 @@ class Goal(str, Enum):
     MARKET = "market"  # выставить вещь в комиссионку
     TRAIN = "train"  # отработать тренировку в зале
     TRADE = "trade"  # положить свою часть обмена на стол
-    ARMOR = "armor"  # прикрыть бронёй три зоны тела
+    BLOCK = "block"  # удержать блок в бою, и не один раз
 
 
 # Какие цели закрываются событием, а какие видно по самому бойцу. Первые
@@ -88,6 +97,7 @@ BY_EVENT: frozenset[Goal] = frozenset(
         Goal.MARKET,
         Goal.TRAIN,
         Goal.TRADE,
+        Goal.BLOCK,
     }
 )
 
@@ -311,10 +321,17 @@ QUESTS: tuple[Quest, ...] = (
     ),
     Quest(
         code="armor_intro",
-        title="Броня держит удар",
-        task=f"Прикрыть бронёй не меньше {ARMOR_ZONES} разных зон тела",
+        title="Защита в бою",
+        task=(
+            f"Заблокируй удары {BLOCK_HITS} раз в боях с другими "
+            "бойцами или с тренером"
+        ),
         chapter="gear",
-        needs=(Need(Goal.ARMOR),),
+        # Прежде условием была броня на трёх зонах, и закрывалось оно
+        # покупкой: боец надевал вещи и шёл сдавать, ни разу не
+        # защитившись. Теперь задание про то, чему оно и учит, — про
+        # блок в бою
+        needs=(Need(Goal.BLOCK),),
         exp=100,
     ),
     Quest(
@@ -494,19 +511,6 @@ def locked_by(done: set[str], taken: str = "", level: int = 1) -> int:
 # ---------- готово ли задание ----------
 
 
-def armor_zones(player) -> int:
-    """Сколько зон тела прикрыто бронёй.
-
-    Считаем зоны, а не вещи: три вещи на одну зону оставляют остальные
-    открытыми. Прикрытой считается зона, в которой броня может хоть
-    что-то поглотить, — то есть верх её разброса больше нуля. Оружие и
-    прибавки к характеристикам бронёй не считаются вовсе: у них нет ни
-    зон, ни брони, и в этот счёт они не попадают сами собой.
-    """
-    equipment = player.equipment
-    return sum(1 for zone in Zone if equipment.armor_range(zone)[1] > 0)
-
-
 # Отметка о выданной барменом вещи: в ней номер самой вещи, а не её
 # код. Код у кастетов общий, а выставить в комиссионку нужно именно тот,
 # который бармен дал: иначе задание закрывал бы любой купленный кастет
@@ -551,6 +555,8 @@ def need_done(need: Need, marks: set[str], player) -> bool:
     """Закрыто ли одно условие."""
     if need.goal is Goal.MARKET:
         return market_done(marks)
+    if need.goal is Goal.BLOCK:
+        return blocks_held(marks) >= BLOCK_HITS
     if need.goal is Goal.RING:
         # Исход боя записан в самой отметке, и годится любой: задание
         # про то, чтобы выйти на ринг, а не про то, чтобы выиграть
@@ -570,8 +576,6 @@ def need_done(need: Need, marks: set[str], player) -> bool:
         # Права на руках — значит, курс давно пройден: такому бойцу
         # повторно записываться и платить незачем
         return player.school.enrolled or player.school.has_licence
-    if need.goal is Goal.ARMOR:
-        return armor_zones(player) >= ARMOR_ZONES
     return False  # pragma: no cover - цель без проверки не заводится
 
 
@@ -599,6 +603,10 @@ def wants(quest: Quest, mark: str, marks: set[str] | None = None) -> bool:
         # поздняя победа зачтённое поражение не заменяет — иначе бонус
         # за победу брался бы перебором, не беря нового задания
         return not any(one in held for one in RING_MARKS)
+    if Goal.BLOCK in goals and mark.startswith(f"{Goal.BLOCK.value}:"):
+        # Блоки копятся, пока не набралось пяти: лишнюю отметку в
+        # журнал не кладём, иначе он рос бы весь бой
+        return blocks_held(held) < BLOCK_HITS
     if Goal.MARKET in goals and (
         mark.startswith(f"{Goal.MARKET.value}:")
         # Старая отметка без номера: так писала первая версия, и у
@@ -696,6 +704,16 @@ def quiz_done_mark(quiz: str) -> str:
 OLD_QUIZ_DONE = "quiz:done"
 
 
+def block_mark(number: int) -> str:
+    """Отметка об удержанном блоке. Номер — чтобы их было видно по счёту."""
+    return f"{Goal.BLOCK.value}:{number}"
+
+
+def blocks_held(marks: set[str]) -> int:
+    """Сколько блоков уже записано в журнале этого задания."""
+    return sum(1 for one in marks if one.startswith(f"{Goal.BLOCK.value}:"))
+
+
 def ring_mark(won: bool | None) -> str:
     """Отметка о бое на ринге с его исходом.
 
@@ -720,7 +738,9 @@ def ring_won(marks: set[str]) -> bool:
 
 
 __all__ = [
-    "ARMOR_ZONES",
+    "BLOCK_HITS",
+    "block_mark",
+    "blocks_held",
     "BARTENDER",
     "BY_CODE",
     "BY_EVENT",
@@ -739,7 +759,6 @@ __all__ = [
     "Goal",
     "Need",
     "Quest",
-    "armor_zones",
     "carried",
     "chapter_quests",
     "get_quest",

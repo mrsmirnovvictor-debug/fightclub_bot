@@ -35,8 +35,11 @@ from bot.game.health import now_ts
 from bot.game.locations import Service, get_location
 from bot.game.progress import QuestLog
 from bot.game.quests import (
+    BLOCK_HITS,
     GYM_DAYS,
     Goal,
+    block_mark,
+    blocks_held,
     carried,
     Quest,
     get_quest,
@@ -313,6 +316,42 @@ def place_mark(place: str) -> str:
 
 def seen_mark(catalog: str) -> str:
     return f"{Goal.SEEN.value}:{catalog}"
+
+
+async def notice_blocks(
+    db: Database, player: Player, held: int, now: int | None = None
+) -> None:
+    """Боец удержал блок — и не один раз за бой.
+
+    Отметки нумерованные, и номер берётся от того, сколько их уже
+    лежит: журнал хранит множество строк, и пять одинаковых стали бы
+    одной. Какие номера свободны, знает сам журнал, поэтому считаем
+    здесь, а не в бою: ринг знает про удары, но не про задания.
+
+    Больше, чем нужно заданию, не пишем: лишние отметки ничего не
+    закрывают, а журнал по ним потом читают.
+    """
+    if held <= 0:
+        return
+    log = await journal(db, player)
+    code = taken_code(log)
+    if not code:
+        return
+    quest = get_quest(code)
+    if quest is None or not any(
+        one.goal is Goal.BLOCK for one in quest.needs
+    ):
+        return
+    already = blocks_held(set(log[code].marks))
+    room = max(0, BLOCK_HITS - already)
+    if not room:
+        return
+    await notice(
+        db,
+        player,
+        *(block_mark(already + step) for step in range(1, min(held, room) + 1)),
+        now=now,
+    )
 
 
 async def notice_visit(

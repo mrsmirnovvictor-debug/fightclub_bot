@@ -30,7 +30,7 @@ from bot.game.driving import School
 from bot.game.health import now_ts
 from bot.game.locations import Service, get_location
 from bot.game.quests import (
-    ARMOR_ZONES,
+    BLOCK_HITS,
     CHAPTERS,
     OLD_CODES,
     OLD_MARK,
@@ -58,6 +58,7 @@ from bot.quest_service import (
     journal,
     locked_level,
     notice,
+    notice_blocks,
     notice_seen,
     notice_visit,
     offered,
@@ -108,8 +109,8 @@ async def close_need(db: Database, player: Player, code: str, need) -> None:
     elif need.goal is Goal.SCHOOL:
         player.school = School(course_at=now_ts())
         await db.save_player(player)
-    elif need.goal is Goal.ARMOR:
-        await wear_armor(db, player)
+    elif need.goal is Goal.BLOCK:
+        await notice_blocks(db, player, BLOCK_HITS)
     elif need.goal is Goal.MARKET:
         marks = set((await journal(db, player))[code].marks)
         item_id = next(
@@ -124,27 +125,6 @@ async def close_need(db: Database, player: Player, code: str, need) -> None:
         await notice_visit(db, player, Service(need.target))
     else:
         await notice(db, player, need.mark)
-
-
-async def wear_armor(db: Database, player: Player) -> None:
-    """Надеть брони на три разные зоны — по-настоящему, а не отметкой."""
-    from bot.content.items import ITEMS
-    from bot.game.classes import Zone
-    from bot.inventory_service import equip
-
-    covered: set[Zone] = set()
-    for item in ITEMS:
-        if item.armor_max <= 0 or not item.zones:
-            continue
-        if set(item.zones) <= covered:
-            continue
-        owned = await db.add_gear(player.user_id, item.code)
-        player.gear = await db.list_gear(player.user_id)
-        await equip(db, player, owned.id)
-        covered |= set(item.zones)
-        if len(covered) >= ARMOR_ZONES:
-            break
-    player.gear = await db.list_gear(player.user_id)
 
 
 async def walk(db: Database, player: Player, code: str) -> None:
@@ -280,6 +260,24 @@ def test_no_quest_reply_counts_quests_in_order_words():
         said = (talk.offer + talk.hint + talk.done).lower()
         for word in banned:
             assert word not in said, f"{code}: «{word}»"
+
+
+def test_the_defence_quest_says_the_same_number_the_engine_counts():
+    """Сколько блоков назвал бармен, столько их и ждёт движок.
+
+    Число стоит в трёх местах — в задаче журнала, в предложении и в
+    напоминании, — и везде берётся из `BLOCK_HITS`. Набранное руками
+    однажды разошлось бы с игрой: боец держал бы блок пятый раз, а
+    задание ждало шестого.
+    """
+    from bot.game.quests import BLOCK_HITS
+
+    quest = get_quest("armor_intro")
+    talk = TALKS["armor_intro"]
+    said = quest.task + talk.offer + talk.hint
+    assert said.count(str(BLOCK_HITS)) == 3, said
+    for wrong in (BLOCK_HITS - 1, BLOCK_HITS + 1):
+        assert str(wrong) not in said, f"в словах чужое число {wrong}"
 
 
 def test_no_quest_reply_talks_like_a_rulebook():
@@ -739,10 +737,13 @@ async def test_a_fighter_without_a_job_must_actually_get_hired(db):
 # ---------- броня ----------
 
 
-async def test_three_armoured_zones_close_the_armour_quest(db):
-    """Считаются зоны по настоящей защите, а не число вещей."""
-    from bot.game.quests import armor_zones
+async def test_five_held_blocks_close_the_defence_quest(db):
+    """Задание про защиту закрывают блоки в бою, а не купленная броня.
 
+    Прежде условием была броня на трёх зонах, и закрывалось оно в
+    магазине: боец надевал вещи и шёл сдавать, ни разу не защитившись.
+    Теперь считается то, чему задание и учит.
+    """
     player = await enlist(db, make_player(level=3))
     for chapter in ("city", "work"):
         for quest in chapter_quests(chapter):
@@ -751,13 +752,77 @@ async def test_three_armoured_zones_close_the_armour_quest(db):
     await walk(db, player, "ring_gift")
 
     await take(db, player, "armor_intro")
-    assert armor_zones(player) < ARMOR_ZONES
     with pytest.raises(QuestError):
         await hand(db, player, "armor_intro")
 
-    await wear_armor(db, player)
-    assert armor_zones(player) >= ARMOR_ZONES
+    # Блоки копятся боями, а не одним разом: по два за бой — и на
+    # третьем набирается
+    for _ in range(2):
+        await notice_blocks(db, player, 2)
+        with pytest.raises(QuestError):
+            await hand(db, player, "armor_intro")
+    await notice_blocks(db, player, 2)
     assert "сдано" in (await hand(db, player, "armor_intro")).lower()
+
+
+async def test_the_journal_keeps_no_more_blocks_than_the_quest_needs(db):
+    """Лишние блоки в журнал не ложатся: по нему потом читают бой."""
+    from bot.game.quests import BLOCK_HITS, blocks_held
+
+    player = await enlist(db, make_player(level=3))
+    for chapter in ("city", "work"):
+        for quest in chapter_quests(chapter):
+            await walk(db, player, quest.code)
+    await walk(db, player, "knuckles")
+    await walk(db, player, "ring_gift")
+    await take(db, player, "armor_intro")
+
+    await notice_blocks(db, player, 50)
+    marks = set((await journal(db, player))["armor_intro"].marks)
+    assert blocks_held(marks) == BLOCK_HITS
+
+
+async def test_the_journal_itself_refuses_a_block_past_the_count(db):
+    """Счёт держит журнал, а не только тот, кто его зовёт.
+
+    `notice_blocks` и так не пишет лишнего, но это вежливость
+    вызывающего. Правило про «не больше пяти» живёт в самом журнале:
+    иначе любая другая дверь, позвавшая `notice` напрямую, растила бы
+    счёт дальше.
+    """
+    from bot.game.quests import BLOCK_HITS, block_mark, blocks_held
+
+    player = await enlist(db, make_player(level=3))
+    for chapter in ("city", "work"):
+        for quest in chapter_quests(chapter):
+            await walk(db, player, quest.code)
+    await walk(db, player, "knuckles")
+    await walk(db, player, "ring_gift")
+    await take(db, player, "armor_intro")
+
+    # Зовём напрямую и просим больше, чем задание ждёт
+    await notice(db, player, *(block_mark(one) for one in range(1, 20)))
+    marks = set((await journal(db, player))["armor_intro"].marks)
+    assert blocks_held(marks) == BLOCK_HITS
+
+
+async def test_blocks_outside_the_quest_are_not_remembered(db):
+    """Пока задание не взято, блоки никуда не пишутся.
+
+    Журнал помнит только то, что закрывает задание на руках: иначе он
+    зарастал бы событиями, которых никто не просил.
+    """
+    player = await enlist(db, make_player(level=3))
+    for chapter in ("city", "work"):
+        for quest in chapter_quests(chapter):
+            await walk(db, player, quest.code)
+
+    await notice_blocks(db, player, 5)
+    await walk(db, player, "knuckles")
+    await walk(db, player, "ring_gift")
+    await take(db, player, "armor_intro")
+    with pytest.raises(QuestError):
+        await hand(db, player, "armor_intro")
 
 
 def test_a_weapon_is_not_armour():
