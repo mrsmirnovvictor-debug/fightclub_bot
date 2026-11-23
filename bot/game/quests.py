@@ -205,8 +205,8 @@ QUESTS: tuple[Quest, ...] = (
     ),
     Quest(
         code="pro",
-        title="За что платят звёздами",
-        task="Посмотреть PRO и PREMIUM в элитном магазине и вернуться с ответами",
+        title="Как ускорить развитие",
+        task="Изучи подписки PRO и PREMIUM в элитном магазине",
         chapter="city",
         needs=(Need(Goal.VISIT, "premium"),),
         quiz="pro",
@@ -215,7 +215,7 @@ QUESTS: tuple[Quest, ...] = (
     ),
     Quest(
         code="bank",
-        title="Деньги любят счёт",
+        title="Деньги хранятся в банке",
         task="Открыть счёт в Vegas Банке",
         chapter="city",
         needs=(Need(Goal.ACCOUNT),),
@@ -231,7 +231,7 @@ QUESTS: tuple[Quest, ...] = (
     ),
     Quest(
         code="looks_intro",
-        title="Свой стиль",
+        title="Найди свой стиль",
         task="Открыть каталог образов в барбершопе или салоне красоты",
         chapter="city",
         # Услуга образов открыта в двух домах сразу, и это та самая
@@ -242,11 +242,10 @@ QUESTS: tuple[Quest, ...] = (
     # ---------- уровень 2: работа, обмен и тренировки ----------
     Quest(
         code="work",
-        title="Своя смена",
+        title="Новая работа",
         task="Устроиться барменом через HR-агентство",
         chapter="work",
         needs=(Need(Goal.JOB, "bartender"),),
-        quiz="work",
         exp=75,
         job_or_quiz=True,
     ),
@@ -264,16 +263,16 @@ QUESTS: tuple[Quest, ...] = (
     ),
     Quest(
         code="trade_intro",
-        title="Стол на двоих",
-        task="Занять стол на рынке и положить свою часть обмена",
+        title="Торговля и обмен",
+        task="Сходить на рынок и проверить, как работает обмен",
         chapter="work",
         needs=(Need(Goal.TRADE),),
         exp=50,
     ),
     Quest(
         code="gym_intro",
-        title="Спортивный интерес",
-        task="Посмотреть расписание зала и вернуться с двумя числами",
+        title="Тренажёрный зал",
+        task="Изучи тренажёрный зал",
         chapter="work",
         needs=(Need(Goal.VISIT, "train"),),
         quiz="gym",
@@ -281,7 +280,7 @@ QUESTS: tuple[Quest, ...] = (
     ),
     Quest(
         code="gym",
-        title="Железо не ждёт",
+        title="Сходи на тренировку",
         task="Отработать тренировку в зале целиком",
         chapter="work",
         needs=(Need(Goal.TRAIN),),
@@ -320,16 +319,15 @@ QUESTS: tuple[Quest, ...] = (
     ),
     Quest(
         code="repair_intro",
-        title="Снаряжение в порядке",
+        title="Ремонт",
         task="Открыть мастерскую и посмотреть состояние вещей",
         chapter="gear",
         needs=(Need(Goal.VISIT, "repair"),),
-        quiz="repair",
         exp=75,
     ),
     Quest(
         code="dojo_intro",
-        title="Не одной силой",
+        title="Школа боевых искусств",
         task="Открыть в школе карточку приёма с условиями изучения",
         chapter="gear",
         needs=(Need(Goal.SEEN, "dojo"),),
@@ -338,7 +336,7 @@ QUESTS: tuple[Quest, ...] = (
     # ---------- уровень 4: самостоятельная жизнь ----------
     Quest(
         code="market",
-        title="Лишнее — на прилавок",
+        title="Комиссионный магазин",
         task="Выставить кастет бармена в комиссионный магазин",
         chapter="own",
         needs=(Need(Goal.MARKET, "knuckles"),),
@@ -356,8 +354,8 @@ QUESTS: tuple[Quest, ...] = (
     ),
     Quest(
         code="police_intro",
-        title="Закон и кулак",
-        task="Зайти в полицию и вернуться с ответом про договорный бой",
+        title="Закон и порядок",
+        task="Зайти в полицейский участок",
         chapter="own",
         needs=(Need(Goal.VISIT, "police"),),
         quiz="police",
@@ -366,7 +364,7 @@ QUESTS: tuple[Quest, ...] = (
     Quest(
         code="cars_intro",
         title="Сначала выбери колёса",
-        task="Открыть в автосалоне карточку машины и вернуться с ответом",
+        task="Сходить в автосалон",
         chapter="own",
         needs=(Need(Goal.SEEN, "cars"),),
         quiz="cars",
@@ -374,8 +372,8 @@ QUESTS: tuple[Quest, ...] = (
     ),
     Quest(
         code="raid_intro",
-        title="Перед общим делом",
-        task="Открыть условия рейда и вернуться с ответом про общего врага",
+        title="Рейды",
+        task="Открыть условия рейда",
         chapter="own",
         needs=(Need(Goal.VISIT, "raid"),),
         quiz="raid",

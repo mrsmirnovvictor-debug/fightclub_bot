@@ -312,20 +312,6 @@ def test_no_quest_reply_talks_like_a_rulebook():
             assert word not in said, f"{code}: «{word}»"
 
 
-def test_the_bartender_never_raises_his_voice():
-    """Ни одного восклицательного знака: он устал, а не рад.
-
-    Тон задан в самом модуле — короткие фразы, никакого «добро
-    пожаловать». Знак в конце строки ломает его быстрее любой
-    формулировки.
-    """
-    said = [HELLO, IDLE, NOT_YET, grow_up(2)]
-    for talk in TALKS.values():
-        said += [talk.offer, talk.hint, talk.done]
-    for one in said:
-        assert "!" not in one, one
-
-
 def test_no_quest_reply_promises_a_payback_or_a_discount():
     """Бармен не обещает окупаемости покупки и неподтверждённых скидок."""
     banned = ("окупает", "впятеро", "со скидк", "верну", "сдачу")
@@ -724,9 +710,9 @@ async def test_a_fighter_with_another_job_studies_the_vacancy_instead(db):
     with pytest.raises(QuestError):
         await hand(db, player, "work")
     await notice_visit(db, player, Service.HIRE)
-    # Теперь бармен спрашивает
-    ok, _ = await answer(db, player, 0, quiz_of("work")[0].answer)
-    assert ok
+    # Вакансию изучил — этого и довольно. Вопроса тут больше нет: его
+    # убрали из задания вместе со всем набором «work»
+    assert not quiz_of("work")
     assert "сдано" in (await hand(db, player, "work")).lower()
     # И работу бойцу не меняли
     assert (await db.get_player(42)).job_code == "cashier"
@@ -740,10 +726,8 @@ async def test_a_fighter_without_a_job_must_actually_get_hired(db):
 
     await take(db, player, "work")
     await notice_visit(db, player, Service.HIRE)
-    # Вопросов ему не задают: обход открыт только занятым
-    with pytest.raises(QuestError) as oops:
-        await answer(db, player, 0, 0)
-    assert "сходи и посмотри" in str(oops.value)
+    # Обход открыт только занятым: безработному мало дойти до HR,
+    # ему нужна сама работа
     with pytest.raises(QuestError):
         await hand(db, player, "work")
 

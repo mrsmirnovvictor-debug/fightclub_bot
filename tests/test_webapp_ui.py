@@ -14862,14 +14862,21 @@ async def test_the_barman_offers_the_first_quest_and_the_fighter_answers(server)
         )
         # Знакомство идёт перед первым заданием, и ровно один раз
         text = await talk.locator(".talk-text").inner_text()
-        assert "Новое лицо" in text and "клуба" in text
+        # Знакомство и следом предложение: берём слова у самого
+        # бармена, а не переписываем сюда
+        from bot.content.bartender import HELLO, TALKS
+
+        assert text.startswith(HELLO)
+        assert TALKS["ring"].offer in text
         # Награда перечисляется по частям: за бой платят опытом, а
         # доплату за победу обещают отдельно
         prize = await talk.locator(".talk-prize").inner_text()
         assert "+50 опыта" in prize and "+10 💰 за победу" in prize
         # Ответы одни на все двадцать заданий: это служебные кнопки
+        from bot.content.bartender import LATER, TAKE
+
         assert await talk.locator(".talk-replies .btn").all_inner_texts() == [
-            "Беру задание", "Позже"
+            TAKE, LATER
         ]
 
         # «Берусь» уходит на сервер кодом задания
@@ -14911,8 +14918,10 @@ async def test_the_taken_quest_waits_on_the_counter(server):
         assert heads == ["Бармен «Последней капли»", "Сейчас на руках"]
         task = page.locator("#tavern-body .quest")
         assert await task.locator(".quest-mark").inner_text() == "🕓"
+        from bot.game.quests import get_quest
+
         assert await task.locator(".quest-title").inner_text() == (
-            "За что платят звёздами"
+            get_quest("pro").title
         )
 
         # «Подойти к стойке» раскрывает разговор, и бармен напоминает о деле
@@ -14991,8 +15000,10 @@ async def test_the_finished_quest_is_handed_over_at_the_counter(server):
         from bot.content.bartender import READY
 
         assert await page.locator(".talk-text").inner_text() == READY
+        from bot.content.bartender import BYE, HAND
+
         assert await page.locator(".talk-replies .btn").all_inner_texts() == [
-            "Сдать задание", "Отойти"
+            HAND, BYE
         ]
         # И в карточке дела стоит отметка «готово — к бармену»
         assert "готово — к бармену" in await page.locator(
