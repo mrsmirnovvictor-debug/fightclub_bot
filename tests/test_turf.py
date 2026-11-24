@@ -561,6 +561,101 @@ async def test_without_a_squad_the_spot_button_sends_you_to_school(db):
     assert "Школе" in body["hire"]["why"]
 
 
+async def test_the_held_spot_pays_its_guards_in_experience(db):
+    """Отбили штурм — бойцы получили опыт, и только те, кто устоял.
+
+    Платят за отбитый штурм, а не за стояние: доход точки идёт
+    хозяину, а бойцу платят боем. Уложенного в этой же драке не платят
+    вовсе — он её не отстоял.
+    """
+    from bot.game.economy import base_exp
+    from bot.turf_war import TurfWar
+
+    don, squad, clan = await family(db, size=3)
+    await stand(db, squad, "bar")
+    await db.take_turf("bar", "clan", str(clan.id), NOW)
+    # Хозяин высоко: потолок уровня бойцу не помешает
+    for number in squad[:2]:
+        one = await db.get_player(number)
+        one.level = 20
+        await db.save_player(one)
+    held = await a_guard(db, squad[0], "bar", level=5, name="Устоял")
+    down = await a_guard(db, squad[1], "bar", level=5, name="Упал")
+
+    rival, rivals, theirs = await family(
+        db, first=40, name="Бешеные псы", sign="silver_wolves"
+    )
+    await stand(db, rivals, "bar")
+    war = TurfWar(db)
+    try:
+        muster = await war.open_muster(
+            await db.get_player(rival.user_id), "bar", now=NOW
+        )
+        siege = await war.march(muster.id, rival.user_id, now=NOW)
+        # Кладём того, кто в бою стоит за второго игрока
+        keys = sorted(siege.wall)
+        for key in keys:
+            if siege.wall[key].name == "Упал":
+                siege.wall[key].hp = 0
+        await war._finish(siege, won=False)
+    finally:
+        await war.close()
+
+    paid = await db.get_player(held.user_id)
+    assert paid.total_exp == base_exp(5), "ставка своего уровня"
+    beaten = await db.get_player(down.user_id)
+    assert beaten.total_exp == 0, "упавший бой не отстоял"
+    assert "получили опыт за оборону" in " ".join(siege.summary)
+
+
+async def test_a_fighter_in_hospital_is_never_paid_for_the_defence(db):
+    """Лежачему не платят, даже если он остался записан на точке.
+
+    В развязке штурма упавших увозят раньше, чем платят уцелевшим, и
+    этим порядком правило держится само. Но порядок — вещь хрупкая:
+    переставь две строки, и больница начнёт получать опыт за бой,
+    который проиграла. Поэтому проверяем само правило, а не порядок.
+    """
+    from bot.squad_service import pay_the_guard, to_hospital
+
+    don, squad, clan = await family(db, size=2)
+    await db.take_turf("bar", "clan", str(clan.id), NOW)
+    npc = await a_guard(db, squad[0], "bar", level=5, name="Побитый")
+    await to_hospital(db, npc.user_id, NOW)
+    # Возвращаем на точку заведомо сломанную строку: боец и в больнице,
+    # и записан охраной
+    await db.set_squad_spot(npc.user_id, "bar")
+
+    assert await pay_the_guard(db, "bar", NOW) == []
+    assert (await db.get_player(npc.user_id)).total_exp == 0
+
+
+async def test_a_lost_spot_pays_its_guards_nothing(db):
+    """Точку взяли — платить не за что: это проигрыш, а не бой."""
+    from bot.turf_war import TurfWar
+
+    don, squad, clan = await family(db, size=2)
+    await stand(db, squad, "bar")
+    await db.take_turf("bar", "clan", str(clan.id), NOW)
+    mine = await a_guard(db, squad[0], "bar", level=1, name="Новичок")
+
+    rival, rivals, theirs = await family(
+        db, first=50, name="Бешеные псы", sign="silver_wolves"
+    )
+    await stand(db, rivals, "bar")
+    war = TurfWar(db)
+    try:
+        muster = await war.open_muster(
+            await db.get_player(rival.user_id), "bar", now=NOW
+        )
+        siege = await war.march(muster.id, rival.user_id, now=NOW)
+        await war._finish(siege, won=True)
+    finally:
+        await war.close()
+
+    assert (await db.get_player(mine.user_id)).total_exp == 0
+
+
 async def test_a_taken_spot_sends_the_whole_garrison_to_hospital(db):
     """Точку взяли — гарнизон увезли, но бойцы целы.
 

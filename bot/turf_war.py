@@ -133,8 +133,11 @@ class Siege:
     won: bool = False
     # Сколько прежнему владельцу накапало за неполные сутки
     handed: int = 0
-    # Сколько выставленных на точке полегло насовсем
+    # Сколько бойцов с точки увезли в больницу в этой драке
     fallen: int = 0
+    # Кому из гарнизона заплатили опытом и сколько: платят за отбитый
+    # штурм, и в сводке это видно отдельной строкой
+    paid: list = field(default_factory=list)
     timer: asyncio.Task | None = None
     started_at: float = field(default_factory=time.monotonic)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -735,6 +738,13 @@ class TurfWar:
             # Уцелевшие выходят на следующую драку целыми — гарнизон
             # собирается заново, и здоровье у него своё
             siege.fallen = await self._bury_the_fallen(siege)
+            # Отстояли — бойцам платят опытом. Платят за отбитый штурм,
+            # а не за стояние: доход точки идёт хозяину, а бойцу платят
+            # боем. Уложенные в этой же драке не получают ничего — они
+            # её не отстояли
+            from bot.squad_service import pay_the_guard
+
+            siege.paid = await pay_the_guard(self.db, siege.spot.code, moment)
         siege.summary = [
             # Волн ноль — драки не было вовсе: точка стояла пустая
             f"{siege.spot.title} взят без боя: охраны на нём не было."
@@ -751,6 +761,11 @@ class TurfWar:
             )
         if not won and not siege.fallen:
             siege.summary.append("Гарнизон цел: ни один не выбыл.")
+        if siege.paid:
+            got = sum(one for _, one in siege.paid)
+            siege.summary.append(
+                f"Бойцы отряда получили опыт за оборону: {got}."
+            )
         if siege.handed:
             siege.summary.append(
                 f"Прежним в казну ушло {siege.handed} 💰 за время владения."

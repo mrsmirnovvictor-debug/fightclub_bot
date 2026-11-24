@@ -444,6 +444,40 @@ async def all_to_hospital(
     return hurt
 
 
+async def pay_the_guard(
+    db: Database, spot: str, now: int | None = None
+) -> list[tuple[Player, int]]:
+    """Начислить опыт тем, кто отстоял точку.
+
+    Платят за отбитый штурм, а не за стояние: доход точки — это плата
+    хозяину, а бойцу платят боем. Ставка — своего уровня, та же, по
+    которой считают бой игрока: иначе отряд рос бы по отдельной
+    лестнице, и объяснить разницу было бы нечем.
+
+    Лежачим не платят: их вынесли, и бой они не отстояли. Выше хозяина
+    боец всё равно не поднимется, а лишний опыт у него полежит.
+    """
+    from bot.game.economy import base_exp
+
+    moment = now_ts() if now is None else now
+    paid: list[tuple[Player, int]] = []
+    for row in await db.squad_at(spot):
+        if row["hospital_at"]:
+            continue
+        npc = await db.get_player(int(row["npc_id"]))
+        owner = await db.get_player(int(row["owner_id"]))
+        if npc is None or owner is None:  # pragma: no cover - сломанная база
+            continue
+        got = base_exp(npc.level)
+        await add_exp(db, npc, int(row["stars"]), owner, got)
+        paid.append((npc, got))
+    if paid:
+        logger.info(
+            "За оборону точки %s заплачено бойцам: %s", spot, len(paid)
+        )
+    return paid
+
+
 async def add_exp(
     db: Database, npc: Player, stars: int, owner: Player, amount: int
 ) -> int:
@@ -485,6 +519,7 @@ __all__ = [
     "add_exp",
     "all_to_hospital",
     "fallen_on_spot",
+    "pay_the_guard",
     "post",
     "posted",
     "recall",
