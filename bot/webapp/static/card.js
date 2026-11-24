@@ -16589,7 +16589,144 @@ let dojoCost = 0;
 const DOJO_TABS = [
   ["known", "Ваши приёмы"],
   ["study", "Обучение"],
+  // Найм живёт здесь же: школа — единственное место в городе, где
+  // берут бойцов в отряд
+  ["hire", "Найм бойцов"],
 ];
+
+// Витрина найма приезжает своей дверью: её собирает не школа, а служба
+// отряда, и держится она неделей, а не заходом
+let hireData = null;
+
+async function loadHire() {
+  try {
+    const response = await fetch("api/hire", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Витрина не отвечает.");
+    hireData = await response.json();
+    if (hireData.card) render(hireData.card, true);
+    if (dojoTab === "hire") renderDojo(dojoData || {});
+  } catch (error) {
+    el("dojo-note").textContent = error.message;
+  }
+}
+
+async function hireAction(payload) {
+  try {
+    hireData = await post("api/hire", payload);
+    haptic((feedback) => feedback.impactOccurred("light"));
+    if (hireData.card) render(hireData.card, true);
+    renderDojo(dojoData || {});
+  } catch (error) {
+    popup("Школа", error.message);
+    await loadHire();
+  }
+}
+
+/** Вкладка «Найм бойцов»: трое на неделю, цена и пересмотр. */
+function dojoHireBox() {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const data = hireData;
+  if (!data) {
+    const wait = document.createElement("p");
+    wait.className = "thing-note";
+    wait.textContent = "Школа смотрит, кто пришёл наниматься…";
+    box.appendChild(wait);
+    return box;
+  }
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Кандидаты недели · отряд " + data.squad + " из " + data.limit;
+  box.appendChild(head);
+
+  (data.cards || []).forEach((one) => box.appendChild(recruitCard(one, data)));
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent = data.note || "";
+  box.appendChild(note);
+
+  // Пересмотр — внизу и вторичной кнопкой: это трата, а не выбор. На
+  // исходе недели цена на ней и остаток говорят сами за себя
+  const more = document.createElement("div");
+  more.className = "shelf-foot";
+  more.appendChild(
+    button(
+      data.rolls_left
+        ? "Посмотреть других · " + data.roll_price + " 💰"
+        : "Пересмотры кончились",
+      {
+        secondary: true,
+        disabled: !data.rolls_left || data.credits < data.roll_price,
+        hint: data.rolls_left
+          ? "На это не хватает кредитов."
+          : "Новые бойцы придут в понедельник.",
+        onClick: () => hireAction({ action: "reroll" }),
+      }
+    )
+  );
+  if (data.rolls_left) {
+    const left = document.createElement("p");
+    left.className = "thing-note";
+    left.textContent = "Пересмотров на этой неделе: " + data.rolls_left;
+    more.appendChild(left);
+  }
+  box.appendChild(more);
+  return box;
+}
+
+/** Кандидат на витрине: лицо, класс, звёзды и цена. */
+function recruitCard(one, data) {
+  const card = document.createElement("article");
+  card.className = "recruit" + (one.taken ? " taken" : "");
+
+  const pic = document.createElement("img");
+  pic.className = "recruit-face";
+  pic.alt = "";
+  pic.loading = "lazy";
+  pic.decoding = "async";
+  pic.addEventListener("error", () => {
+    const mark = document.createElement("span");
+    mark.className = "recruit-face emoji";
+    mark.textContent = one.class_emoji;
+    pic.replaceWith(mark);
+  });
+  pic.src = one.face;
+  card.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "recruit-body";
+  const name = document.createElement("h3");
+  name.className = "recruit-name";
+  name.textContent = one.name;
+  const said = document.createElement("p");
+  said.className = "recruit-said";
+  said.textContent =
+    one.class_emoji + " " + one.class_title + " · " + one.stars + "⭐";
+  body.append(name, said);
+
+  body.appendChild(
+    one.taken
+      ? Object.assign(document.createElement("p"), {
+          className: "recruit-said",
+          textContent: "Уже в твоём отряде",
+        })
+      : button(one.price + " 💰 нанять", {
+          disabled:
+            data.credits < one.price || data.squad >= data.limit,
+          hint:
+            data.squad >= data.limit
+              ? "В отряде нет места."
+              : "На этого бойца не хватает кредитов.",
+          onClick: () => hireAction({ action: "hire", slot: one.slot }),
+        })
+  );
+  card.appendChild(body);
+  return card;
+}
 
 // ---------- суд: дела об угоне ----------
 //
@@ -16869,6 +17006,13 @@ function renderDojo(data) {
   if (dojoTab === "known") {
     body.appendChild(dojoKnownBox(data));
     body.appendChild(dojoDeedsBox(data));
+    return;
+  }
+  if (dojoTab === "hire") {
+    // Витрина приезжает своей дверью: если её ещё нет — просим и
+    // дорисуем, когда придёт
+    if (!hireData) loadHire();
+    body.appendChild(dojoHireBox());
     return;
   }
   body.appendChild(dojoStudyBox(data));

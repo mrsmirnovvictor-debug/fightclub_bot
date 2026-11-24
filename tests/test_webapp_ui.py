@@ -9348,6 +9348,131 @@ async def test_a_fighter_without_a_face_keeps_his_class_mark(server):
         await browser.close()
 
 
+def hire_state(credits: int = 1_200, squad: int = 1, rolls: int = 6) -> dict:
+    """Витрина найма так, как её отдаёт школа."""
+    return {
+        "cards": [
+            {
+                "slot": number,
+                "name": ["Марко Отмычка", "Дэн Кирпич", "Тео Сквозняк"][number],
+                "stars": [1, 4, 2][number],
+                "price": [300, 450, 350][number],
+                "face": f"https://example.invalid/{number}.png",
+                "fclass": ["warrior", "tank", "assassin"][number],
+                "class_title": ["Воин", "Танк", "Ассасин"][number],
+                "class_emoji": ["⚔️", "🛡️", "🗡️"][number],
+                "taken": number == 2,
+            }
+            for number in range(3)
+        ],
+        "squad": squad,
+        "limit": 6,
+        "rolls_left": rolls,
+        "roll_price": 100,
+        "credits": credits,
+        "note": "Все кандидаты приходят первого уровня.",
+    }
+
+
+EMPTY_DOJO = {
+    "known": [], "deeds": [], "shelf": [], "ready": [], "started": None,
+    "costs": [], "slots": 4, "note": "", "said": "",
+}
+
+
+async def open_hire(pw, server, hire=None, credits=1_200):
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    browser, page = await open_page(
+        pw, server, card, build_shop(player),
+        dojo=EMPTY_DOJO, hire=hire or hire_state(credits=credits),
+    )
+    await page.evaluate("() => { showTab('dojo'); loadDojo(); }")
+    await page.wait_for_selector("#dojo-tabs .chip")
+    await page.locator("#dojo-tabs .chip", has_text="Найм бойцов").click()
+    await page.wait_for_selector(".recruit")
+    return browser, page
+
+
+async def test_the_school_shows_three_candidates_with_stars_and_prices(server):
+    """Трое на неделю: лицо, класс, звёзды и цена по звёздам."""
+    async with async_playwright() as pw:
+        browser, page = await open_hire(pw, server)
+
+        names = await page.locator(".recruit-name").all_inner_texts()
+        assert names == ["Марко Отмычка", "Дэн Кирпич", "Тео Сквозняк"]
+        said = await page.locator(".recruit-said").first.inner_text()
+        assert "Воин" in said and "1⭐" in said
+        prices = await page.locator(".recruit .btn").all_inner_texts()
+        assert [one.strip() for one in prices[:2]] == [
+            "300 💰 нанять", "450 💰 нанять"
+        ]
+        await browser.close()
+
+
+async def test_a_hired_candidate_stays_on_the_shelf_but_dimmed(server):
+    """Купленного не убирают, а гасят: видно, кого уже взяли."""
+    async with async_playwright() as pw:
+        browser, page = await open_hire(pw, server)
+
+        taken = page.locator(".recruit.taken")
+        assert await taken.count() == 1
+        assert "Уже в твоём отряде" in await taken.inner_text()
+        # И кнопки на нём нет: нанимать второй раз нечего
+        assert await taken.locator(".btn").count() == 0
+        await browser.close()
+
+
+async def test_an_empty_purse_leaves_the_hire_buttons_dead(server):
+    """Денег нет — кнопка не нажимается, но цена на ней видна."""
+    async with async_playwright() as pw:
+        browser, page = await open_hire(pw, server, credits=100)
+
+        buttons = page.locator(".recruit .btn")
+        assert await buttons.count() == 2
+        for number in range(2):
+            assert await buttons.nth(number).is_disabled()
+        await browser.close()
+
+
+async def test_a_full_squad_closes_the_hire_buttons(server):
+    """Шесть в отряде — нанимать некуда, и это видно до нажатия."""
+    async with async_playwright() as pw:
+        browser, page = await open_hire(
+            pw, server, hire=hire_state(credits=10_000, squad=6)
+        )
+
+        assert "отряд 6 из 6" in await page.locator(".shelf-head").inner_text()
+        buttons = page.locator(".recruit .btn")
+        for number in range(await buttons.count()):
+            assert await buttons.nth(number).is_disabled()
+        await browser.close()
+
+
+async def test_the_reroll_says_its_price_and_what_is_left(server):
+    """Пересмотр — вторичной кнопкой с ценой и остатком под ней."""
+    async with async_playwright() as pw:
+        browser, page = await open_hire(pw, server)
+
+        foot = page.locator(".shelf-foot")
+        assert "Посмотреть других · 100 💰" in await foot.inner_text()
+        assert "Пересмотров на этой неделе: 6" in await foot.inner_text()
+        await browser.close()
+
+
+async def test_the_last_reroll_closes_the_button_until_monday(server):
+    """Восемь пересмотров позади — кнопка говорит, что всё."""
+    async with async_playwright() as pw:
+        browser, page = await open_hire(
+            pw, server, hire=hire_state(credits=10_000, rolls=0)
+        )
+
+        foot = page.locator(".shelf-foot .btn")
+        assert "Пересмотры кончились" in await foot.inner_text()
+        assert await foot.is_disabled()
+        await browser.close()
+
+
 async def test_the_squad_section_says_it_is_empty(server):
     """«Отряды» — четвёртый раздел, и пока в нём никого."""
     player = make_player()
