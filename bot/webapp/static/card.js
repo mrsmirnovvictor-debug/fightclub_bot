@@ -10918,6 +10918,16 @@ function renewSwitch(paper) {
 
 let squadData = null;
 
+/** Звёздность значками: три звезды — это ⭐⭐⭐, а не «3⭐».
+ *
+ * Пустых звёзд не рисуем: значка пустой звезды в наборе нет, а рисовать
+ * её чем-то похожим значило бы выдумывать знак, которого игрок больше
+ * нигде не встретит. Поэтому звёздность читается по длине ряда.
+ */
+function starMark(count) {
+  return "⭐".repeat(Math.max(0, Math.min(5, Number(count) || 0)));
+}
+
 async function loadSquad() {
   try {
     const response = await fetch("api/squad", {
@@ -10993,9 +11003,7 @@ function squadRow(one) {
 
   const stars = document.createElement("span");
   stars.className = "squad-stars";
-  // Звёзды числом, а не пятью значками: пять звёзд в строке шире
-  // имени, а разобрать их всё равно приходится по счёту
-  stars.textContent = one.stars + "⭐";
+  stars.textContent = starMark(one.stars);
   row.appendChild(stars);
   return row;
 }
@@ -11007,7 +11015,7 @@ async function openFighter(npcId) {
     const data = await post("api/squad", { action: "open", npc: npcId });
     const card = data.fighter;
     el("sheet-title").textContent =
-      card.name + " [" + card.level + "] " + card.stars + "⭐";
+      card.name + " [" + card.level + "] " + starMark(card.stars);
     el("sheet-note").textContent =
       card.fclass.emoji + " " + card.fclass.title + " · " + card.state_text;
     const list = el("sheet-list");
@@ -16712,7 +16720,7 @@ function recruitCard(one, data) {
   const said = document.createElement("p");
   said.className = "recruit-said";
   said.textContent =
-    one.class_emoji + " " + one.class_title + " · " + one.stars + "⭐";
+    one.class_emoji + " " + one.class_title + " · " + starMark(one.stars);
   body.append(name, said);
 
   body.appendChild(
@@ -18854,7 +18862,13 @@ function guardRow(spot) {
   return row;
 }
 
-/** Наём: кто на руках, кого ставить здесь и что предлагают взять. */
+/** Охрана точки: кто из отряда её держит и кого сюда поставить.
+
+ * Прилавка здесь больше нет. Охрану не покупают — на точку ставят
+ * своего бойца, нанятого в школе: со своими характеристиками, своим
+ * оружием и своей бронёй. Поэтому вместо товара здесь отряд, и у
+ * каждого видно, свободен он, занят другой точкой или лежит.
+ */
 function hireBox(data) {
   const hire = data.hire;
   const box = document.createElement("section");
@@ -18862,61 +18876,81 @@ function hireBox(data) {
   box.id = "turf-hire";
   const head = document.createElement("h2");
   head.className = "shelf-head";
-  head.textContent = hire.side === "merc" ? "Наёмники" : "Патрульные";
+  head.textContent = "Охрана точки";
   box.appendChild(head);
 
-  // Зачем это вообще. Прилавок сам по себе ничего не объясняет, а
+  // Зачем это вообще. Список сам по себе ничего не объясняет, а
   // стоящему на своей пустой точке надо сказать прямо: доход идёт за
   // то, что её держат, а не за флажок на карте
   if (hire.can_post) {
     const call = document.createElement("p");
     call.className = "thing-note hire-call";
-    const ready = hire.mine.filter((one) => !one.spot).length;
-    call.textContent = ready
-      ? "🛡 " + hire.spot_title + " за вами. Выставь человека из резерва:"
-        + " без охраны точка не платит."
-      : "🛡 " + hire.spot_title + " за вами, охраны на ней нет. Найми ниже"
-        + " и выставь здесь же: без охраны точка не платит.";
+    call.textContent =
+      "🛡 " + hire.spot_title + " за вами. Поставь сюда бойца: без охраны"
+      + " точка не платит.";
     box.appendChild(call);
   }
 
-  const note = document.createElement("p");
-  note.className = "thing-note";
-  note.textContent = "На руках " + hire.hired + " из " + hire.cap
-    + ". Платишь ты, и гибнут они насовсем.";
-  box.appendChild(note);
+  if (!hire.squad) {
+    const empty = document.createElement("p");
+    empty.className = "thing-note";
+    empty.textContent =
+      "Отряда пока нет. Бойцов нанимают в Школе боевых искусств — там же,"
+      + " где учат приёмам.";
+    box.appendChild(empty);
+    return box;
+  }
 
-  // Свои: кто в резерве и кого можно поставить здесь
   hire.mine.forEach((one) => {
     const row = document.createElement("article");
-    row.className = "neighbour" + (one.spot ? " away" : "");
+    row.className =
+      "neighbour" + (one.spot || one.hurt ? " away" : "");
     const line = document.createElement("header");
     line.className = "neighbour-head";
     const name = document.createElement("span");
     name.className = "neighbour-name";
     if (one.picture) {
-      const face = picture(one.picture, one.title, "");
+      const face = picture(one.picture, one.title, one.fclass || "");
       face.className = "npc-face";
       name.appendChild(face);
     }
     name.appendChild(
-      document.createTextNode(" " + one.title + " [" + one.level + "]")
+      document.createTextNode(
+        " " + one.title + " [" + one.level + "] " + starMark(one.stars)
+      )
     );
     const where = document.createElement("span");
     where.className = "neighbour-clan";
-    where.textContent = one.spot ? "на точке" : "в резерве";
+    // Трижды разное состояние — трижды разные слова: «в резерве» про
+    // лежачего было бы неправдой, а по ней игрок жмёт кнопку
+    where.textContent = one.hurt
+      ? "в больнице"
+      : one.spot === hire.spot
+        ? "здесь"
+        : one.spot
+          ? "на другой точке"
+          : "свободен";
     line.append(name, where);
     row.appendChild(line);
-    if (!one.spot && hire.can_post) {
-      const buttons = document.createElement("div");
-      buttons.className = "thing-buttons";
+
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    if (one.spot === hire.spot && hire.spot) {
       buttons.appendChild(
-        button("Выставить здесь", {
-          onClick: () => turfAction({ action: "post", hire_id: one.id }),
+        button("Снять с точки", {
+          secondary: true,
+          onClick: () => turfAction({ action: "recall", npc: one.id }),
         })
       );
-      row.appendChild(buttons);
+    } else if (!one.hurt && hire.can_post) {
+      buttons.appendChild(
+        button("Поставить здесь", {
+          neon: true,
+          onClick: () => turfAction({ action: "post", npc: one.id }),
+        })
+      );
     }
+    if (buttons.childElementCount) row.appendChild(buttons);
     box.appendChild(row);
   });
 
@@ -18926,44 +18960,6 @@ function hireBox(data) {
     why.textContent = hire.why;
     box.appendChild(why);
   }
-
-  // Прилавок: три ступени, и каждая со своим лицом и своей ценой
-  const shelf = document.createElement("div");
-  shelf.className = "hire-shelf";
-  hire.grades.forEach((one) => {
-    const card = document.createElement("article");
-    card.className = "hire-card";
-    // Лицо живёт в рамке, а не само по себе: не доехавшая картинка
-    // заменяется значком класса — узлом вместо `img`, — и без рамки
-    // карточка складывалась бы, а кнопка цены растягивалась на её место
-    const frame = document.createElement("div");
-    frame.className = "hire-frame";
-    if (one.picture) {
-      const face = picture(one.picture, one.title, one.fclass || "");
-      face.className = "hire-face";
-      frame.appendChild(face);
-    } else {
-      frame.textContent = one.fclass || "";
-    }
-    card.appendChild(frame);
-    const title = document.createElement("p");
-    title.className = "hire-title";
-    title.textContent = one.title;
-    card.appendChild(title);
-    const said = document.createElement("p");
-    said.className = "hire-note";
-    said.textContent = one.fclass + " " + one.level + " ур.";
-    card.appendChild(said);
-    card.appendChild(
-      button(num(one.price) + " 💰", {
-        disabled: !hire.left,
-        hint: "Больше " + hire.cap + " на руках не держат.",
-        onClick: () => turfAction({ action: "hire", grade: one.code }),
-      })
-    );
-    shelf.appendChild(card);
-  });
-  box.appendChild(shelf);
   return box;
 }
 

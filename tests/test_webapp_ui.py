@@ -9322,12 +9322,48 @@ async def test_the_squad_lists_its_fighters_with_class_and_stars(server):
         assert await page.locator("#squad-count").inner_text() == "3 из 6"
         said = await page.locator(".squad-row .squad-name").all_inner_texts()
         assert said == ["Марко Отмычка [3]", "Дэн Кирпич [4]", "Тео Сквозняк [5]"]
+        # Звёздность рядом значков, а не числом: три звезды — ⭐⭐⭐
         stars = await page.locator(".squad-row .squad-stars").all_inner_texts()
-        assert stars == ["1⭐", "2⭐", "3⭐"]
+        assert stars == ["⭐", "⭐⭐", "⭐⭐⭐"]
         # Лежачего видно по самой строке, а не по подписи в ней
         hurt = page.locator(".squad-row.hurt")
         assert await hurt.count() == 1
         assert "В больнице" in await hurt.inner_text()
+        await browser.close()
+
+
+async def test_the_stars_are_drawn_one_by_one_and_never_empty(server):
+    """Звёздность — ряд значков по числу звёзд, без пустых.
+
+    Значка пустой звезды в наборе нет, и рисовать её чем-то похожим
+    значило бы выдумать знак, которого игрок больше нигде не встретит.
+    Поэтому у пятизвёздного пять штук, а у однозвёздного одна — и
+    звёздность читается по длине ряда.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    rows = squad_state(3)
+    rows["rows"][0]["stars"] = 5
+    rows["rows"][1]["stars"] = 1
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), squad=rows
+        )
+        await page.locator("#hero-tabs .hero-act", has_text="Отряды").click()
+        await page.wait_for_selector(".squad-row")
+
+        stars = await page.locator(".squad-row .squad-stars").all_inner_texts()
+        assert stars[0] == "⭐⭐⭐⭐⭐" and stars[1] == "⭐"
+        # Ни одного числа рядом со звёздами
+        assert not any(ch.isdigit() for ch in "".join(stars)), stars
+
+        # Длинное имя уступает звёздам место, а не наоборот: ряд целый
+        long = page.locator(".squad-row").first
+        cut = await long.locator(".squad-stars").evaluate(
+            "node => node.scrollWidth > node.clientWidth + 1"
+        )
+        assert not cut, "ряд звёзд обрезан"
         await browser.close()
 
 
@@ -9402,7 +9438,10 @@ async def test_the_school_shows_three_candidates_with_stars_and_prices(server):
         names = await page.locator(".recruit-name").all_inner_texts()
         assert names == ["Марко Отмычка", "Дэн Кирпич", "Тео Сквозняк"]
         said = await page.locator(".recruit-said").first.inner_text()
-        assert "Воин" in said and "1⭐" in said
+        assert "Воин" in said and said.endswith("⭐")
+        # У четырёхзвёздного ряд длиннее — по нему звёздность и читают
+        four = await page.locator(".recruit-said").nth(1).inner_text()
+        assert four.endswith("⭐⭐⭐⭐")
         prices = await page.locator(".recruit .btn").all_inner_texts()
         assert [one.strip() for one in prices[:2]] == [
             "300 💰 нанять", "450 💰 нанять"
@@ -14045,24 +14084,21 @@ async def test_the_war_map_shows_the_spots_and_the_call_to_arms(server, db):
         await browser.close()
 
 
-async def test_the_hire_counter_fits_its_cards_on_a_narrow_phone(server, db):
-    """Прилавок найма: кнопка по ширине карточки, лицо целиком.
+async def test_the_guard_list_fits_a_narrow_phone(server, db):
+    """Охрана точки: лицо целиком, кнопка в рамке, экран не едет вбок.
 
-    Общий `min-width` у кнопок рассчитан на строку во весь экран, а на
-    прилавке их три в ряд — и цена вылезала за свою рамку. Лицо же
-    нарисовано в полный рост, и квадратная рамка срезала ему голову и
-    ноги. Мерим на узком экране: на широком обе беды прячутся.
+    Лицо бойца нарисовано в полный рост, и квадратная рамка срезала бы
+    ему голову и ноги. Мерим на узком экране: на широком такие беды
+    прячутся.
     """
-    from bot.hire_service import hire
     from bot.webapp.turf import build_war
-    from tests.test_turf import NOW
     from tests.test_police import cop
+    from tests.test_turf import NOW, a_guard
 
     officer = await cop(db, 71, "Ragnar", where="pawnshop")
-    officer.credits = 50_000
     await db.save_player(officer)
     await db.take_turf("pawnshop", "service", "police", NOW - 3 * 24 * 3600)
-    await hire(db, await db.get_player(71), "patrol_5", now=NOW)
+    await a_guard(db, 71, "", level=5, name="Патрульный")
     officer = await db.get_player(71)
     board = await build_war(db, officer, None, NOW)
 
@@ -14076,31 +14112,40 @@ async def test_the_hire_counter_fits_its_cards_on_a_narrow_phone(server, db):
         await page.set_viewport_size({"width": 360, "height": 900})
         await page.wait_for_selector("#hero:not(.hidden)")
         await open_screen(page, "turf")
-        await page.wait_for_selector("#turf-hire .hire-card")
+        await page.wait_for_selector("#turf-hire .neighbour")
         await page.evaluate("stopTurfPoll()")
 
         measured = await page.evaluate("""() => {
-            const cards = [...document.querySelectorAll("#turf-hire .hire-card")];
+            const rows = [...document.querySelectorAll("#turf-hire .neighbour")];
             return {
-                spill: cards.map((card) => Math.round(
-                    card.querySelector(".btn").getBoundingClientRect().right
-                    - card.getBoundingClientRect().right
-                )),
-                faces: cards.map((card) => {
-                    const face = card.querySelector(".hire-face");
+                spill: rows.map((row) => {
+                    const btn = row.querySelector(".btn");
+                    if (!btn) return 0;
+                    return Math.round(
+                        btn.getBoundingClientRect().right
+                        - row.getBoundingClientRect().right
+                    );
+                }),
+                faces: rows.map((row) => {
+                    const face = row.querySelector(".npc-face");
+                    if (!face) return null;
                     const box = face.getBoundingClientRect();
                     return [Math.round(box.width), Math.round(box.height),
-                            face.naturalWidth, face.naturalHeight];
-                }),
+                            getComputedStyle(face).objectPosition];
+                }).filter(Boolean),
                 scroll: document.documentElement.scrollWidth
                     - document.documentElement.clientWidth,
             };
         }""")
-        assert len(measured["spill"]) == 3
+        assert measured["spill"], "строка бойца должна быть"
         assert all(one <= 0 for one in measured["spill"]), "кнопка в своей рамке"
-        for width, height, own_width, own_height in measured["faces"]:
-            # Пропорция та же, что у файла: значит, ничего не срезано
-            assert abs(height / width - own_height / own_width) < 0.05
+        for width, height, position in measured["faces"]:
+            # Кружок в строку — квадрат, и это нормально. А вот режется
+            # он по верху: портрет нарисован в полный рост, и квадрат
+            # по центру показывал бы туловище вместо лица
+            assert width == height, (width, height)
+            # Браузер отдаёт «50% 0%» — это и есть верх
+            assert position.split()[1] in ("top", "0%"), position
         assert measured["scroll"] == 0, "и экран вбок не уезжает"
         await browser.close()
 
@@ -14262,26 +14307,26 @@ async def test_the_finished_siege_shows_its_outcome_and_its_log(server, db):
         await browser.close()
 
 
-async def test_the_turf_screen_hires_and_posts_the_guard(server, db):
-    """Наём на карте войны: счёт, резерв, прилавок и охрана точки."""
+async def test_the_turf_screen_posts_a_fighter_on_the_spot(server, db):
+    """Охрана точки: кто её держит, кто свободен и кого сюда поставить.
+
+    Прилавка наёмников больше нет: охрану не покупают, на точку ставят
+    своего бойца из школы. Поэтому здесь отряд, а не товар.
+    """
     from bot.game.health import now_ts
-    from bot.hire_service import hire, post
+    from bot.squad_service import post as post_guard
     from bot.webapp.turf import build_war
     from tests.test_robbery import family, stand
+    from tests.test_turf import a_guard
 
     moment = now_ts()
     don, squad, clan = await family(db)
     await stand(db, squad, "bar")
     await db.take_turf("bar", "clan", str(clan.id), moment - 5 * 3600)
+    standing = await a_guard(db, don.user_id, "", level=9, name="Громила")
+    await a_guard(db, don.user_id, "", level=7, name="Резерв")
     boss = await db.get_player(don.user_id)
-    boss.credits = 20_000
-    await db.save_player(boss)
-    boss = await db.get_player(don.user_id)
-    await hire(db, boss, "merc_9", now=moment)
-    await hire(db, await db.get_player(don.user_id), "merc_7", now=moment)
-    mine = await db.hirelings_of(don.user_id)
-    await post(db, await db.get_player(don.user_id), int(mine[0]["id"]),
-               "bar", now=moment)
+    await post_guard(db, boss, standing.user_id, "bar", moment)
     boss = await db.get_player(don.user_id)
     board = await build_war(db, boss, None, moment)
 
@@ -14289,7 +14334,7 @@ async def test_the_turf_screen_hires_and_posts_the_guard(server, db):
         browser, page = await open_war(pw, server, boss, board, images=True)
 
         heads = await page.locator("#turf-body .shelf-head").all_inner_texts()
-        assert "Наёмники" in heads
+        assert "Охрана точки" in heads
 
         # Точка под ногами стоит первой полкой: кто на ней стоит и от
         # кого — это и есть ответ на «ставить ли ещё одного»
@@ -14299,24 +14344,16 @@ async def test_the_turf_screen_hires_and_posts_the_guard(server, db):
         assert "от Дон-1" in said, "видно, чей это человек"
 
         panel = page.locator("#turf-hire")
-        assert "На руках 2 из 5" in await panel.inner_text()
         rows = await panel.locator(".neighbour").all_inner_texts()
         assert len(rows) == 2
-        assert "на точке" in rows[0] and "в резерве" in rows[1]
+        assert "здесь" in rows[0] and "свободен" in rows[1]
+        # Звёздность рядом значков, и в этой строке тоже
+        assert "⭐" in rows[0]
         # Своего второго на ту же точку не ставят, и так и сказано
         assert "уже стоит человек" in await panel.inner_text()
 
-        # Прилавок: три карточки с лицами и ценами
-        cards = panel.locator(".hire-card")
-        assert await cards.count() == 3
-        assert await cards.locator(".hire-face").count() == 3
-        prices = await cards.locator(".btn").all_inner_texts()
-        assert "300" in prices[0] and "1\u00a0200" in prices[2]
-        # И лица едут из папки нанятых, а не откуда попало
-        first = await cards.locator(".hire-face").first.get_attribute("src")
-        assert "/avatars/npc/" in first
-
-        # В резерве лицо тоже стоит, рядом с именем
+        # У стоящего — «снять», у свободного кнопки нет: место занято
+        assert "Снять с точки" in rows[0]
         assert await panel.locator(".neighbour .npc-face").count() == 2
 
         # Строка точки считает выставленных, а не городскую охрану
@@ -14333,25 +14370,22 @@ async def test_the_turf_screen_hires_and_posts_the_guard(server, db):
 
 
 async def test_the_won_spot_offers_the_guard_right_away(server, db):
-    """Взял точку — прилавок охраны под итогом, а не где-то потом.
+    """Взял точку — список охраны под итогом, а не где-то потом.
 
     Итог тут поддельный нарочно: чем кончился настоящий штурм, решает
     бросок, а предмет проверки — что победитель видит, куда ставить
     человека, не выходя с экрана.
     """
     from bot.game.health import now_ts
-    from bot.hire_service import hire
     from bot.webapp.turf import build_war
     from tests.test_robbery import family, stand
+    from tests.test_turf import a_guard
 
     moment = now_ts()
     don, squad, clan = await family(db)
     await stand(db, squad, "bar")
     await db.take_turf("bar", "clan", str(clan.id), moment)
-    boss = await db.get_player(don.user_id)
-    boss.credits = 20_000
-    await db.save_player(boss)
-    await hire(db, await db.get_player(don.user_id), "merc_7", now=moment)
+    await a_guard(db, don.user_id, "", level=7, name="Головорез")
     boss = await db.get_player(don.user_id)
     body = await build_war(db, boss, None, moment)
     body["result"] = {
@@ -14375,10 +14409,10 @@ async def test_the_won_spot_offers_the_guard_right_away(server, db):
 
         shelf = page.locator("#turf-hire")
         assert await shelf.count() == 1
-        assert "Бар за вами" in await shelf.locator(".hire-call").inner_text()
-        assert "из резерва" in await shelf.locator(".hire-call").inner_text()
+        said = await shelf.locator(".hire-call").inner_text()
+        assert "Бар за вами" in said and "без охраны точка не платит" in said
         buttons = await shelf.locator(".neighbour .btn").all_inner_texts()
-        assert buttons == ["Выставить здесь"]
+        assert buttons == ["Поставить здесь"]
         await browser.close()
 
 

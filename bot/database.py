@@ -4733,7 +4733,10 @@ class Database:
     async def squad_of(self, owner_id: int) -> list[dict]:
         """Весь отряд этого игрока — и на ногах, и в больнице."""
         async with self.conn.execute(
-            "SELECT * FROM squad WHERE owner_id = ? ORDER BY hired_at, npc_id",
+            # Номера идут вниз (−100, −101, …), поэтому по убыванию:
+            # отряд читается в порядке найма, а не наоборот
+            "SELECT * FROM squad WHERE owner_id = ? "
+            "ORDER BY hired_at, npc_id DESC",
             (owner_id,),
         ) as cursor:
             rows = await cursor.fetchall()

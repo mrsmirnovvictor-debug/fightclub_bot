@@ -224,8 +224,9 @@ def _shut_board(here: str, said: str) -> dict[str, Any]:
         "squad": MAX_GARRISON,
         "abandon_hours": ABANDON_HOURS,
         "said": said,
-        "hire": {"mine": [], "squad": 0, "spot": "", "spot_title": "",
-                 "guarding": False, "can_post": False, "why": ""},
+        "hire": {"mine": [], "squad": 0, "side": "", "spot": "",
+                 "spot_title": "", "guarding": False, "can_post": False,
+                 "why": ""},
         "here_spot": None,
         "note": (
             "За территории воюют семьи и службы. Вступи в клан или иди "
@@ -329,7 +330,17 @@ async def _hire_rows(
                 "hurt": bool(row_npc["hospital_at"]),
             }
         )
-    body: dict[str, Any] = {"mine": held, "squad": len(held)}
+    # `side` — за кого боец воюет. Панель охраны без стороны не нужна
+    # вовсе: ставить человека на точку может только семья или служба,
+    # и одиночке этот разговор показывать незачем
+    from bot.turf_service import owner_of
+
+    side = owner_of(player)
+    body: dict[str, Any] = {
+        "mine": held,
+        "squad": len(held),
+        "side": "" if side.nobody else side.kind,
+    }
     row = next((one for one in spots if one["code"] == here), None)
     body["spot"] = here if row else ""
     body["spot_title"] = row["title"] if row else ""
