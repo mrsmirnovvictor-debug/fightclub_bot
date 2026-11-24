@@ -261,6 +261,26 @@ def daily_icon(ready: bool) -> str:
     return f"{DAILY_REWARDS}/daily_reward_{'claim' if ready else 'claimed'}.webp"
 
 
+# Лица бойцов отряда. Папка своя, не общая с нанятыми на точки:
+# нанятые — это ступень с одним лицом на всех, а боец отряда берёт
+# случайное из тридцати двух и носит его всю жизнь
+RECRUITS = f"{AVATARS}/npc_recruits"
+
+# Сколько лиц в пуле. Число живёт здесь, а не в правилах отряда:
+# правила про звёзды и уровни, а это про то, что выгружено в бакет
+RECRUIT_FACES = 32
+
+
+def recruit_face(number: int) -> str:
+    """Лицо бойца отряда: avatars/npc_recruits/npc_male_07.png.
+
+    Номер от единицы до `RECRUIT_FACES`. Лица не привязаны к классу:
+    класс боец показывает в бою одной из четырёх моделей, а на карточке
+    стоит обычный человек в городской одежде.
+    """
+    return f"{RECRUITS}/npc_male_{number:02d}.png"
+
+
 def ability_placeholder(tier: int) -> str:
     """Тень невыученного приёма: items/ability_placeholder_3.webp.
 
@@ -434,6 +454,9 @@ __all__ = [
     "REDESIGN",
     "ECONOMY",
     "DAILY_REWARDS",
+    "RECRUITS",
+    "RECRUIT_FACES",
+    "recruit_face",
     "daily_icon",
     "ability_placeholder",
     "wallet_icon",

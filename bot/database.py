@@ -1121,6 +1121,81 @@ CREATE TABLE IF NOT EXISTS hirelings (
 CREATE INDEX IF NOT EXISTS hirelings_owner ON hirelings(owner_id);
 CREATE INDEX IF NOT EXISTS hirelings_spot ON hirelings(spot);
 
+-- Отряд: кто чей и чем отличается. Сам боец лежит в `players` с
+-- отрицательным номером — оттуда у него рюкзак, вещи, здоровье и
+-- травмы, как у всякого бойца города. Здесь только то, чего у игрока
+-- не бывает: хозяин, звёздность, лицо и койка в больнице.
+CREATE TABLE IF NOT EXISTS squad (
+    npc_id      INTEGER PRIMARY KEY,
+    owner_id    INTEGER NOT NULL,
+    stars       INTEGER NOT NULL DEFAULT 1,
+    face        INTEGER NOT NULL DEFAULT 1,
+    hired_at    INTEGER NOT NULL DEFAULT 0,
+    -- Час, когда бойца вынесли с точки. Ноль — он на ногах; иначе
+    -- лежит, пока хозяин не заберёт
+    hospital_at INTEGER NOT NULL DEFAULT 0,
+    -- Точка, которую держит. Пусто — свободен и может идти в бой
+    spot        TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS squad_owner ON squad(owner_id);
+CREATE INDEX IF NOT EXISTS squad_spot ON squad(spot);
+
+-- Недельная витрина школы: три кандидата на игрока. Держится неделей,
+-- а не часом показа, и потому в ключе стоит начало недели: повторный
+-- заход в ту же неделю достаёт тех же троих, а не бросает заново.
+CREATE TABLE IF NOT EXISTS recruit_offers (
+    owner_id   INTEGER NOT NULL,
+    week       INTEGER NOT NULL,
+    slot       INTEGER NOT NULL,
+    class_code TEXT    NOT NULL,
+    stars      INTEGER NOT NULL,
+    face       INTEGER NOT NULL,
+    name       TEXT    NOT NULL,
+    -- Купленного кандидата со стенда не убираем, а гасим: по стенду
+    -- видно, кого уже взяли, и место не занимает кто-то новый
+    taken      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner_id, week, slot)
+);
+
+-- Сколько пересмотров витрины куплено на этой неделе. Отдельной
+-- строкой, а не полем в витрине: витрина переписывается каждым
+-- пересмотром, а счёт пересмотров переживает их все
+CREATE TABLE IF NOT EXISTS recruit_rolls (
+    owner_id INTEGER NOT NULL,
+    week     INTEGER NOT NULL,
+    done     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner_id, week)
+);
+
+-- Трансферный рынок школы: кто выставлен и почём. Строка живёт, пока
+-- лот не купят или не снимут; боец при этом остаётся в отряде хозяина
+-- и дерётся как обычно — продаётся не место, а человек
+CREATE TABLE IF NOT EXISTS transfers (
+    npc_id    INTEGER PRIMARY KEY,
+    owner_id  INTEGER NOT NULL,
+    price     INTEGER NOT NULL,
+    listed_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS transfers_owner ON transfers(owner_id);
+
+-- Встречные предложения по лоту: деньгами или своим бойцом с доплатой.
+-- Решает продавец, поэтому предложение живёт до его ответа, а не
+-- списывает деньги сразу: иначе покупатель платил бы за ожидание
+CREATE TABLE IF NOT EXISTS transfer_bids (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    npc_id   INTEGER NOT NULL,
+    buyer_id INTEGER NOT NULL,
+    -- Свой боец в обмен. Ноль — предложение одними деньгами
+    give_id  INTEGER NOT NULL DEFAULT 0,
+    extra    INTEGER NOT NULL DEFAULT 0,
+    made_at  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS transfer_bids_lot ON transfer_bids(npc_id);
+CREATE INDEX IF NOT EXISTS transfer_bids_buyer ON transfer_bids(buyer_id);
+
 -- Разовые работы по живой базе: сброс точек, пересчёт — всё, что
 -- делается один раз и не должно повториться при перезапуске. Миграции
 -- колонок лежат отдельно (`MIGRATIONS`): там форма, тут данные
@@ -4652,6 +4727,245 @@ class Database:
         )
         await self.conn.commit()
         return int(cursor.lastrowid)
+
+    # ---------- отряд ----------
+
+    async def squad_of(self, owner_id: int) -> list[dict]:
+        """Весь отряд этого игрока — и на ногах, и в больнице."""
+        async with self.conn.execute(
+            "SELECT * FROM squad WHERE owner_id = ? ORDER BY hired_at, npc_id",
+            (owner_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def squad_row(self, npc_id: int) -> dict | None:
+        """Строка отряда по бойцу. Пусто — такого бойца нет ни у кого."""
+        async with self.conn.execute(
+            "SELECT * FROM squad WHERE npc_id = ?", (npc_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def squad_at(self, spot: str) -> list[dict]:
+        """Кто держит эту точку."""
+        async with self.conn.execute(
+            "SELECT * FROM squad WHERE spot = ? ORDER BY npc_id", (spot,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def next_npc_id(self) -> int:
+        """Свободный отрицательный номер под нового бойца.
+
+        Номера идут вниз от сотни: единицу занял Тренер, а запас между
+        ним и отрядом оставлен нарочно — под других людей без аккаунта,
+        которых город заведёт позже.
+        """
+        async with self.conn.execute(
+            "SELECT MIN(user_id) FROM players WHERE user_id < 0"
+        ) as cursor:
+            row = await cursor.fetchone()
+        lowest = (row[0] if row and row[0] is not None else 0) or 0
+        return min(-100, lowest - 1)
+
+    async def add_squad(
+        self, npc_id: int, owner_id: int, stars: int, face: int, hired_at: int
+    ) -> None:
+        """Записать бойца в отряд."""
+        await self.conn.execute(
+            "INSERT INTO squad (npc_id, owner_id, stars, face, hired_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (npc_id, owner_id, stars, face, hired_at),
+        )
+        await self.conn.commit()
+
+    async def drop_squad(self, npc_id: int) -> None:
+        """Убрать бойца из отряда. Саму карточку чистит служба."""
+        await self.conn.execute("DELETE FROM squad WHERE npc_id = ?", (npc_id,))
+        await self.conn.commit()
+
+    async def hand_over_squad(self, npc_id: int, owner_id: int) -> None:
+        """Передать бойца другому хозяину: трансфер и обмен.
+
+        Точка при этом слетает: держать чужую точку человек нового
+        хозяина не может, а снимать её молча нельзя — это видно в бою.
+        """
+        await self.conn.execute(
+            "UPDATE squad SET owner_id = ?, spot = '' WHERE npc_id = ?",
+            (owner_id, npc_id),
+        )
+        await self.conn.commit()
+
+    async def set_squad_hospital(self, npc_id: int, moment: int) -> None:
+        """Положить бойца в больницу или выписать его (ноль)."""
+        await self.conn.execute(
+            "UPDATE squad SET hospital_at = ?, spot = '' WHERE npc_id = ?"
+            if moment
+            else "UPDATE squad SET hospital_at = ? WHERE npc_id = ?",
+            (moment, npc_id),
+        )
+        await self.conn.commit()
+
+    async def set_squad_spot(self, npc_id: int, spot: str) -> None:
+        """Поставить бойца на точку или снять с неё (пустая строка)."""
+        await self.conn.execute(
+            "UPDATE squad SET spot = ? WHERE npc_id = ?", (spot, npc_id)
+        )
+        await self.conn.commit()
+
+    # ---------- витрина найма ----------
+
+    async def recruit_offers(self, owner_id: int, week: int) -> list[dict]:
+        """Кандидаты этой недели у этого игрока."""
+        async with self.conn.execute(
+            "SELECT * FROM recruit_offers WHERE owner_id = ? AND week = ? "
+            "ORDER BY slot",
+            (owner_id, week),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def put_recruit_offers(
+        self, owner_id: int, week: int, rows: list[dict]
+    ) -> None:
+        """Выложить новую витрину, стерев прежнюю этой же недели."""
+        await self.conn.execute(
+            "DELETE FROM recruit_offers WHERE owner_id = ? AND week = ?",
+            (owner_id, week),
+        )
+        await self.conn.executemany(
+            "INSERT INTO recruit_offers "
+            "(owner_id, week, slot, class_code, stars, face, name) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    owner_id,
+                    week,
+                    number,
+                    one["class_code"],
+                    one["stars"],
+                    one["face"],
+                    one["name"],
+                )
+                for number, one in enumerate(rows)
+            ],
+        )
+        await self.conn.commit()
+
+    async def take_recruit_offer(
+        self, owner_id: int, week: int, slot: int
+    ) -> bool:
+        """Погасить кандидата. Ложь — его уже забрали этим же запросом.
+
+        Проверка и гашение одним оператором: два нажатия подряд не
+        должны дать двух бойцов по одной цене.
+        """
+        cursor = await self.conn.execute(
+            "UPDATE recruit_offers SET taken = 1 "
+            "WHERE owner_id = ? AND week = ? AND slot = ? AND taken = 0",
+            (owner_id, week, slot),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def recruit_rolls(self, owner_id: int, week: int) -> int:
+        """Сколько пересмотров витрины куплено на этой неделе."""
+        async with self.conn.execute(
+            "SELECT done FROM recruit_rolls WHERE owner_id = ? AND week = ?",
+            (owner_id, week),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    async def bump_recruit_rolls(self, owner_id: int, week: int) -> int:
+        """Засчитать пересмотр и вернуть новый счёт."""
+        await self.conn.execute(
+            "INSERT INTO recruit_rolls (owner_id, week, done) VALUES (?, ?, 1) "
+            "ON CONFLICT(owner_id, week) DO UPDATE SET done = done + 1",
+            (owner_id, week),
+        )
+        await self.conn.commit()
+        return await self.recruit_rolls(owner_id, week)
+
+    # ---------- трансферный рынок ----------
+
+    async def put_transfer(self, npc_id: int, owner_id: int, price: int, at: int) -> None:
+        """Выставить бойца или переписать цену лота."""
+        await self.conn.execute(
+            "INSERT INTO transfers (npc_id, owner_id, price, listed_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(npc_id) DO UPDATE SET "
+            "owner_id = excluded.owner_id, price = excluded.price",
+            (npc_id, owner_id, price, at),
+        )
+        await self.conn.commit()
+
+    async def drop_transfer(self, npc_id: int) -> None:
+        """Снять лот и все встречные предложения по нему."""
+        await self.conn.execute("DELETE FROM transfers WHERE npc_id = ?", (npc_id,))
+        await self.conn.execute(
+            "DELETE FROM transfer_bids WHERE npc_id = ?", (npc_id,)
+        )
+        await self.conn.commit()
+
+    async def transfer_of(self, npc_id: int) -> dict | None:
+        """Лот по бойцу. Пусто — боец не выставлен."""
+        async with self.conn.execute(
+            "SELECT * FROM transfers WHERE npc_id = ?", (npc_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def list_transfers(self, limit: int = 50) -> list[dict]:
+        """Витрина трансферов: свежие лоты первыми."""
+        async with self.conn.execute(
+            "SELECT * FROM transfers ORDER BY listed_at DESC, npc_id LIMIT ?",
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def add_bid(
+        self, npc_id: int, buyer_id: int, give_id: int, extra: int, at: int
+    ) -> int:
+        """Оставить встречное предложение по лоту."""
+        cursor = await self.conn.execute(
+            "INSERT INTO transfer_bids (npc_id, buyer_id, give_id, extra, made_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (npc_id, buyer_id, give_id, extra, at),
+        )
+        await self.conn.commit()
+        return int(cursor.lastrowid or 0)
+
+    async def bids_for(self, npc_id: int) -> list[dict]:
+        """Все предложения по лоту, старые первыми."""
+        async with self.conn.execute(
+            "SELECT * FROM transfer_bids WHERE npc_id = ? ORDER BY id", (npc_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def bid_row(self, bid_id: int) -> dict | None:
+        async with self.conn.execute(
+            "SELECT * FROM transfer_bids WHERE id = ?", (bid_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def drop_bid(self, bid_id: int) -> bool:
+        """Снять предложение. Ложь — его уже сняли или приняли."""
+        cursor = await self.conn.execute(
+            "DELETE FROM transfer_bids WHERE id = ?", (bid_id,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def drop_bids_of(self, npc_id: int) -> None:
+        """Снять предложения, в которых этот боец отдавался в обмен."""
+        await self.conn.execute(
+            "DELETE FROM transfer_bids WHERE give_id = ?", (npc_id,)
+        )
+        await self.conn.commit()
 
     async def hirelings_of(self, owner_id: int) -> list[dict]:
         """Все нанятые этого бойца: и в резерве, и на точках."""
