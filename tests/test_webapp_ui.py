@@ -27,6 +27,7 @@ from bot.models import Player
 from bot.game.locations import Service
 from bot.webapp.card import build_card, build_magic, build_shop, build_topup
 from bot.webapp.server import create_app
+from bot.webapp.squad import EMPTY_NOTE as SQUAD_EMPTY
 from tests.test_webapp import TOKEN, make_init_data
 
 async_playwright = pytest.importorskip(
@@ -1034,6 +1035,7 @@ async def open_page(
     police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
     quests=None, study=None, turf=None, crowd=None, elections=None,
     cars=None, keys=None, dorm=None, charge=None, dojo=None, barber=None,
+    squad=None, hire=None,
     court=None, blackout=None, casino=None, ladder=None,
     images=False,
     broken=None,
@@ -1101,6 +1103,11 @@ async def open_page(
     await page.route("**/api/dorm", canned(dorm or {}))
     await page.route("**/api/charge", canned(charge or {}))
     await page.route("**/api/dojo", canned(dojo or {}))
+    await page.route(
+        "**/api/squad",
+        canned(squad or {"rows": [], "limit": 6, "note": SQUAD_EMPTY}),
+    )
+    await page.route("**/api/hire", canned(hire or {"cards": []}))
     await page.route("**/api/barber", canned(barber or {}))
     # Ключи — либо один список машин на руках, либо весь ответ целиком:
     # у этого экрана есть и вторая полка, «У этого здания»
@@ -9277,6 +9284,70 @@ async def test_the_word_stands_in_until_the_icon_arrives(server):
         await browser.close()
 
 
+def squad_state(rows: int = 2) -> dict:
+    """Отряд так, как его отдаёт сервер."""
+    people = [
+        {
+            "id": -100 - number,
+            "name": ["Марко Отмычка", "Дэн Кирпич", "Тео Сквозняк"][number],
+            "level": 3 + number,
+            "stars": 1 + number,
+            "face": f"https://example.invalid/npc_male_0{number + 1}.png",
+            "fclass": ["warrior", "tank", "assassin"][number],
+            "class_title": ["Воин", "Танк", "Ассасин"][number],
+            "class_emoji": ["⚔️", "🛡️", "🗡️"][number],
+            "hp": 80,
+            "max_hp": 100,
+            "state": "hospital" if number == 1 else "free",
+            "state_text": "В больнице" if number == 1 else "Свободен",
+            "spot": "",
+        }
+        for number in range(rows)
+    ]
+    return {"rows": people, "limit": 6, "note": "" if people else SQUAD_EMPTY}
+
+
+async def test_the_squad_lists_its_fighters_with_class_and_stars(server):
+    """Боец строкой: лицо, имя с уровнем, класс и где он сейчас."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), squad=squad_state(3)
+        )
+        await page.locator("#hero-tabs .hero-act", has_text="Отряды").click()
+        await page.wait_for_selector(".squad-row")
+
+        assert await page.locator("#squad-count").inner_text() == "3 из 6"
+        said = await page.locator(".squad-row .squad-name").all_inner_texts()
+        assert said == ["Марко Отмычка [3]", "Дэн Кирпич [4]", "Тео Сквозняк [5]"]
+        stars = await page.locator(".squad-row .squad-stars").all_inner_texts()
+        assert stars == ["1⭐", "2⭐", "3⭐"]
+        # Лежачего видно по самой строке, а не по подписи в ней
+        hurt = page.locator(".squad-row.hurt")
+        assert await hurt.count() == 1
+        assert "В больнице" in await hurt.inner_text()
+        await browser.close()
+
+
+async def test_a_fighter_without_a_face_keeps_his_class_mark(server):
+    """Картинка не приехала — остаётся значок класса, а не пустая рамка."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), squad=squad_state(1)
+        )
+        await page.locator("#hero-tabs .hero-act", has_text="Отряды").click()
+        await page.wait_for_selector(".squad-row")
+        # Адреса из стенда не отвечают: картинка упадёт сама
+        await page.wait_for_selector(".squad-face.emoji")
+        assert await page.locator(".squad-face.emoji").inner_text() == "⚔️"
+        await browser.close()
+
+
 async def test_the_squad_section_says_it_is_empty(server):
     """«Отряды» — четвёртый раздел, и пока в нём никого."""
     player = make_player()
@@ -9292,8 +9363,9 @@ async def test_the_squad_section_says_it_is_empty(server):
         ], said
 
         await page.locator("#hero-tabs .hero-act", has_text="Отряды").click()
+        await page.wait_for_selector("#hero-squad:not(.hidden)")
         body = await page.locator("#hero-squad").inner_text()
-        assert body.strip() == "В вашем отряде пока нет бойцов", body
+        assert "пока нет бойцов" in body, body
         # И горит только он: раздел, а не окно
         lit = await page.locator("#hero-tabs .hero-act.on").all_inner_texts()
         assert len(lit) == 1 and "Отряды" in lit[0]

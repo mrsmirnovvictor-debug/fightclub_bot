@@ -10711,6 +10711,9 @@ function pickHeroTab(name) {
   // Журнал заданий перечитываем при каждом заходе: бармен мог принять
   // работу, пока вкладка была закрыта
   if (name === "quests") loadQuests();
+  // Отряд — тем же правилом: боец мог выйти из больницы или вырасти,
+  // пока игрок смотрел на себя
+  if (name === "squad") loadSquad();
   paintHeroTabs();
 }
 
@@ -10894,6 +10897,152 @@ function renewSwitch(paper) {
     })
   );
   return box;
+}
+
+// ---------- отряд ----------
+//
+// Шесть бойцов, которых игрок нанял в школе. Вкладка стоит в карточке,
+// а не в школе, по той же причине, по какой там стоит рюкзак: отряд
+// боец носит с собой, и смотрят на него не только там, где нанимали.
+//
+// Карточку бойца рисует тот же `fighterCard`, что и карточку человека:
+// боец для сервера — такой же боец, и вёрстка у них одна. Своя была бы
+// копией, которая отстаёт на одну правку.
+
+let squadData = null;
+
+async function loadSquad() {
+  try {
+    const response = await fetch("api/squad", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Отряд не отвечает.");
+    renderSquad(await response.json());
+  } catch (error) {
+    el("squad-note").textContent = error.message;
+  }
+}
+
+async function squadAction(payload) {
+  try {
+    const data = await post("api/squad", payload);
+    haptic((feedback) => feedback.impactOccurred("light"));
+    if (data.card) render(data.card, true);
+    renderSquad(data);
+  } catch (error) {
+    popup("Отряд", error.message);
+    await loadSquad();
+  }
+}
+
+function renderSquad(data) {
+  squadData = data;
+  const note = el("squad-note");
+  if (note) note.textContent = data.said || data.note || "";
+  const list = el("squad-list");
+  if (!list) return;
+  list.textContent = "";
+  (data.rows || []).forEach((one) => list.appendChild(squadRow(one)));
+  const count = el("squad-count");
+  if (count) {
+    count.textContent = (data.rows || []).length + " из " + (data.limit || 6);
+  }
+}
+
+/** Боец строкой: лицо, имя, класс и то, где он сейчас. */
+function squadRow(one) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "squad-row" + (one.state === "hospital" ? " hurt" : "");
+  row.addEventListener("click", () => openFighter(one.id));
+
+  const pic = document.createElement("img");
+  pic.className = "squad-face";
+  pic.alt = "";
+  pic.loading = "lazy";
+  pic.decoding = "async";
+  // Лицо не приехало — остаётся значок класса: по нему боец всё равно
+  // отличим от соседа, а пустая рамка не отличима ни от чего
+  pic.addEventListener("error", () => {
+    const mark = document.createElement("span");
+    mark.className = "squad-face emoji";
+    mark.textContent = one.class_emoji;
+    pic.replaceWith(mark);
+  });
+  pic.src = one.face;
+  row.appendChild(pic);
+
+  const body = document.createElement("span");
+  body.className = "squad-body";
+  const name = document.createElement("span");
+  name.className = "squad-name";
+  name.textContent = one.name + " [" + one.level + "]";
+  const said = document.createElement("span");
+  said.className = "squad-said";
+  said.textContent =
+    one.class_emoji + " " + one.class_title + " · " + one.state_text;
+  body.append(name, said);
+  row.appendChild(body);
+
+  const stars = document.createElement("span");
+  stars.className = "squad-stars";
+  // Звёзды числом, а не пятью значками: пять звёзд в строке шире
+  // имени, а разобрать их всё равно приходится по счёту
+  stars.textContent = one.stars + "⭐";
+  row.appendChild(stars);
+  return row;
+}
+
+/** Карточка бойца: та же, что у человека, плюс кнопки хозяина. */
+async function openFighter(npcId) {
+  openSheet("Боец отряда", "");
+  try {
+    const data = await post("api/squad", { action: "open", npc: npcId });
+    const card = data.fighter;
+    el("sheet-title").textContent =
+      card.name + " [" + card.level + "] " + card.stars + "⭐";
+    el("sheet-note").textContent =
+      card.fclass.emoji + " " + card.fclass.title + " · " + card.state_text;
+    const list = el("sheet-list");
+    list.textContent = "";
+    list.appendChild(fighterCard(card));
+    list.appendChild(fighterActions(card));
+  } catch (error) {
+    el("sheet-note").textContent = error.message;
+  }
+}
+
+/** Что хозяин может сделать с этим бойцом прямо сейчас. */
+function fighterActions(card) {
+  const row = document.createElement("div");
+  row.className = "sheet-actions";
+  if (card.state === "hospital") {
+    row.appendChild(
+      button("Забрать из больницы", {
+        onClick: () => {
+          el("sheet").classList.add("hidden");
+          squadAction({ action: "discharge", npc: card.user_id });
+        },
+      })
+    );
+  }
+  row.appendChild(
+    button("Уволить", {
+      secondary: true,
+      onClick: async () => {
+        // Спрашиваем до того, как уволить: вернуть бойца нельзя, а
+        // нажать мимо — можно
+        const ok = await confirmAction(
+          "Уволить " + card.name + "? Вещи вернутся в рюкзак, а сам боец "
+            + "пропадёт из города — вернуть его будет нельзя."
+        );
+        if (!ok) return;
+        el("sheet").classList.add("hidden");
+        squadAction({ action: "dismiss", npc: card.user_id });
+      },
+    })
+  );
+  return row;
 }
 
 // ---------- страховая компания ----------

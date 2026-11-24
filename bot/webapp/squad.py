@@ -30,6 +30,14 @@ from bot.squad_service import fighters, showcase
 from bot.webapp.card import build_card
 
 
+# Что написано под пустым отрядом. Строка вынесена сюда, потому что её
+# читают в двух местах: экран и проверка экрана. Переписанная в одном
+# из них, она разошлась бы молча
+EMPTY_NOTE = (
+    "В вашем отряде пока нет бойцов. Нанять их можно в Школе боевых искусств."
+)
+
+
 def where_is(row: dict) -> tuple[str, str]:
     """Где боец и что об этом написать: код состояния и слова.
 
@@ -76,12 +84,7 @@ async def build_squad(
         "limit": SQUAD_LIMIT,
         "rows": [fighter_row(row, npc, moment) for row, npc in held],
         # Пустой отряд — не ошибка, а начало: про это и пишут словами
-        "note": (
-            ""
-            if held
-            else "В вашем отряде пока нет бойцов. Нанять их можно "
-            "в Школе боевых искусств."
-        ),
+        "note": "" if held else EMPTY_NOTE,
     }
 
 
@@ -164,4 +167,4 @@ async def build_hire(
     }
 
 
-__all__ = ["build_fighter", "build_hire", "build_squad", "fighter_row", "where_is"]
+__all__ = ["EMPTY_NOTE", "build_fighter", "build_hire", "build_squad", "fighter_row", "where_is"]
