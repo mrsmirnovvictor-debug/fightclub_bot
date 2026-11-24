@@ -561,6 +561,28 @@ async def test_without_a_squad_the_spot_button_sends_you_to_school(db):
     assert "Школе" in body["hire"]["why"]
 
 
+async def test_a_fighter_whose_boss_left_the_family_stops_defending_it(db):
+    """Хозяин ушёл из семьи — его боец за неё больше не дерётся.
+
+    Боец воюет за того, за кого воюет хозяин, и ни за кого больше.
+    Сторону его нигде не хранят, поэтому и менять нечего: она читается
+    у хозяина в тот миг, когда собирают гарнизон. Проверяем это там же,
+    а не на выходе из клана: выходов много — ушёл сам, выгнали,
+    уволился со службы, — и каждый пришлось бы помнить.
+    """
+    don, squad, clan = await family(db, size=2)
+    await db.take_turf("bar", "clan", str(clan.id), NOW)
+    await a_guard(db, squad[1], "bar", level=5, name="Боец семьи")
+
+    mine = owner_of_clan(clan.id)
+    assert len(await garrison(db, mine, [10], NOW, code="bar")) == 1
+
+    # Хозяин вышел из семьи — точка осталась, человек на ней тоже, а
+    # драться за неё ему больше не за кого
+    await db.remove_member(squad[1])
+    assert await garrison(db, mine, [10], NOW, code="bar") == []
+
+
 async def test_the_held_spot_pays_its_guards_in_experience(db):
     """Отбили штурм — бойцы получили опыт, и только те, кто устоял.
 

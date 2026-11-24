@@ -374,7 +374,9 @@ async def recall(db: Database, player: Player, npc_id: int) -> None:
     logger.info("Боец %s снял %s с точки", player.user_id, npc_id)
 
 
-async def posted(db: Database, spot: str, start: int = -100) -> list:
+async def posted(
+    db: Database, spot: str, start: int = -100, side=None
+) -> list:
     """Бойцы отряда, выставленные на эту точку, — как бойцы боя.
 
     Гарнизон теперь настоящий: у каждого свои характеристики, своё
@@ -390,6 +392,8 @@ async def posted(db: Database, spot: str, start: int = -100) -> list:
     from bot.game.combat import Fighter
     from bot.game.art import recruit_face
 
+    from bot.turf_service import owner_of
+
     out = []
     for number, row in enumerate(await db.squad_at(spot)):
         # Лежачий точку не держит: его сняли с неё, когда вынесли
@@ -398,6 +402,15 @@ async def posted(db: Database, spot: str, start: int = -100) -> list:
         npc = await db.get_player(row["npc_id"])
         if npc is None:  # pragma: no cover - сломанная база
             continue
+        # Боец воюет за того, за кого воюет его хозяин, и ни за кого
+        # больше. Хозяин ушёл из семьи — его человек с точки этой семьи
+        # не дерётся, даже если остался на ней записан. Проверяем здесь,
+        # а не на выходе из клана: выходов много — ушёл сам, выгнали,
+        # уволился со службы, — и каждый пришлось бы помнить
+        if side is not None:
+            keeper = await db.get_player(int(row["owner_id"]))
+            if keeper is None or owner_of(keeper) != side:
+                continue
         fighter = Fighter.from_player(npc)
         fighter.user_id = start - number
         fighter.picture = recruit_face(row["face"])

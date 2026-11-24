@@ -382,6 +382,26 @@ async def test_another_mans_fighter_is_not_yours_to_dismiss(db):
     assert len(await db.squad_of(owner.user_id)) == 1
 
 
+async def test_a_fighter_is_never_counted_as_a_live_clan_member(db):
+    """Боец отряда не считается человеком в семье.
+
+    Это не правило, которое мы написали, а то, как устроен город:
+    в клан вступают записью в `clan_members`, а бойца туда никто не
+    вписывает. Проверяем именно это — что найм не раздувает семью и не
+    съедает её мест.
+    """
+    player = await enlist(db)
+    shop = await showcase(db, player, WEEK, random.Random(1))
+    npc = await hire(db, player, shop["cards"][0]["slot"], WEEK)
+
+    rows = await db.conn.execute_fetchall(
+        "SELECT COUNT(*) FROM clan_members WHERE user_id = ?", (npc.user_id,)
+    )
+    assert rows[0][0] == 0
+    # И в списках города его тоже нет: там считают людей
+    assert await db.count_players() == 1
+
+
 def test_the_week_of_the_showcase_is_the_city_week():
     """Витрина обновляется тем же понедельником, что и жалованье."""
     assert week_of(WEEK) == week_of(WEEK + 3_600)

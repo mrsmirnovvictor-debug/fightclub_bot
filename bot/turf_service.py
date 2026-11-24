@@ -374,7 +374,7 @@ async def garrison(
 
     out: list[Fighter] = []
     if code:
-        out.extend(await posted(db, code))
+        out.extend(await posted(db, code, side=owner))
     if owner.kind != CLAN:
         out.extend(guards())
     # Номера раздаём сквозные и отрицательные: по ним защитников не
