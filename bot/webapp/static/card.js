@@ -840,7 +840,14 @@ function bonusList(item) {
 function button(text, options) {
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.className = "btn" + (options && options.secondary ? " secondary" : "");
+  // `neon` — кнопка в стиле бойцовского клуба: та же кнопка, другой
+  // вид. Держим её здесь, а не раздаём класс по месту: вид кнопки в
+  // городе один, и собирать его в двадцати местах значило бы двадцать
+  // раз разойтись
+  btn.className =
+    "btn"
+    + (options && options.secondary ? " secondary" : "")
+    + (options && options.neon ? " neon" : "");
   btn.textContent = text;
   if (options && options.disabled) {
     btn.disabled = true;
@@ -16715,6 +16722,7 @@ function recruitCard(one, data) {
           textContent: "Уже в твоём отряде",
         })
       : button(one.price + " 💰 нанять", {
+          neon: true,
           disabled:
             data.credits < one.price || data.squad >= data.limit,
           hint:
@@ -16997,6 +17005,10 @@ function renderDojo(data) {
 
   const tabs = el("dojo-tabs");
   tabs.textContent = "";
+  // Та же сегментированная дорожка, что в клубе: переключатель
+  // разделов в городе один, и россыпь пузырьков рядом с ней читалась
+  // бы как другой орган управления, хотя делает ровно то же
+  tabs.classList.add("segments");
   DOJO_TABS.forEach(([code, label]) => {
     tabs.appendChild(chip(label, dojoTab === code, () => pickDojoTab(code)));
   });
@@ -17276,6 +17288,7 @@ function dojoAskStart(one) {
   buttons.className = "thing-buttons";
   buttons.append(
     button("Начать изучать", {
+      neon: true,
       onClick: () => {
         closeSheet();
         dojoAction({ action: "start", code: one.code });
@@ -17315,6 +17328,7 @@ function dojoAskLearn(one) {
   buttons.className = "thing-buttons";
   buttons.append(
     button("Подтвердить", {
+      neon: true,
       onClick: () => {
         closeSheet();
         dojoAction({ action: "learn", code: one.code });

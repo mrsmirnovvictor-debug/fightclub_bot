@@ -9410,6 +9410,36 @@ async def test_the_school_shows_three_candidates_with_stars_and_prices(server):
         await browser.close()
 
 
+async def test_the_school_wears_the_fight_club_look(server):
+    """Школа переключается дорожкой и жмётся кнопками клуба.
+
+    Переключатель разделов в городе один — сегментированная дорожка;
+    россыпь пузырьков рядом с ней читалась бы как другой орган
+    управления, хотя делает ровно то же.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_hire(pw, server)
+
+        tabs = await page.locator("#dojo-tabs").get_attribute("class")
+        assert "segments" in tabs, tabs
+        said = await page.locator("#dojo-tabs .chip").all_inner_texts()
+        assert [one.strip() for one in said] == [
+            "Ваши приёмы", "Обучение", "Найм бойцов",
+        ]
+        # Выбран ровно один раздел
+        assert await page.locator("#dojo-tabs .chip.on").count() == 1
+
+        # Кнопка найма — в стиле клуба, а не обычная
+        hire = page.locator(".recruit .btn").first
+        assert "neon" in await hire.get_attribute("class")
+        # И надпись на ней не обрезана: ширину держит сама кнопка
+        cut = await hire.evaluate(
+            "node => node.scrollWidth > node.clientWidth + 1"
+        )
+        assert not cut, "надпись на кнопке найма обрезана"
+        await browser.close()
+
+
 async def test_a_hired_candidate_stays_on_the_shelf_but_dimmed(server):
     """Купленного не убирают, а гасят: видно, кого уже взяли."""
     async with async_playwright() as pw:
@@ -16565,8 +16595,8 @@ async def test_the_court_shows_the_docket_to_the_robe_and_the_ladder_to_all(
 # ---------- школа боевых искусств ----------
 
 
-async def test_the_school_has_two_tabs_and_opens_on_your_tricks(server, db):
-    """Вкладок две: свои приёмы и обучение. Первой стоит своё."""
+async def test_the_school_has_three_tabs_and_opens_on_your_tricks(server, db):
+    """Вкладок три: свои приёмы, обучение и найм. Первой стоит своё."""
     from bot.webapp.dojo import build_dojo
     from tests.test_dojo_school import student
 
@@ -16582,7 +16612,7 @@ async def test_the_school_has_two_tabs_and_opens_on_your_tricks(server, db):
         await page.wait_for_selector("#dojo-body .shelf")
 
         assert await page.locator("#dojo-tabs .chip").all_inner_texts() == [
-            "Ваши приёмы", "Обучение",
+            "Ваши приёмы", "Обучение", "Найм бойцов",
         ]
         assert await page.locator("#dojo-tabs .chip.on").inner_text() == (
             "Ваши приёмы"
