@@ -3659,6 +3659,112 @@ async def api_dojo_action(request: web.Request) -> web.Response:
     return await _dojo_state(request, fresh, said)
 
 
+# ---------- отряд ----------
+#
+# Дверей две, и стоят они в разных домах. Отряд боец носит с собой, как
+# рюкзак: его видно из карточки, где бы хозяин ни стоял. А нанимают и
+# меняют бойцов ногами — в Школе боевых искусств, и туда надо дойти.
+
+
+async def _squad_state(request: web.Request, player, said: str = "") -> web.Response:
+    from bot.webapp.squad import build_squad
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_squad(db, player, now_ts())
+    body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_squad(request: web.Request) -> web.Response:
+    """Отряд бойца. Места нет: своих людей помнят везде."""
+    player = await _own_player(request)
+    return await _squad_state(request, player)
+
+
+async def api_squad_action(request: web.Request) -> web.Response:
+    """Дела отряда: открыть карточку, забрать из больницы, уволить."""
+    from bot.squad_service import SquadError, discharge, dismiss
+    from bot.webapp.squad import build_fighter
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    player = await _own_player(request)
+    try:
+        npc_id = int(data.get("npc") or 0)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    try:
+        if action == "open":
+            card = await build_fighter(
+                db, player, npc_id, config.bot_token, now_ts()
+            )
+            if card is None:
+                return web.json_response({"error": "Это не твой боец."}, status=404)
+            return web.json_response({"fighter": card})
+        if action == "discharge":
+            npc = await discharge(db, player, npc_id)
+            said = f"{npc.nickname} снова на ногах."
+        elif action == "dismiss":
+            npc = await dismiss(db, player, npc_id)
+            said = f"{npc.nickname} больше не в отряде. Его вещи в рюкзаке."
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except SquadError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _squad_state(request, fresh, said)
+
+
+async def _hire_state(request: web.Request, player, said: str = "") -> web.Response:
+    from bot.webapp.squad import build_hire, build_squad
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_hire(db, player, now_ts())
+    body["said"] = said
+    body["held"] = await build_squad(db, player, now_ts())
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_hire(request: web.Request) -> web.Response:
+    """Витрина найма в школе: трое на неделю."""
+    player = await _at(request, Service.DOJO)
+    return await _hire_state(request, player)
+
+
+async def api_hire_action(request: web.Request) -> web.Response:
+    """Дела у витрины: нанять кандидата или посмотреть других."""
+    from bot.squad_service import SquadError, hire, reroll
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.DOJO)
+    try:
+        if action == "hire":
+            npc = await hire(db, player, int(data.get("slot") or 0), now_ts())
+            said = f"{npc.nickname} теперь в твоём отряде."
+        elif action == "reroll":
+            await reroll(db, player, now_ts())
+            said = "Школа показала других бойцов."
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except SquadError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _hire_state(request, fresh, said)
+
+
 async def api_prison(request: web.Request) -> web.Response:
     """Тюрьма: свой срок и все, кто сидит сейчас.
 
@@ -4391,6 +4497,10 @@ def create_app(
             web.post("/api/casino", api_casino_action),
             web.get("/api/dojo", api_dojo),
             web.post("/api/dojo", api_dojo_action),
+            web.get("/api/squad", api_squad),
+            web.post("/api/squad", api_squad_action),
+            web.get("/api/hire", api_hire),
+            web.post("/api/hire", api_hire_action),
             web.get("/api/charge", api_charge),
             web.post("/api/charge", api_charge_action),
             web.get("/api/wash", api_wash),
