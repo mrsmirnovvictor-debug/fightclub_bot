@@ -39,6 +39,7 @@ from bot.game.squad import (
     rerolls_left,
     roll_stars,
 )
+from bot.game.turf import MAX_POSTED, PER_PERSON
 from bot.game.work import week_of
 from bot.models import Player
 
@@ -308,6 +309,71 @@ async def discharge(db: Database, player: Player, npc_id: int) -> Player:
     return npc
 
 
+async def post(
+    db: Database, player: Player, npc_id: int, spot: str, now: int | None = None
+) -> dict:
+    """Поставить своего бойца на эту точку.
+
+    От одного человека на точке стоит один: десять мест — это десять
+    разных игроков семьи, а не один богач со всем отрядом. Правило
+    осталось от наёмников, и менять его вместе с ними было незачем —
+    оно про семью, а не про то, кого именно ставят.
+
+    Лежачего не ставят, и стоящего на другой точке — тоже: боец занят
+    одним делом. Снять его оттуда можно, и тогда та точка останется
+    без него — это выбор хозяина, а не наша забота.
+    """
+    from bot.game.turf import GUARD, action_for, get_spot
+    from bot.turf_service import owner_of, survey
+
+    moment = now_ts() if now is None else now
+    place = get_spot(spot)
+    if place is None:
+        raise SquadError("Такой точки в городе нет.")
+    if player.where(moment) != spot:
+        raise SquadError("Охрану ставят на месте, а не из кармана.")
+    mine = owner_of(player)
+    if mine.nobody:
+        raise SquadError("Охрану ставят за семью или за город.")
+    rows = await survey(db, moment)
+    here = next(one for one in rows if one.spot.code == spot)
+    if action_for(here.owner, mine) != GUARD:
+        raise SquadError("Тут сперва дерутся: на чужой точке охрану не ставят.")
+
+    row = await db.squad_row(npc_id)
+    if row is None or row["owner_id"] != player.user_id:
+        raise SquadError("Это не твой боец.")
+    if row["hospital_at"]:
+        raise SquadError("Этот боец в больнице. Сперва забери его.")
+    if row["spot"] == spot:
+        raise SquadError("Он и так здесь стоит.")
+    standing = await db.squad_at(spot)
+    if len([one for one in standing if one["owner_id"] == player.user_id]) >= PER_PERSON:
+        raise SquadError("От тебя здесь уже стоит человек. Своего второго нельзя.")
+    if len(standing) >= MAX_POSTED:
+        raise SquadError(f"На точке уже {MAX_POSTED} — больше не ставят.")
+
+    await db.set_squad_spot(npc_id, spot)
+    # Ничью точку сторона берёт охраной, а не боем: драться там не с
+    # кем. Запись о владельце появляется в тот же миг, иначе точка
+    # стояла бы с охраной и без хозяина
+    if here.owner.nobody:
+        await db.take_turf(spot, mine.kind, mine.key, moment)
+    logger.info("Боец %s поставил %s на точку %s", player.user_id, npc_id, spot)
+    return {"total": len(standing) + 1, "max": MAX_POSTED, "at": moment}
+
+
+async def recall(db: Database, player: Player, npc_id: int) -> None:
+    """Снять своего бойца с точки: она останется без него."""
+    row = await db.squad_row(npc_id)
+    if row is None or row["owner_id"] != player.user_id:
+        raise SquadError("Это не твой боец.")
+    if not row["spot"]:
+        raise SquadError("Он нигде не стоит.")
+    await db.set_squad_spot(npc_id, "")
+    logger.info("Боец %s снял %s с точки", player.user_id, npc_id)
+
+
 async def posted(db: Database, spot: str, start: int = -100) -> list:
     """Бойцы отряда, выставленные на эту точку, — как бойцы боя.
 
@@ -419,7 +485,9 @@ __all__ = [
     "add_exp",
     "all_to_hospital",
     "fallen_on_spot",
+    "post",
     "posted",
+    "recall",
     "discharge",
     "dismiss",
     "fighters",

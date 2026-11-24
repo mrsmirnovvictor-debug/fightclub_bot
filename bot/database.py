@@ -4985,10 +4985,15 @@ class Database:
         return [dict(row) for row in rows]
 
     async def posted_counts(self) -> dict[str, int]:
-        """Сколько нанятых на каждой точке — для карты одним запросом."""
+        """Сколько бойцов на каждой точке — для карты одним запросом.
+
+        Лежачих не считаем: их сняли с точки, когда вынесли, но строка
+        с ними остаётся в отряде, и запрос без этого условия однажды
+        показал бы на карте охрану, которой там нет.
+        """
         async with self.conn.execute(
-            "SELECT spot, COUNT(*) AS total FROM hirelings "
-            "WHERE spot <> '' GROUP BY spot"
+            "SELECT spot, COUNT(*) AS total FROM squad "
+            "WHERE spot <> '' AND hospital_at = 0 GROUP BY spot"
         ) as cursor:
             rows = await cursor.fetchall()
         return {str(row["spot"]): int(row["total"]) for row in rows}

@@ -4022,10 +4022,24 @@ async def api_turf_action(request: web.Request) -> web.Response:
                 f"{done['left']}."
             )
         elif action == "post":
-            done = await post_one(
-                db, player, _int_field(data, "hire_id"), player.where(now_ts())
-            )
+            # Охрану больше не покупают: на точку ставят своего бойца
+            from bot.squad_service import SquadError, post as post_guard
+
+            try:
+                done = await post_guard(
+                    db, player, _int_field(data, "npc"), player.where(now_ts())
+                )
+            except SquadError as error:
+                return web.json_response({"error": str(error)}, status=409)
             said = f"Охрана выставлена: {done['total']} из {done['max']}."
+        elif action == "recall":
+            from bot.squad_service import SquadError, recall
+
+            try:
+                await recall(db, player, _int_field(data, "npc"))
+            except SquadError as error:
+                return web.json_response({"error": str(error)}, status=409)
+            said = "Боец снят с точки."
         elif action == "done":
             war.forget_result(player.user_id)
             said = ""

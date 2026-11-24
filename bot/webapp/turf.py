@@ -25,7 +25,7 @@ from typing import Any
 from bot.game.clock import club_moment
 from bot.game.health import now_ts
 from bot.game.classes import BLOCK_WIDTH
-from bot.game.hirelings import MAX_POSTED
+from bot.game.turf import MAX_POSTED
 from bot.game.turf import (
     ABANDON_HOURS,
     ARREST,
@@ -224,9 +224,8 @@ def _shut_board(here: str, said: str) -> dict[str, Any]:
         "squad": MAX_GARRISON,
         "abandon_hours": ABANDON_HOURS,
         "said": said,
-        "hire": {"side": "", "cap": 0, "hired": 0, "left": 0, "mine": [],
-                 "grades": [], "spot": "", "spot_title": "",
-                 "can_post": False, "why": ""},
+        "hire": {"mine": [], "squad": 0, "spot": "", "spot_title": "",
+                 "guarding": False, "can_post": False, "why": ""},
         "here_spot": None,
         "note": (
             "За территории воюют семьи и службы. Вступи в клан или иди "
@@ -243,31 +242,27 @@ async def _spot_panel(db, row: dict[str, Any] | None) -> dict[str, Any] | None:
     охраны, из него не видно. А решать, ставить ли ещё одного, надо
     именно по этому.
     """
+    from bot.game.art import recruit_face
     from bot.game.classes import FIGHTER_CLASSES
-    from bot.game.hirelings import (
-        GUARD_LEVEL,
-        GUARD_SIZE,
-        get_grade,
-        guard_picture,
-    )
+    from bot.game.hirelings import GUARD_LEVEL, GUARD_SIZE, guard_picture
     from bot.game.turf import CLAN
 
     if row is None:
         return None
     kept = []
-    for one in await db.hirelings_at(row["code"]):
-        grade = get_grade(str(one["grade"]))
-        if grade is None:  # pragma: no cover - ступень из будущей версии
+    for one in await db.squad_at(row["code"]):
+        npc = await db.get_player(int(one["npc_id"]))
+        if npc is None:  # pragma: no cover - сломанная база
             continue
         keeper = await db.get_player(int(one["owner_id"]))
         kept.append(
             {
-                "id": int(one["id"]),
-                "title": grade.title,
-                "level": grade.level,
-                "fclass": FIGHTER_CLASSES[grade.fclass].emoji,
-                "picture": grade.picture,
-                "side": grade.side,
+                "id": int(one["npc_id"]),
+                "title": npc.nickname,
+                "level": npc.level,
+                "stars": int(one["stars"]),
+                "fclass": FIGHTER_CLASSES[npc.class_code].emoji,
+                "picture": recruit_face(int(one["face"])),
                 "owner": keeper.nickname if keeper else "боец",
                 "owner_id": int(one["owner_id"]),
             }
@@ -313,16 +308,37 @@ async def _hire_rows(
     один человек: второго он поставить не может, и сказать об этом
     надо словами, а не пустым местом.
     """
-    from bot.hire_service import roster
+    from bot.game.art import recruit_face
+    from bot.game.classes import FIGHTER_CLASSES
+    from bot.squad_service import fighters
 
-    body = await roster(db, player)
+    # Прилавка больше нет: охрану не покупают, на точку ставят своего.
+    # Поэтому здесь не товар, а отряд — и у каждого видно, свободен он,
+    # стоит ли на другой точке или лежит в больнице
+    held = []
+    for row_npc, npc in await fighters(db, player.user_id):
+        held.append(
+            {
+                "id": npc.user_id,
+                "title": npc.nickname,
+                "level": npc.level,
+                "stars": int(row_npc["stars"]),
+                "fclass": FIGHTER_CLASSES[npc.class_code].emoji,
+                "picture": recruit_face(int(row_npc["face"])),
+                "spot": row_npc["spot"],
+                "hurt": bool(row_npc["hospital_at"]),
+            }
+        )
+    body: dict[str, Any] = {"mine": held, "squad": len(held)}
     row = next((one for one in spots if one["code"] == here), None)
     body["spot"] = here if row else ""
     body["spot_title"] = row["title"] if row else ""
     guarding = bool(row and row["action"] == GUARD)
     free = bool(guarding and row["posted"] < MAX_POSTED)
-    ours = [one for one in body["mine"] if one["spot"] == here]
-    body["can_post"] = bool(free and not ours)
+    ours = [one for one in held if one["spot"] == here]
+    # Ставить некого — тоже причина: у нового игрока отряда ещё нет
+    ready = [one for one in held if not one["hurt"] and one["spot"] != here]
+    body["can_post"] = bool(free and not ours and ready)
     # Место под кнопку есть везде, где дело — охрана: даже когда
     # нажимать её нельзя
     body["guarding"] = guarding
@@ -332,6 +348,10 @@ async def _hire_rows(
             body["why"] = "Охрану ставят на своей точке."
         elif ours:
             body["why"] = "От тебя здесь уже стоит человек."
+        elif not held:
+            body["why"] = "Отряда пока нет. Бойцов нанимают в Школе."
+        elif not ready:
+            body["why"] = "Все твои бойцы заняты или в больнице."
         else:
             body["why"] = f"На точке уже {MAX_POSTED} — больше не ставят."
     return body

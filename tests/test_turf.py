@@ -106,24 +106,45 @@ async def stand(db: Database, user_ids: list[int], code: str) -> None:
         await db.save_player(player)
 
 
+async def a_guard(
+    db, owner_id: int, spot: str, level: int = 9, fclass: str = "tank",
+    name: str = "Громила", stars: int = 1,
+):
+    """Завести бойца в отряде этого игрока и поставить его на точку.
+
+    Пустая точка (`spot=""`) — боец просто в отряде и свободен.
+    """
+    from bot.game.classes import get_class
+    from bot.game.squad import npc_stats
+
+    npc_id = await db.next_npc_id()
+    stats = npc_stats(get_class(fclass), stars, level)
+    npc = Player(
+        user_id=npc_id, nickname=name, class_code=fclass, level=level,
+        **stats.as_dict(),
+    )
+    await db.save_player(npc)
+    await db.add_squad(npc_id, owner_id, stars, 1, NOW)
+    if spot:
+        await db.set_squad_spot(npc_id, spot)
+    return npc
+
+
 async def guard(db: Database, user_id: int, code: str, when: int = NOW) -> None:
-    """Поставить на точку одного наёмника.
+    """Поставить на точку одного бойца своего отряда.
 
     Без охраны точка не платит вовсе, и проверкам про деньги без этого
     шага считать нечего: взятая и брошенная — дом с вывеской.
     """
-    from bot.hire_service import hire, post
+    from bot.squad_service import post as post_guard
 
     one = await db.get_player(user_id)
-    one.credits += 5_000
     one.location = code
     one.travel_to = None
     one.arrives_at = 0
     await db.save_player(one)
-    await hire(db, await db.get_player(user_id), "merc_5", now=when)
-    taken = [row for row in await db.hirelings_of(user_id) if not row["spot"]]
-    await post(db, await db.get_player(user_id), int(taken[0]["id"]), code,
-               now=when)
+    npc = await a_guard(db, user_id, "", level=5, name=f"Охрана {user_id}")
+    await post_guard(db, await db.get_player(user_id), npc.user_id, code, when)
 
 
 async def seize(db: Database, don: Player, squad: list[int], code: str) -> int:
@@ -309,27 +330,6 @@ async def test_nobody_holds_a_spot_for_free(db):
     assert all("Охранник" in one.name for one in guards)
 
 
-async def a_guard(
-    db, owner_id: int, spot: str, level: int = 9, fclass: str = "tank",
-    name: str = "Громила", stars: int = 1,
-):
-    """Поставить на точку бойца из отряда этого игрока."""
-    from bot.game.classes import get_class
-    from bot.game.squad import npc_stats
-    from bot.models import Player
-
-    npc_id = await db.next_npc_id()
-    stats = npc_stats(get_class(fclass), stars, level)
-    npc = Player(
-        user_id=npc_id, nickname=name, class_code=fclass, level=level,
-        **stats.as_dict(),
-    )
-    await db.save_player(npc)
-    await db.add_squad(npc_id, owner_id, stars, 1, NOW)
-    await db.set_squad_spot(npc_id, spot)
-    return npc
-
-
 async def test_the_garrison_is_made_of_the_squad(db):
     """Гарнизон — выставленные бойцы отряда, а не живые бойцы семьи.
 
@@ -428,7 +428,7 @@ async def test_the_board_names_the_deed_for_each_side(db, client):
     # взятая «три дня назад» по клубному времени, для неё ещё в будущем
     from bot.game.health import now_ts
 
-    from bot.hire_service import hire, post
+    from bot.squad_service import post as post_guard
 
     long_ago = now_ts() - 3 * DAY_SECONDS
     don, squad, clan = await family(db)
@@ -440,10 +440,7 @@ async def test_the_board_names_the_deed_for_each_side(db, client):
     boss.credits = 20_000
     boss.location = "bar"
     await db.save_player(boss)
-    await hire(db, await db.get_player(don.user_id), "merc_5", now=long_ago)
-    hired = (await db.hirelings_of(don.user_id))[0]
-    await post(db, await db.get_player(don.user_id), int(hired["id"]), "bar",
-               now=long_ago)
+    await a_guard(db, don.user_id, "bar", level=5, name="Старая охрана")
 
     # Семья: своя точка — охрана, чужие и ничьи — захват
     await stand(db, [don.user_id], "bar")
@@ -475,7 +472,7 @@ async def test_the_board_names_the_deed_for_each_side(db, client):
 
 async def test_the_city_takes_a_free_spot_with_a_patrolman(db):
     """Ничью точку город берёт патрульным, а не отрядом."""
-    from bot.hire_service import hire, post
+    from bot.squad_service import post as post_guard
     from bot.turf_war import TurfWar
     from tests.test_police import cop
 
@@ -484,8 +481,7 @@ async def test_the_city_takes_a_free_spot_with_a_patrolman(db):
     officer.credits = 10_000
     await db.save_player(officer)
     officer = await db.get_player(91)
-    await hire(db, officer, "patrol_5", now=NOW)
-    mine = (await db.hirelings_of(91))[0]
+    npc = await a_guard(db, 91, "", level=5, name="Патрульный")
 
     # Отряд на ничью точку город не ведёт
     war = TurfWar(db)
@@ -495,37 +491,74 @@ async def test_the_city_takes_a_free_spot_with_a_patrolman(db):
     finally:
         await war.close()
 
-    # А патрульного ставит — и точка становится городской
-    await post(db, await db.get_player(91), int(mine["id"]), "market", now=NOW)
+    # А бойца ставит — и точка становится городской
+    await post_guard(db, await db.get_player(91), npc.user_id, "market", NOW)
     row = (await db.turf_rows())["market"]
     assert row.owner == owner_of_service("police")
-    assert len(await db.hirelings_at("market")) == 1
+    assert len(await db.squad_at("market")) == 1
 
 
-async def test_one_patrolman_from_one_player_and_ten_in_all(db):
-    """От бойца — один человек, на точке — десять. Кнопка гаснет, а не прячется."""
-    from bot.hire_service import HireError, hire, post
+async def test_one_fighter_from_one_player_and_ten_in_all(db):
+    """От бойца — один человек, на точке — десять. Кнопка гаснет, а не прячется.
+
+    Правило досталось от наёмников и пережило их: оно про саму точку, а
+    не про то, кого на неё ставят. Десять мест — это десять разных
+    людей, а не один богач со всем отрядом.
+    """
+    from bot.squad_service import SquadError, post
     from bot.webapp.turf import build_turf
     from tests.test_police import cop
 
     officer = await cop(db, 92, "Ragnar")
     officer.location = "market"
-    officer.credits = 20_000
     await db.save_player(officer)
-    for _ in range(2):
-        await hire(db, await db.get_player(92), "patrol_5", now=NOW)
-    mine = await db.hirelings_of(92)
-    await post(db, await db.get_player(92), int(mine[0]["id"]), "market",
-               now=NOW)
+    first = await a_guard(db, 92, "", name="Первый")
+    second = await a_guard(db, 92, "", name="Второй")
 
-    with pytest.raises(HireError, match="уже стоит человек"):
-        await post(db, await db.get_player(92), int(mine[1]["id"]), "market",
-                   now=NOW)
+    await post(db, await db.get_player(92), first.user_id, "market", now=NOW)
+    with pytest.raises(SquadError, match="уже стоит человек"):
+        await post(db, await db.get_player(92), second.user_id, "market", now=NOW)
 
     body = await build_turf(db, await db.get_player(92), NOW)
     assert body["hire"]["guarding"] is True, "место под кнопку есть"
     assert body["hire"]["can_post"] is False, "а нажать её нельзя"
     assert "уже стоит человек" in body["hire"]["why"]
+
+
+async def test_a_hurt_fighter_is_not_offered_for_the_spot(db):
+    """Лежачего не ставят, и кнопка говорит почему."""
+    from bot.squad_service import SquadError, post, to_hospital
+    from bot.webapp.turf import build_turf
+    from tests.test_police import cop
+
+    officer = await cop(db, 94, "Марла")
+    officer.location = "market"
+    await db.save_player(officer)
+    npc = await a_guard(db, 94, "", name="Побитый")
+    await to_hospital(db, npc.user_id, NOW)
+
+    with pytest.raises(SquadError, match="в больнице"):
+        await post(db, await db.get_player(94), npc.user_id, "market", now=NOW)
+
+    body = await build_turf(db, await db.get_player(94), NOW)
+    assert body["hire"]["can_post"] is False
+    assert "в больнице" in body["hire"]["why"]
+    assert body["hire"]["mine"][0]["hurt"] is True
+
+
+async def test_without_a_squad_the_spot_button_sends_you_to_school(db):
+    """Ставить некого — и сказано, где брать бойцов."""
+    from bot.webapp.turf import build_turf
+    from tests.test_police import cop
+
+    officer = await cop(db, 95, "Тайлер")
+    officer.location = "market"
+    await db.save_player(officer)
+
+    body = await build_turf(db, await db.get_player(95), NOW)
+    assert body["hire"]["squad"] == 0
+    assert body["hire"]["can_post"] is False
+    assert "Школе" in body["hire"]["why"]
 
 
 async def test_a_taken_spot_sends_the_whole_garrison_to_hospital(db):
@@ -569,7 +602,7 @@ async def test_the_failed_assault_buries_the_dead_and_leaves_the_rest(db):
     Развязку зовём руками: предмет проверки — что делает с точкой
     проигранный штурм, а не чем кончится бросок костей.
     """
-    from bot.hire_service import hire, post
+    from bot.squad_service import post as post_guard
     from bot.turf_war import TurfWar
 
     don, squad, clan = await family(db)
@@ -613,7 +646,7 @@ async def test_the_failed_assault_buries_the_dead_and_leaves_the_rest(db):
 
 async def test_the_city_reinforces_as_many_spots_as_it_likes(db):
     """Потолок точек — забота семей: город патрулирует хоть весь город."""
-    from bot.hire_service import hire, post
+    from bot.squad_service import post as post_guard
     from tests.test_police import cop
 
     officer = await cop(db, 93, "Ragnar")
@@ -624,10 +657,13 @@ async def test_the_city_reinforces_as_many_spots_as_it_likes(db):
         one = await db.get_player(93)
         one.location = code
         await db.save_player(one)
-        await hire(db, await db.get_player(93), "patrol_5", now=NOW)
-        fresh = [row for row in await db.hirelings_of(93) if not row["spot"]]
-        await post(db, await db.get_player(93), int(fresh[0]["id"]), code,
-                   now=NOW)
+        npc = await a_guard(db, 93, "", level=5, name=f"Патруль {code}")
+        one = await db.get_player(93)
+        one.location = code
+        one.travel_to = None
+        one.arrives_at = 0
+        await db.save_player(one)
+        await post_guard(db, await db.get_player(93), npc.user_id, code, NOW)
 
     rows = await db.turf_rows()
     held = [code for code, row in rows.items() if row.owner.kind == "service"]
@@ -665,21 +701,18 @@ async def test_the_city_keeps_a_spot_only_while_someone_stands_on_it(db):
     не присваивает, а охраняет, и пустая вывеска участка не значит
     ничего — ни дохода, ни владельца.
     """
-    from bot.hire_service import hire, post as post_hireling
+    from bot.squad_service import post as post_guard, recall
     from tests.test_police import cop
 
     officer = await cop(db, 93, "Ragnar")
     officer.location = "market"
-    officer.credits = 10_000
     await db.save_player(officer)
-    await hire(db, await db.get_player(93), "patrol_5", now=NOW)
-    mine = (await db.hirelings_of(93))[0]
-    await post_hireling(db, await db.get_player(93), int(mine["id"]),
-                        "market", now=NOW)
+    npc = await a_guard(db, 93, "", level=5, name="Патрульный")
+    await post_guard(db, await db.get_player(93), npc.user_id, "market", NOW)
     assert (await db.turf_rows())["market"].owner == owner_of_service("police")
 
-    # Патрульного сняли — и дом сразу городской, без суток ожидания
-    await db.drop_hireling(int(mine["id"]))
+    # Бойца сняли — и дом сразу городской, без суток ожидания
+    await recall(db, await db.get_player(93), npc.user_id)
     rows = await survey(db, NOW + 60)
     here = next(one for one in rows if one.spot.code == "market")
     assert here.owner.nobody, "город не держит дом одной вывеской"
@@ -689,7 +722,7 @@ async def test_the_city_keeps_a_spot_only_while_someone_stands_on_it(db):
 async def test_the_guarded_spot_is_not_abandoned(db):
     """Поставил человека — час опустения сброшен, дом остаётся за семьёй."""
     from bot.game.turf import ABANDON_SECONDS
-    from bot.hire_service import hire, post
+    from bot.squad_service import post as post_guard
 
     don, squad, clan = await family(db)
     await db.take_turf("bar", "clan", str(clan.id), NOW)
@@ -699,10 +732,7 @@ async def test_the_guarded_spot_is_not_abandoned(db):
     boss.credits = 20_000
     boss.location = "bar"
     await db.save_player(boss)
-    await hire(db, await db.get_player(don.user_id), "merc_5", now=NOW)
-    mine = (await db.hirelings_of(don.user_id))[0]
-    await post(db, await db.get_player(don.user_id), int(mine["id"]), "bar",
-               now=NOW)
+    await a_guard(db, don.user_id, "bar", level=5, name="Охрана дона")
 
     rows = await survey(db, NOW + ABANDON_SECONDS + 1)
     assert next(one for one in rows if one.spot.code == "bar").owner.kind == "clan"
@@ -711,7 +741,7 @@ async def test_the_guarded_spot_is_not_abandoned(db):
 
 async def test_the_city_frees_an_empty_family_house_without_a_fight(db):
     """Пустой дом семьи город снимает одним нажатием."""
-    from bot.hire_service import hire, post
+    from bot.squad_service import post as post_guard
     from bot.turf_service import release
     from tests.test_police import cop
 
@@ -732,10 +762,7 @@ async def test_the_city_frees_an_empty_family_house_without_a_fight(db):
     boss.credits = 20_000
     boss.location = "casino"
     await db.save_player(boss)
-    await hire(db, await db.get_player(don.user_id), "merc_5", now=NOW)
-    mine = (await db.hirelings_of(don.user_id))[0]
-    await post(db, await db.get_player(don.user_id), int(mine["id"]), "casino",
-               now=NOW)
+    await a_guard(db, don.user_id, "casino", level=5, name="Охрана дона")
     guard = await db.get_player(96)
     guard.location = "casino"
     await db.save_player(guard)
@@ -786,7 +813,7 @@ async def test_the_patrolled_house_is_not_untouchable(db):
     Отдыха у точек нет вовсе, и вошедший человек не запирает дом на
     сутки: он только меняет, с кем придётся драться.
     """
-    from bot.hire_service import hire, post
+    from bot.squad_service import post as post_guard
     from bot.turf_war import TurfWar
     from tests.test_police import cop
 
@@ -794,9 +821,8 @@ async def test_the_patrolled_house_is_not_untouchable(db):
     officer.location = "market"
     officer.credits = 10_000
     await db.save_player(officer)
-    await hire(db, await db.get_player(98), "patrol_5", now=NOW)
-    mine = (await db.hirelings_of(98))[0]
-    await post(db, await db.get_player(98), int(mine["id"]), "market", now=NOW)
+    npc = await a_guard(db, 98, "", level=5, name="Патрульный")
+    await post_guard(db, await db.get_player(98), npc.user_id, "market", NOW)
     assert (await db.turf_rows())["market"].owner == owner_of_service("police")
 
     rival, rivals, theirs = await family(db, first=20, name="Псы",
@@ -866,7 +892,7 @@ async def test_four_spots_are_the_ceiling(db):
     Взятое держим охраной: без неё дом через сутки вернётся городу, и
     потолок считать стало бы не с чего.
     """
-    from bot.hire_service import hire, post
+    from bot.squad_service import post as post_guard
 
     don, squad, clan = await family(db)
     moment = NOW
@@ -879,10 +905,7 @@ async def test_four_spots_are_the_ceiling(db):
         one.credits = 20_000
         one.location = code
         await db.save_player(one)
-        await hire(db, await db.get_player(keeper), "merc_5", now=moment)
-        free = [row for row in await db.hirelings_of(keeper) if not row["spot"]]
-        await post(db, await db.get_player(keeper), int(free[0]["id"]), code,
-                   now=moment)
+        await a_guard(db, keeper, code, level=5, name=f"Охрана {code}")
 
     held = await held_by(db, owner_of_clan(clan.id), moment)
     assert len(held) == MAX_SPOTS_PER_OWNER
@@ -989,18 +1012,19 @@ async def patrolled(db, code: str, user_id: int = 90, when: int = NOW) -> None:
     Пустую городскую точку обзор возвращает под обычную охрану в тот же
     миг — полиция дом не присваивает, а охраняет.
     """
-    from bot.hire_service import hire, post as post_hireling
+    from bot.squad_service import post as post_guard
     from tests.test_police import cop
 
     officer = await cop(db, user_id, "Патрульный")
     officer.location = code
-    officer.credits = 10_000
+    officer.travel_to = None
+    officer.arrives_at = 0
     await db.save_player(officer)
-    await hire(db, await db.get_player(user_id), "patrol_5", now=when)
-    mine = [one for one in await db.hirelings_of(user_id) if not one["spot"]]
-    await post_hireling(
-        db, await db.get_player(user_id), int(mine[0]["id"]), code, now=when
-    )
+    npc = await a_guard(db, user_id, "", level=5, name=f"Патруль {code}")
+    # Ставим настоящим действием, а не записью в базу: ничью точку
+    # сторона берёт именно постановкой охраны, и проверка про отметку
+    # на карте про это и есть
+    await post_guard(db, await db.get_player(user_id), npc.user_id, code, when)
 
 
 async def post(client, user_id: int, **body):
@@ -1179,18 +1203,10 @@ async def test_the_band_offers_the_guard_on_your_own_spot(db, client):
 
 async def test_the_spot_underfoot_shows_who_stands_on_it(db, client):
     """Точка под ногами: кто её держит, кто на ней стоит и чей он."""
-    from bot.hire_service import hire, post
-
     don, squad, clan = await family(db)
     await stand(db, squad, "bar")
     await db.take_turf("bar", "clan", str(clan.id), NOW)
-    rich = await db.get_player(don.user_id)
-    rich.credits = 10_000
-    await db.save_player(rich)
-    await hire(db, await db.get_player(don.user_id), "merc_7", now=NOW)
-    taken = (await db.hirelings_of(don.user_id))[0]
-    await post(db, await db.get_player(don.user_id), int(taken["id"]), "bar",
-               now=NOW)
+    await a_guard(db, don.user_id, "bar", level=7, name="Головорез")
 
     body = await (await client.get("/api/turf", headers=headers(don.user_id))).json()
     here = body["here_spot"]
@@ -1213,7 +1229,7 @@ async def test_the_panel_underfoot_knows_about_the_fight_going_on(db):
     Иначе погасшую кнопку она объясняла бы не тем — а неверная причина
     хуже, чем никакой: с ней уходят с готовым, но ложным ответом.
     """
-    from bot.hire_service import hire, post
+    from bot.squad_service import post as post_guard
     from bot.turf_war import TurfWar
     from bot.webapp.turf import build_war
     from tests.test_police import cop
@@ -1224,10 +1240,8 @@ async def test_the_panel_underfoot_knows_about_the_fight_going_on(db):
     await db.save_player(boss)
     await db.take_turf("bar", "clan", str(clan.id), NOW - 3 * DAY_SECONDS)
     await stand(db, [don.user_id], "bar")
-    await hire(db, await db.get_player(don.user_id), "merc_7", now=NOW)
-    mine = (await db.hirelings_of(don.user_id))[0]
-    await post(db, await db.get_player(don.user_id), int(mine["id"]), "bar",
-               now=NOW)
+    npc = await a_guard(db, don.user_id, "", level=7, name="Головорез")
+    await post_guard(db, await db.get_player(don.user_id), npc.user_id, "bar", NOW)
 
     officer = await cop(db, 99, "Ragnar")
     officer.location = "bar"
@@ -1393,7 +1407,7 @@ async def test_a_loner_is_not_shown_the_war_at_all(db, client):
 
     assert body["side"]["nobody"] is True
     assert body["spots"] == [] and body["here_spot"] is None
-    assert body["hire"]["side"] == ""
+    assert body["hire"]["mine"] == [] and body["hire"]["squad"] == 0
     assert "Вступи в клан" in body["note"]
 
     # И на карте города у домов нет ни отметок, ни плашки под ногами
