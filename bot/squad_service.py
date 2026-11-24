@@ -308,6 +308,76 @@ async def discharge(db: Database, player: Player, npc_id: int) -> Player:
     return npc
 
 
+async def posted(db: Database, spot: str, start: int = -100) -> list:
+    """Бойцы отряда, выставленные на эту точку, — как бойцы боя.
+
+    Гарнизон теперь настоящий: у каждого свои характеристики, своё
+    оружие и своя броня, за которые платил хозяин. Прежние наёмники
+    были ступенью с готовыми числами — их нельзя было ни одеть, ни
+    вырастить, и точку они держали одинаково у новичка и у ветерана.
+
+    Номера в бою раздаются отрицательные и сквозные: судья ищет бойца
+    по номеру, и два одинаковых в одном гарнизоне обрушили бы поиск.
+    Поэтому собственный номер бойца (тоже отрицательный) здесь не
+    годится — он может совпасть с номером городской охраны.
+    """
+    from bot.game.combat import Fighter
+    from bot.game.art import recruit_face
+
+    out = []
+    for number, row in enumerate(await db.squad_at(spot)):
+        # Лежачий точку не держит: его сняли с неё, когда вынесли
+        if row["hospital_at"]:
+            continue
+        npc = await db.get_player(row["npc_id"])
+        if npc is None:  # pragma: no cover - сломанная база
+            continue
+        fighter = Fighter.from_player(npc)
+        fighter.user_id = start - number
+        fighter.picture = recruit_face(row["face"])
+        out.append(fighter)
+    return out
+
+
+async def fallen_on_spot(
+    db: Database, spot: str, start: int, wall: dict, now: int | None = None
+) -> int:
+    """Уложить в больницу тех, кого вынесли в этой драке.
+
+    Номера в стене боя сквозные, а в базе боец свой: находим его по
+    тому же смещению, по которому стену и собирали. Городская охрана
+    в базе не лежит — её укладывать нечем, и она просто кончается.
+    """
+    moment = now_ts() if now is None else now
+    rows = [one for one in await db.squad_at(spot) if not one["hospital_at"]]
+    hurt = 0
+    for key, one in wall.items():
+        number = start - key
+        if one.alive or not 0 <= number < len(rows):
+            continue
+        await to_hospital(db, int(rows[number]["npc_id"]), moment)
+        hurt += 1
+    return hurt
+
+
+async def all_to_hospital(
+    db: Database, spot: str, now: int | None = None
+) -> int:
+    """Снять с точки весь гарнизон: её взяли.
+
+    Бойцы не гибнут — их увозят. Это и есть цена проигранной точки:
+    отряд цел, но до больницы за ним надо дойти, а точка уже чужая.
+    """
+    moment = now_ts() if now is None else now
+    hurt = 0
+    for row in await db.squad_at(spot):
+        if row["hospital_at"]:
+            continue
+        await to_hospital(db, int(row["npc_id"]), moment)
+        hurt += 1
+    return hurt
+
+
 async def add_exp(
     db: Database, npc: Player, stars: int, owner: Player, amount: int
 ) -> int:
@@ -347,6 +417,9 @@ async def add_exp(
 __all__ = [
     "SquadError",
     "add_exp",
+    "all_to_hospital",
+    "fallen_on_spot",
+    "posted",
     "discharge",
     "dismiss",
     "fighters",

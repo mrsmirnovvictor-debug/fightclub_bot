@@ -309,33 +309,75 @@ async def test_nobody_holds_a_spot_for_free(db):
     assert all("Охранник" in one.name for one in guards)
 
 
-async def test_the_garrison_is_made_of_the_hired(db):
-    """Гарнизон — выставленные нанятые, а не живые бойцы семьи.
+async def a_guard(
+    db, owner_id: int, spot: str, level: int = 9, fclass: str = "tank",
+    name: str = "Громила", stars: int = 1,
+):
+    """Поставить на точку бойца из отряда этого игрока."""
+    from bot.game.classes import get_class
+    from bot.game.squad import npc_stats
+    from bot.models import Player
+
+    npc_id = await db.next_npc_id()
+    stats = npc_stats(get_class(fclass), stars, level)
+    npc = Player(
+        user_id=npc_id, nickname=name, class_code=fclass, level=level,
+        **stats.as_dict(),
+    )
+    await db.save_player(npc)
+    await db.add_squad(npc_id, owner_id, stars, 1, NOW)
+    await db.set_squad_spot(npc_id, spot)
+    return npc
+
+
+async def test_the_garrison_is_made_of_the_squad(db):
+    """Гарнизон — выставленные бойцы отряда, а не живые бойцы семьи.
 
     Раньше точку держала сама семья — даром, во сне, всем составом.
-    Теперь охрану покупают: наёмник стоит денег и гибнет насовсем.
+    Потом её держали наёмники: ступень с готовыми числами, которую
+    нельзя ни одеть, ни вырастить. Теперь на точку встаёт свой боец, со
+    своими характеристиками и своими вещами.
     """
-    from bot.hire_service import hire, post
-
     don, squad, clan = await family(db, size=3)
     await stand(db, [don.user_id], "bar")
     await db.take_turf("bar", "clan", str(clan.id), NOW)
-    rich = await db.get_player(don.user_id)
-    rich.credits = 10_000
-    await db.save_player(rich)
 
     mine = owner_of_clan(clan.id)
-    # Без наёмников у семьи на точке пусто, и городская охрана за неё
+    # Без выставленных у семьи на точке пусто, и городская охрана за неё
     # не встаёт: город не стережёт дом мафии от другой мафии
     assert await garrison(db, mine, [10], NOW, code="bar") == []
 
-    await hire(db, rich, "merc_9", now=NOW)
-    taken = (await db.hirelings_of(don.user_id))[0]
-    await post(db, rich, int(taken["id"]), "bar", now=NOW)
+    await a_guard(db, don.user_id, "bar")
 
     wall = await garrison(db, mine, [10], NOW, code="bar")
     assert [one.name for one in wall] == ["Громила"]
     assert wall[0].level == 9
+    # Номер в бою сквозной и не равен номеру бойца в базе: иначе он мог
+    # бы совпасть с номером городской охраны
+    assert wall[0].user_id < 0
+
+
+async def test_a_fighter_in_hospital_does_not_hold_the_spot(db):
+    """Лежачий точку не держит: его сняли с неё, когда вынесли."""
+    from bot.squad_service import to_hospital
+
+    don, squad, clan = await family(db, size=3)
+    await stand(db, [don.user_id], "bar")
+    await db.take_turf("bar", "clan", str(clan.id), NOW)
+    npc = await a_guard(db, don.user_id, "bar")
+
+    mine = owner_of_clan(clan.id)
+    assert len(await garrison(db, mine, [10], NOW, code="bar")) == 1
+    await to_hospital(db, npc.user_id, NOW)
+    assert await garrison(db, mine, [10], NOW, code="bar") == []
+
+    # И второй засов: даже если строка осталась с точкой — а это уже
+    # сломанная база, — в гарнизон лежачий всё равно не попадёт.
+    # Правило «побитый не дерётся» держат оба места, потому что цена
+    # ошибки тут — бой бойцом, которого на точке нет
+    await db.set_squad_spot(npc.user_id, "bar")
+    assert len(await db.squad_at("bar")) == 1
+    assert await garrison(db, mine, [10], NOW, code="bar") == []
 
 
 async def test_the_city_guards_stand_where_no_family_rules(db):
@@ -486,6 +528,41 @@ async def test_one_patrolman_from_one_player_and_ten_in_all(db):
     assert "уже стоит человек" in body["hire"]["why"]
 
 
+async def test_a_taken_spot_sends_the_whole_garrison_to_hospital(db):
+    """Точку взяли — гарнизон увезли, но бойцы целы.
+
+    Это и есть новая цена проигранной точки: отряд не гибнет, но за
+    ним надо дойти в больницу, а точка уже чужая. Прежние наёмники в
+    этом месте исчезали насовсем, и охрана была расходником.
+    """
+    from bot.turf_war import TurfWar
+
+    don, squad, clan = await family(db, size=2)
+    await stand(db, squad, "bar")
+    await db.take_turf("bar", "clan", str(clan.id), NOW)
+    mine = await a_guard(db, squad[0], "bar", level=1, name="Новичок")
+
+    rival, rivals, theirs = await family(
+        db, first=30, name="Бешеные псы", sign="silver_wolves"
+    )
+    await stand(db, rivals, "bar")
+    war = TurfWar(db)
+    try:
+        muster = await war.open_muster(
+            await db.get_player(rival.user_id), "bar", now=NOW
+        )
+        siege = await war.march(muster.id, rival.user_id, now=NOW)
+        await war._finish(siege, won=True)
+    finally:
+        await war.close()
+
+    assert await db.squad_at("bar") == [], "на чужой точке своих не держат"
+    row = await db.squad_row(mine.user_id)
+    assert row is not None, "боец цел, а не вычеркнут из города"
+    assert row["hospital_at"] > 0 and row["spot"] == ""
+    assert await db.get_player(mine.user_id) is not None
+
+
 async def test_the_failed_assault_buries_the_dead_and_leaves_the_rest(db):
     """Отбились — убитые не воскресают, уцелевшие целы, точка прежняя.
 
@@ -500,13 +577,7 @@ async def test_the_failed_assault_buries_the_dead_and_leaves_the_rest(db):
     await stand(db, squad, "bar")
     # По человеку от двоих: от одного бойца на точке стоит один
     for number in squad[:2]:
-        one = await db.get_player(number)
-        one.credits = 20_000
-        await db.save_player(one)
-        await hire(db, await db.get_player(number), "merc_9", now=NOW)
-        his = [row for row in await db.hirelings_of(number) if not row["spot"]]
-        await post(db, await db.get_player(number), int(his[0]["id"]), "bar",
-                   now=NOW)
+        await a_guard(db, number, "bar", name=f"Боец {number}")
 
     rival, rivals, theirs = await family(
         db, first=20, name="Бешеные псы", sign="silver_wolves"
@@ -526,10 +597,18 @@ async def test_the_failed_assault_buries_the_dead_and_leaves_the_rest(db):
         await war.close()
 
     assert siege.fallen == 1
-    left = await db.hirelings_at("bar")
-    assert len(left) == 1, "убитый ушёл насовсем, уцелевший остался"
+    left = await db.squad_at("bar")
+    assert len(left) == 1, "побитого увезли, уцелевший остался на точке"
+    # И увезли именно в больницу, а не из города: боец цел и ждёт хозяина
+    hurt = [
+        one
+        for one in await db.squad_of(squad[0])
+        + await db.squad_of(squad[1])
+        if one["hospital_at"]
+    ]
+    assert len(hurt) == 1 and hurt[0]["spot"] == ""
     assert (await db.turf_rows())["bar"].owner == owner_of_clan(clan.id)
-    assert "Выставленных полегло: 1" in " ".join(siege.summary)
+    assert "Бойцов увезли в больницу: 1" in " ".join(siege.summary)
 
 
 async def test_the_city_reinforces_as_many_spots_as_it_likes(db):

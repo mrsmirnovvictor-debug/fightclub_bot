@@ -644,25 +644,26 @@ class TurfWar:
         await self._finish(siege, won=done)
 
     async def _bury_the_fallen(self, siege: Siege) -> int:
-        """Снять с точки тех выставленных, кого убили в этой драке.
+        """Увезти в больницу тех из гарнизона, кого вынесли в драке.
 
         Номера гарнизона отрицательные и идут по порядку сборки: сперва
-        выставленные, потом городская охрана. По номеру и находим строку
-        в базе — городскую охрану в базе не держат, её хоронить нечем.
+        бойцы отряда, потом городская охрана. По тому же смещению
+        находим строку в базе — городскую охрану в базе не держат, и
+        увозить её некуда.
+
+        Хоронить здесь больше нечего: боец отряда не гибнет. Это и
+        меняет цену обороны — отбились, и отряд цел, пусть и с койками.
         """
-        rows = await self.db.hirelings_at(siege.spot.code)
-        gone = 0
-        for key, one in siege.wall.items():
-            number = -key - 1
-            if one.alive or number >= len(rows):
-                continue
-            await self.db.drop_hireling(int(rows[number]["id"]))
-            gone += 1
-        if gone:
+        from bot.squad_service import fallen_on_spot
+
+        hurt = await fallen_on_spot(
+            self.db, siege.spot.code, -1, siege.wall, now_ts()
+        )
+        if hurt:
             logger.info(
-                "На точке %s полегло выставленных: %s", siege.spot.code, gone
+                "С точки %s увезли бойцов: %s", siege.spot.code, hurt
             )
-        return gone
+        return hurt
 
     async def _finish(self, siege: Siege, won: bool) -> None:
         """Свести штурм: записать точку и разложить итог по бойцам.
@@ -708,10 +709,16 @@ class TurfWar:
                 siege.handed = await hand_over(
                     self.db, siege.spot, siege.defender, row.paid_until,
                     moment,
-                    guarded=bool(await self.db.hirelings_at(siege.spot.code)),
+                    guarded=bool(await self.db.squad_at(siege.spot.code)),
                 )
-            # Отбили точку — выставленные на ней гибнут насовсем
-            siege.fallen = await self.db.clear_spot(siege.spot.code)
+            # Точку взяли — весь гарнизон уезжает в больницу. Бойцы не
+            # гибнут: цена проигранной точки в том, что за ними надо
+            # дойти, а точка уже чужая
+            from bot.squad_service import all_to_hospital
+
+            siege.fallen = await all_to_hospital(
+                self.db, siege.spot.code, moment
+            )
             # Часы прежнего хозяина дописываем до смены вывески: с
             # этой минуты часы пойдут уже новому
             await accrue(self.db, moment)
@@ -739,7 +746,8 @@ class TurfWar:
         ]
         if siege.fallen:
             siege.summary.append(
-                f"Выставленных полегло: {siege.fallen}. Насовсем."
+                f"Бойцов увезли в больницу: {siege.fallen}. "
+                "Забрать их может только хозяин."
             )
         if not won and not siege.fallen:
             siege.summary.append("Гарнизон цел: ни один не выбыл.")
