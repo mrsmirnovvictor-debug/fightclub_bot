@@ -85,6 +85,30 @@ QUOTA_SHARE = 0.5
 QUOTA_BONUS = 5_000
 
 
+# Сколько ордер держится. Две недели — срок, за который до человека
+# успевают дойти и патруль, и любой сотрудник; дальше дело остаётся в
+# базе историей, но задерживать по нему больше нельзя.
+#
+# Лестница отсидок при этом не обнуляется: она считает приводы, а не
+# дела, и следующий ордер приходит к человеку с прежним счётом. Срок
+# давности прощает дело, а не прошлое.
+WARRANT_TTL = 14 * 24 * HOUR
+
+
+def warrant_alive(filed_at: int, now: int) -> bool:
+    """Жив ли ордер по этому делу. Ноль часа заявления — ордера нет."""
+    if filed_at <= 0:
+        return False
+    return now - filed_at < WARRANT_TTL
+
+
+def warrant_left(filed_at: int, now: int) -> int:
+    """Сколько ордеру осталось. Ноль — просрочен или не выписан."""
+    if not warrant_alive(filed_at, now):
+        return 0
+    return WARRANT_TTL - (now - filed_at)
+
+
 def jail_hours(times: int) -> int:
     """Сколько часов сидеть за `times`-е по счёту задержание."""
     if times < 1:
@@ -169,6 +193,7 @@ __all__ = [
     "PRISON",
     "QUOTA_BONUS",
     "QUOTA_SHARE",
+    "WARRANT_TTL",
     "jail_hours",
     "jail_left",
     "jail_seconds",
@@ -177,4 +202,6 @@ __all__ = [
     "term_head",
     "term_hours",
     "shares",
+    "warrant_alive",
+    "warrant_left",
 ]

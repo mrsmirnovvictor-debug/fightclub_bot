@@ -92,10 +92,17 @@ async def file_report(
     )
 
 
-async def has_warrant(db: Database, suspect_id: int) -> bool:
-    """Есть ли на этого ордер: заявление написано, задержания не было."""
+async def has_warrant(
+    db: Database, suspect_id: int, now: int | None = None
+) -> bool:
+    """Есть ли на этого живой ордер: заявление есть, задержания нет.
+
+    Срок давности считается от этого самого мига: ордер старше двух
+    недель не исполняют, и спрашивать о нём незачем.
+    """
+    moment = now_ts() if now is None else now
     return any(
-        int(one["suspect_id"]) == suspect_id for one in await db.wanted()
+        int(one["suspect_id"]) == suspect_id for one in await db.wanted(moment)
     )
 
 

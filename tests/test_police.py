@@ -23,6 +23,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from bot.config import Config
 from bot.database import Database
 from bot.game.battle import BLUE, RED
+from bot.game.health import now_ts
 from bot.game.police import (
     ARREST_FEE,
     COURT_TERM,
@@ -620,8 +621,11 @@ async def test_the_handler_files_and_repays(db, client):
     assert body["mine"][0]["filed"] is True
     assert "Ордер" in body["said"]
 
-    # Задержали — и деньги ждут в участке
-    await db.close_cases(1, 80, NOW)
+    # Задержали — и деньги ждут в участке. Час задержания настоящий, а
+    # не стендовый: заявление ручка приняла по часам города, и у ордера
+    # теперь есть срок давности — закрытие делом из будущего прошло бы
+    # мимо живого дела
+    await db.close_cases(1, 80, now_ts())
     await db.add_to_service_vault("police", 400)
     body = await (await client.post(
         "/api/police", json={"action": "collect"},
@@ -698,3 +702,416 @@ async def test_the_served_term_leaves_the_list(db, client):
     )).json()
     assert body["inmates"] == [] and body["mine"] is None
     assert "Камеры пусты" in body["note"]
+
+
+# ---------- срок давности ордера ----------
+#
+# Ордер держится две недели. Это не милость, а признание того, что
+# город не всесилен: не нашли человека за полмесяца — дело остаётся
+# историей, и жить под вечным розыском никто не обязан.
+#
+# Прошлое при этом не прощается: лестница отсидок считает приводы, а не
+# дела, и следующий ордер приходит к человеку с прежним счётом.
+
+
+async def test_a_warrant_goes_stale_in_two_weeks(db):
+    """Две недели не нашли — задерживать по этому делу больше нельзя."""
+    from bot.game.police import WARRANT_TTL
+
+    victim = make_player(50, "Прохожий", where=VCPD)
+    await db.save_player(victim)
+    case_id = await a_case(db, victim.user_id, 1)
+    await file_report(db, victim, case_id, now=NOW)
+
+    assert await has_warrant(db, 1, NOW) is True
+    assert await has_warrant(db, 1, NOW + WARRANT_TTL - 1) is True
+    assert await has_warrant(db, 1, NOW + WARRANT_TTL) is False
+
+
+async def test_a_stale_case_is_not_paid_back_by_a_later_arrest(db):
+    """Просроченное дело задержание не закрывает и денег не возвращает.
+
+    Иначе срок давности был бы наполовину ненастоящим: взяли по свежему
+    делу, а человек заплатил бы за все прежние, по которым его искать
+    уже перестали.
+    """
+    from bot.game.police import WARRANT_TTL
+
+    victim = make_player(50, "Прохожий", where=VCPD)
+    await db.save_player(victim)
+    old_case = await a_case(db, victim.user_id, 1, loot=400)
+    await file_report(db, victim, old_case, now=NOW)
+
+    # Полмесяца спустя — новое дело и новое заявление
+    later = NOW + WARRANT_TTL + 3_600
+    fresh = await db.open_case(victim.user_id, 1, BAR, 150, 1, later)
+    assert await db.file_case(fresh, victim.user_id, later)
+
+    recovered = await db.close_cases(1, 80, later)
+    assert recovered == 150, "вернули только по живому делу"
+    rows = {int(one["id"]): one for one in await db.cases_of_victim(victim.user_id)}
+    assert int(rows[fresh]["arrested_at"]) == later
+    assert int(rows[old_case]["arrested_at"]) == 0, "просроченное дело не трогали"
+
+
+async def test_the_jail_ladder_remembers_the_past_after_a_stale_warrant(db):
+    """Срок давности прощает дело, а не прошлое: лестница помнит приводы."""
+    from bot.game.police import WARRANT_TTL, jail_hours
+
+    don = make_player(1, "Дон", where=BAR)
+    await db.save_player(don)
+    first = await jail(db, don.user_id, NOW)
+    assert (first - NOW) // 3_600 == jail_hours(1)
+
+    # Вышел, год не попадался, ордер по тому делу просрочен — и всё же
+    # следующая отсидка вторая, а не первая
+    later = NOW + WARRANT_TTL * 30
+    second = await jail(db, don.user_id, later)
+    assert (second - later) // 3_600 == jail_hours(2)
+
+
+# ---------- городские патрули ----------
+#
+# Живой полиции в городе может не быть вовсе, а ордера выписываются
+# каждый день. Эти четыре — то, чем город исполняет ордер сам: две
+# пары ходят по домам, и разыскиваемого берут там, где встретили.
+#
+# Кнопки у патруля нет и быть не может: он не игрок. Поэтому драка
+# начинается сама — в тот миг, когда человек вошёл в дом, где стоит
+# пара, и город на это посмотрел.
+
+
+async def patrol_fight_out(service, raid, rounds: int = 200) -> None:
+    """Добить задержание до развязки, нажимая только за человека.
+
+    У патруля кнопок нет: его ход считается сам в начале раунда, и
+    нажать за него нельзя — служба ответит «ход уже принят».
+    """
+    who = raid.victim
+    for _ in range(rounds):
+        if raid.finished:
+            return
+        if not raid.fighters[who].alive or who not in raid.paired:
+            # Человека вынесли: дальше раунды идут сами, и ждать нечего
+            return
+        await service.choose(raid.id, who, "attack", "head")
+        if raid.finished:
+            return
+        await service.choose(raid.id, who, "block", "belly")
+    raise AssertionError("задержание не кончилось")
+
+
+def test_two_pairs_walk_two_routes_by_the_clock():
+    """Четверо, по двое, и где они стоят — считается от времени."""
+    from bot.game.patrol import (
+        OFFICERS,
+        PAIRS,
+        PAIR_SIZE,
+        SHIFT_SECONDS,
+        patrols_now,
+        route_of,
+        where_now,
+    )
+
+    assert (PAIRS, PAIR_SIZE, OFFICERS) == (2, 2, 4)
+    # Маршруты не пересекаются: в одном доме пара всегда одна
+    assert not set(route_of(0)) & set(route_of(1))
+    assert len(patrols_now(NOW)) == PAIRS
+
+    # Смена кончилась — пара на следующем доме маршрута, и это тот же
+    # ответ у всякого, кто посмотрел
+    first = where_now(0, NOW)
+    assert where_now(0, NOW) == first, "ответ не зависит от спрашивающего"
+    assert where_now(0, NOW + SHIFT_SECONDS) != first
+    route = route_of(0)
+    assert where_now(0, NOW + SHIFT_SECONDS * len(route)) == first
+
+
+def test_the_patrol_comes_at_the_level_of_the_man_it_takes():
+    """Патрульные ровня тому, за кем пришли: ордер не украшение."""
+    from bot.game.patrol import officers
+
+    pair = officers(9)
+    assert len(pair) == 2
+    assert [one.level for one in pair] == [9, 9]
+    assert [one.fclass.code for one in pair] == ["tank", "warrior"]
+    # Номера свои и отрицательные: аккаунта у них нет
+    assert all(one.user_id < 0 for one in pair)
+    assert len({one.user_id for one in pair}) == 2
+    assert [one.level for one in officers(1)] == [1, 1]
+
+
+async def test_the_patrol_takes_the_wanted_man_where_it_stands(db):
+    """Разыскиваемый вошёл в дом с патрулём — его берут двое, сразу."""
+    from bot.patrol_service import catch, patrol_at
+
+    service = RobberyService(db, rng=random.Random(5))
+    suspect = make_player(50, "Мафиози", where=BAR)
+    await db.save_player(suspect)
+    await a_case(db, 99, suspect.user_id, loot=300, filed=True)
+    assert patrol_at(BAR, NOW) == 0, "в этот миг пара стоит в баре"
+
+    raid = await catch(db, service, suspect, NOW)
+    assert raid is not None
+    assert raid.kind == "arrest"
+    assert len(raid.fighters) == 3, "двое патрульных против одного"
+    officers = [one for one in raid.fighters if one < 0]
+    assert all(raid.sides[one] == RED for one in officers)
+    assert all(one in raid.badges for one in officers)
+    assert raid.sides[suspect.user_id] == BLUE
+    # Тот из пары, кому досталась пара, уже отработал: кнопок у них
+    # нет. Второй пропускает раунд, как всякий без пары, — и в этом
+    # сила двоих: бьёт по одному, а здоровья у них на двоих
+    assert {one for one in raid.acted} == {
+        one for one in raid.paired if one < 0
+    }
+    assert any(one in raid.acted for one in officers)
+    await service.close()
+
+
+async def test_the_patrol_walks_past_the_clean_man(db):
+    """Без ордера патруль не трогает никого: он не досматривает."""
+    from bot.patrol_service import catch
+
+    service = RobberyService(db)
+    clean = make_player(50, "Прохожий", where=BAR)
+    await db.save_player(clean)
+
+    assert await catch(db, service, clean, NOW) is None
+    assert service.of_user(clean.user_id) is None
+    await service.close()
+
+
+async def test_the_patrol_takes_nobody_in_a_house_it_left(db):
+    """В доме без патруля задержания нет, даже если ордер есть."""
+    from bot.patrol_service import catch
+
+    service = RobberyService(db)
+    suspect = make_player(50, "Мафиози", where=VCPD)
+    await db.save_player(suspect)
+    await a_case(db, 99, suspect.user_id, filed=True)
+
+    assert await catch(db, service, suspect, NOW) is None
+    await service.close()
+
+
+async def test_the_patrol_waits_out_the_offline_the_walking_and_the_beaten(db):
+    """Берут того, кто может ответить: остальных патруль пропускает.
+
+    Драка без второй стороны — не задержание, а наказание за то, что
+    человек закрыл приложение. То же правило и у живого сотрудника.
+    """
+    from bot.patrol_service import catch, takeable
+
+    service = RobberyService(db)
+    suspect = make_player(50, "Мафиози", where=BAR)
+    await db.save_player(suspect)
+    await a_case(db, 99, suspect.user_id, filed=True)
+    assert await takeable(db, suspect, NOW) is True, "этого бы взяли"
+
+    # Спрашиваем само правило, а не только исход: ту же проверку делает
+    # и служба драки, и по одному отказу не видно, которая из двух
+    # сработала
+    gone = make_player(50, "Мафиози", where=BAR)
+    gone.seen_at = NOW - 10 * 24 * 3_600
+    await db.save_player(gone)
+    assert await takeable(db, gone, NOW) is False
+    assert await catch(db, service, gone, NOW) is None
+
+    walking = make_player(50, "Мафиози", where=BAR)
+    walking.travel_to = VCPD
+    walking.arrives_at = NOW + 600
+    await db.save_player(walking)
+    assert await takeable(db, walking, NOW) is False
+    assert await catch(db, service, walking, NOW) is None
+
+    beaten = make_player(50, "Мафиози", where=BAR)
+    beaten.set_hp(1, NOW)
+    await db.save_player(beaten)
+    assert not beaten.can_fight(NOW)
+    assert await takeable(db, beaten, NOW) is False
+    assert await catch(db, service, beaten, NOW) is None
+    await service.close()
+
+
+async def test_a_stale_warrant_is_not_executed_by_the_patrol(db):
+    """Просроченный ордер патруль не исполняет: две недели прошли."""
+    from bot.game.police import WARRANT_TTL
+    from bot.patrol_service import catch
+    from bot.game.patrol import SHIFT_SECONDS, route_of
+
+    service = RobberyService(db)
+    suspect = make_player(50, "Мафиози", where=BAR)
+    await db.save_player(suspect)
+    await a_case(db, 99, suspect.user_id, filed=True)
+
+    # Полный круг маршрута спустя пара снова в баре, а ордеру уже
+    # больше двух недель
+    later = NOW + WARRANT_TTL
+    later += (SHIFT_SECONDS * len(route_of(0))) - (
+        later % (SHIFT_SECONDS * len(route_of(0)))
+    ) + (NOW % (SHIFT_SECONDS * len(route_of(0))))
+    suspect.seen_at = later
+    await db.save_player(suspect)
+
+    assert await catch(db, service, suspect, later) is None
+    await service.close()
+
+
+async def test_the_patrol_fight_goes_without_buttons_from_the_patrol(db):
+    """Патруль дерётся сам: человек жмёт только за себя."""
+    from bot.patrol_service import catch
+
+    service = RobberyService(db, rng=random.Random(5))
+    suspect = make_player(50, "Мафиози", where=BAR)
+    await db.save_player(suspect)
+    suspect = await weaken(db, suspect.user_id)
+    await a_case(db, 99, suspect.user_id, loot=100, filed=True)
+
+    raid = await catch(db, service, suspect, NOW)
+    await patrol_fight_out(service, raid)
+
+    assert raid.finished
+    # И они били, а не стояли: иначе человек ушёл бы целым
+    hit = sum(raid.fighters[one].damage_dealt for one in raid.fighters if one < 0)
+    assert hit > 0
+    await service.close()
+
+
+async def test_the_patrol_jails_the_lone_wolf_too(db):
+    """Сажает ордер, а не семья: одиночка отвечает за своё нападение.
+
+    Прежде посадка смотрела на клан, и задержанный одиночка выходил из
+    участка свободным — при живом заявлении жертвы и закрытом деле.
+    """
+    from bot.patrol_service import catch
+
+    service = RobberyService(db, rng=random.Random(5))
+    wolf = make_player(50, "Одиночка", where=BAR)
+    await db.save_player(wolf)
+    assert wolf.clan is None
+    wolf = await weaken(db, wolf.user_id)
+    await a_case(db, 99, wolf.user_id, loot=300, filed=True)
+
+    raid = await catch(db, service, wolf, NOW)
+    await patrol_fight_out(service, raid)
+
+    assert raid.won, "слабого двое не упустят"
+    assert [one["user_id"] for one in raid.jailed] == [wolf.user_id]
+    assert (await db.get_player(wolf.user_id)).location == PRISON
+    await service.close()
+
+
+async def test_an_empty_handed_robber_still_goes_to_jail(db):
+    """Дело без добычи сажает так же: взяли — значит ответил.
+
+    Прежде ордер спрашивали после закрытия дел: закрыли дело с нулевой
+    добычей, возвращать нечего, ордера уже нет — и задержанный уходил
+    домой из-под рук патруля.
+    """
+    from bot.patrol_service import catch
+
+    service = RobberyService(db, rng=random.Random(5))
+    wolf = make_player(50, "Неудачник", where=BAR)
+    await db.save_player(wolf)
+    wolf = await weaken(db, wolf.user_id)
+    await a_case(db, 99, wolf.user_id, loot=0, filed=True)
+
+    raid = await catch(db, service, wolf, NOW)
+    await patrol_fight_out(service, raid)
+
+    assert raid.won and raid.recovered == 0
+    assert [one["user_id"] for one in raid.jailed] == [wolf.user_id]
+    # И работа участка засчитана: премия города падает за задержание,
+    # а не за возвращённые деньги
+    assert await db.service_vault("police") == ARREST_FEE
+    await service.close()
+
+
+async def test_a_beaten_patrol_leaves_the_warrant_in_force(db):
+    """Отбился от патруля — ордер остаётся, и пара придёт снова."""
+    from bot.patrol_service import catch
+
+    service = RobberyService(db, rng=random.Random(5))
+    strong = make_player(50, "Мафиози", where=BAR, level=10)
+    await db.save_player(strong)
+    await a_case(db, 99, strong.user_id, loot=300, filed=True)
+
+    raid = await catch(db, service, strong, NOW)
+    # Валим патруль руками: бросок кости — не правило, которое проверяем
+    for one in list(raid.fighters):
+        if one < 0:
+            raid.fighters[one].hp = 0
+    await patrol_fight_out(service, raid)
+
+    assert raid.finished and not raid.won
+    assert await has_warrant(db, strong.user_id, NOW) is True
+    assert raid.jailed == []
+    assert (await db.get_player(strong.user_id)).location == BAR
+    await service.close()
+
+
+async def test_the_house_screen_shows_the_patrol_and_starts_the_arrest(db, client):
+    """Дом сам берёт разыскиваемого: кнопки у патруля нет.
+
+    Экран дома — то место, где город на человека смотрит. Стоит он
+    перед патрулём, и на нём ордер — драка начинается в этот самый
+    запрос, без нажатий.
+    """
+    from bot.game.patrol import where_now
+    from bot.game.health import now_ts as clock
+
+    moment = clock()
+    here = where_now(0, moment)
+    suspect = make_player(50, "Мафиози", where=here)
+    suspect.seen_at = moment
+    await db.save_player(suspect)
+    suspect = await weaken(db, suspect.user_id)
+    suspect.location = here
+    suspect.seen_at = moment
+    await db.save_player(suspect)
+    await a_case(db, 99, suspect.user_id, loot=300, filed=True)
+
+    body = await (await client.get(
+        "/api/crowd", headers=headers(suspect.user_id)
+    )).json()
+
+    assert body["patrol"] == 0, "патруль виден в доме"
+    assert body["fight"], "и задержание уже идёт"
+    assert body["fight"]["kind"] == "arrest"
+
+
+async def test_a_clean_man_sees_the_patrol_and_walks_on(db, client):
+    """Чистому патруль виден, но не страшен: его не трогают."""
+    from bot.game.patrol import where_now
+    from bot.game.health import now_ts as clock
+
+    moment = clock()
+    here = where_now(0, moment)
+    clean = make_player(50, "Прохожий", where=here)
+    clean.seen_at = moment
+    await db.save_player(clean)
+
+    body = await (await client.get(
+        "/api/crowd", headers=headers(clean.user_id)
+    )).json()
+
+    assert body["patrol"] == 0
+    assert not body["fight"]
+
+
+async def test_the_map_shows_where_the_patrols_stand(db, client):
+    """Патрули видно на карте: разыскиваемый вправе знать, куда не ходить."""
+    from bot.game.patrol import PAIRS, patrols_now
+    from bot.game.health import now_ts as clock
+
+    one = make_player(50, "Прохожий", where=VCPD)
+    one.seen_at = clock()
+    await db.save_player(one)
+
+    body = await (await client.get(
+        "/api/map", headers=headers(one.user_id)
+    )).json()
+
+    assert set(body["patrols"]) == set(patrols_now(clock()))
+    assert len(body["patrols"]) == PAIRS

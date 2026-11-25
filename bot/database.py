@@ -5744,7 +5744,17 @@ class Database:
         return cursor.rowcount > 0
 
     async def wanted(self, now: int = 0) -> list[dict]:
-        """По кому выписан ордер: заявление есть, задержания нет."""
+        """По кому выписан ордер: заявление есть, задержания нет.
+
+        `now` — миг, на который смотрят: по нему отсекаются дела с
+        просроченным ордером. Две недели не нашли человека — дело
+        остаётся в базе историей, но задерживать по нему уже нельзя.
+        Ноль просит весь список, не глядя на срок: так его читает
+        сводка участка, где просроченные дела тоже видно.
+        """
+        from bot.game.police import WARRANT_TTL
+
+        since = max(0, now - WARRANT_TTL) if now else 0
         async with self.conn.execute(
             """
             SELECT suspect_id,
@@ -5752,10 +5762,11 @@ class Database:
                    SUM(loot)  AS loot,
                    MIN(filed_at) AS since
             FROM police_cases
-            WHERE filed_at > 0 AND arrested_at = 0
+            WHERE filed_at > ? AND arrested_at = 0
             GROUP BY suspect_id
             ORDER BY since
-            """
+            """,
+            (since,),
         ) as cursor:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -5763,26 +5774,34 @@ class Database:
     async def close_cases(
         self, suspect_id: int, officer_id: int, now: int
     ) -> int:
-        """Закрыть задержанием все дела этого мафиози. Отдаёт сумму.
+        """Закрыть задержанием живые дела этого мафиози. Отдаёт сумму.
 
         Сумму считаем до записи: после неё `arrested_at` уже стоит, и
         отличить только что закрытые дела от закрытых вчера нельзя.
+
+        Просроченные дела задержание не закрывает и денег по ним не
+        возвращает: ордера по ним нет, и пришли не за ними. Иначе срок
+        давности был бы наполовину ненастоящим — задержали по свежему
+        делу, а заплатил бы человек за все прежние.
         """
+        from bot.game.police import WARRANT_TTL
+
+        since = max(0, now - WARRANT_TTL)
         async with self.conn.execute(
             """
             SELECT COALESCE(SUM(loot), 0) AS loot FROM police_cases
-            WHERE suspect_id = ? AND filed_at > 0 AND arrested_at = 0
+            WHERE suspect_id = ? AND filed_at > ? AND arrested_at = 0
             """,
-            (suspect_id,),
+            (suspect_id, since),
         ) as cursor:
             row = await cursor.fetchone()
         loot = int(row["loot"]) if row else 0
         await self.conn.execute(
             """
             UPDATE police_cases SET arrested_at = ?, arrested_by = ?
-            WHERE suspect_id = ? AND filed_at > 0 AND arrested_at = 0
+            WHERE suspect_id = ? AND filed_at > ? AND arrested_at = 0
             """,
-            (now, officer_id, suspect_id),
+            (now, officer_id, suspect_id, since),
         )
         await self.conn.commit()
         return loot

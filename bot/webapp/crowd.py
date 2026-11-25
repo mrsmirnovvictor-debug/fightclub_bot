@@ -356,12 +356,18 @@ async def build_crowd(
 
     from bot.police_service import serves_in_police, theft_suspects
 
+    from bot.patrol_service import catch, patrol_at
+
     moment = now_ts() if now is None else now
     here = player.where(moment)
+    # Патруль берёт здесь же, где человек стоит: вошёл в дом или открыл
+    # его на экране — город посмотрел, и если на нём ордер, а в доме
+    # пара, драка начинается сама. Фонового обхода у патруля нет
+    await catch(db, service, player, moment)
     place = get_location(here)
     clan_id = player.clan.clan.id if player.clan else 0
     badge = serves_in_police(player)
-    hunted = {int(one["suspect_id"]) for one in await db.wanted()}
+    hunted = {int(one["suspect_id"]) for one in await db.wanted(moment)}
     # Угон — тоже ордер: кто держит разыскуемую машину, того задерживают
     # так же, как грабителя. Считаем это только для значка: остальным
     # список розыска ни к чему
@@ -383,6 +389,8 @@ async def build_crowd(
         "crowd": [],
         "fights": [],
         "fight": None,
+        # Номер патрульной пары в этом доме. Минус один — никого
+        "patrol": -1,
         "result": None,
         "licences": {"left": 0, "bought": 0, "pack": ATTACKS_PER_LICENCE,
                      "price": LICENCE_PRICE},
@@ -391,6 +399,9 @@ async def build_crowd(
         body["note"] = _note(body, clan_id)
         return body
 
+    # Патруль в этом доме: его видно всем, кто сюда вошёл. Разыскиваемый
+    # имеет право знать, куда не ходить, — прятаться от патруля законно
+    body["patrol"] = patrol_at(here, moment)
     body["licences"] = await service.licences(player.user_id, moment)
     live = service.of_user(player.user_id)
     result = service.result_of(player.user_id)

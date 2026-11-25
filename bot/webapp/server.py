@@ -235,6 +235,7 @@ from bot.ladder_service import (
     settle_due,
     week_place_of,
 )
+from bot.patrol_service import patrol_marks
 from bot.robbery_service import RobberyError, RobberyService
 from bot.turf_war import TurfWar
 from bot.webapp.driving import build_police, build_school
@@ -482,6 +483,8 @@ async def _city(request: web.Request, player) -> dict:
         ),
         # Машины у этого здания: счётчик в углу карты, рядом с людьми
         cars=await here_rows(request.app[DB_KEY], player),
+        # Где стоят патрули: по ним разыскиваемый и прокладывает дорогу
+        patrols=patrol_marks(now_ts()),
     )
 
 

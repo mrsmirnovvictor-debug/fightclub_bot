@@ -3068,7 +3068,11 @@ function houseShape(place) {
     "dominant-baseline": "hanging",
   });
   sign.dataset.base = String(middle);
+  // Патруль — значком перед названием: по карте видно, где сейчас
+  // стоят городские, и разыскиваемый прокладывает дорогу мимо
+  const patrolled = (mapData && mapData.patrols || {})[place.code] != null;
   sign.textContent = (place.here ? "📍 " : "")
+    + (patrolled ? "🚔 " : "")
     + (held && !held.badge ? held.mark + " " : "") + place.title;
   if (held && held.badge) group.appendChild(houseBadge(held, top));
   group.appendChild(sign);
@@ -18426,8 +18430,28 @@ function renderCrowd(data) {
     body.appendChild(robberyBox(data.fight));
     return;
   }
+  // Патруль в доме — строкой над соседями: разыскиваемому её читать
+  // поздно (его уже взяли), а чистому она говорит, где не стоит
+  // задерживаться, если на нём когда-нибудь будет ордер
+  if ((data.patrol ?? -1) >= 0) body.appendChild(patrolNote(data));
   (data.fights || []).forEach((one) => body.appendChild(fightRowCard(one)));
   body.appendChild(crowdList(data));
+}
+
+/** Плашка «в доме патруль»: двое городских, и они смотрят на ордера. */
+function patrolNote(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "🚔 В доме патруль";
+  const said = document.createElement("p");
+  said.className = "screen-note";
+  said.textContent =
+    "Двое городских. Разыскиваемого они берут здесь же, без "
+    + "предупреждения и без кнопок.";
+  box.append(head, said);
+  return box;
 }
 
 /** Список соседей: кто в сети, чья семья и можно ли взять за карман. */

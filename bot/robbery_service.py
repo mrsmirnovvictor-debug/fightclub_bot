@@ -54,6 +54,7 @@ from bot.game.combat import (
     Fighter,
     group_aftermath,
     heal_line,
+    random_action,
     resolve_round,
     spread_heal,
 )
@@ -140,6 +141,9 @@ class Robbery:
     jailed: list[dict] = field(default_factory=list)
     # Сколько награбленного вернулось в участок
     recovered: int = 0
+    # Номер патрульной пары, если задержание городское. Минус один —
+    # брал живой сотрудник, и патруль тут ни при чём
+    patrol: int = -1
     # Номера машин, изъятых при задержании: их увозят в участок, а
     # наказание за угон назначает суд
     seized: list[str] = field(default_factory=list)
@@ -431,6 +435,81 @@ class RobberyService:
         self._open_round(raid)
         return raid
 
+    async def patrol_arrest(
+        self, suspect: Player, pair: int = 0, now: int | None = None
+    ) -> Robbery:
+        """Задержание патрулём: двое городских против разыскиваемого.
+
+        Кнопки «задержать» у патруля нет и быть не может: он не игрок.
+        Поэтому драка начинается сама, в тот миг, когда разыскиваемый
+        и пара оказались в одном доме, — а проверяет это
+        `bot.patrol_service`, который один знает, где пары стоят.
+
+        Проверки здесь те же, что у живого сотрудника: ордер, место,
+        сеть, здоровье. Разница в составе: патрульных двое, и уровень у
+        них по тому, за кем пришли.
+        """
+        from bot.game.locations import get_location
+        from bot.game.patrol import FIRST_ID, officers
+        from bot.police_service import has_warrant
+
+        moment = now_ts() if now is None else now
+        if not await has_warrant(self.db, suspect.user_id, moment):
+            raise RobberyError("На него нет живого ордера.")
+        if self._busy.get(suspect.user_id):
+            raise RobberyError("Он уже в драке.")
+        if suspect.in_transit(moment):
+            raise RobberyError("Он в пути: брать некого.")
+        if not is_online(suspect.seen_at, moment):
+            raise RobberyError("Его нет в сети: задерживать некого.")
+        if not suspect.can_fight(moment):
+            raise RobberyError("Он и так еле стоит. Не сегодня.")
+
+        here = suspect.where(moment)
+        place = get_location(here)
+        wall = officers(suspect.level, FIRST_ID)
+        raid = Robbery(
+            id=next(self._ids),
+            place=here,
+            place_title=place.title if place else here,
+            kind="arrest",
+            # Старший в паре идёт за «нападающего»: развязка задержания
+            # спрашивает, кто взял, и отвечать должен патруль
+            attacker=wall[0].user_id,
+            victim=suspect.user_id,
+            fighters={
+                **{one.user_id: one for one in wall},
+                suspect.user_id: Fighter.from_player(suspect, armed=True),
+            },
+            sides={
+                **{one.user_id: RED for one in wall},
+                suspect.user_id: BLUE,
+            },
+            names={
+                **{one.user_id: one.name for one in wall},
+                suspect.user_id: suspect.nickname,
+            },
+            clans={
+                **{one.user_id: 0 for one in wall},
+                suspect.user_id: suspect.clan.clan.id if suspect.clan else 0,
+            },
+            # Значок у обоих: это патруль города, и развязка должна
+            # видеть на стороне задержания полицию
+            badges={one.user_id for one in wall},
+            patrol=pair,
+        )
+        self._raids[raid.id] = raid
+        # Занятость — про людей: у патрульного нет ни карточки, ни
+        # других дел, и своей записи ему не нужно
+        self._busy[suspect.user_id] = raid.id
+        logger.info(
+            "Патруль %s берёт бойца %s в %s", pair, suspect.user_id, here
+        )
+        self._open_round(raid)
+        if await self._patrol_acts(raid):
+            await self._play_round(raid)
+        return raid
+
     async def join(
         self, raid_id: int, player: Player, now: int | None = None
     ) -> Robbery:
@@ -637,18 +716,44 @@ class RobberyService:
                 await self._play_round(raid)
 
     def _action_of(self, raid: Robbery, user_id: int) -> Action:
-        weapons = raid.fighters[user_id].attacks_per_round
-        return raid.choices.get(user_id, Choice()).to_action(weapons)
+        fighter = raid.fighters[user_id]
+        # У патрульного нет ни аккаунта, ни кнопок: он бьёт и
+        # закрывается сам, тем же броском, каким дерётся охрана точки
+        if user_id < 0:
+            return random_action(fighter, self.rng)
+        return raid.choices.get(user_id, Choice()).to_action(
+            fighter.attacks_per_round
+        )
+
+    async def _patrol_acts(self, raid: Robbery) -> bool:
+        """Ход патрульных: все разом, в начале раунда.
+
+        Истина в ответе — раунд пора считать: больше в нём ждать
+        некого. Считает его тот, кто раунд открыл: закрывать раунд
+        отсюда значило бы войти в развязку из её же середины.
+        """
+        if raid.finished:
+            return False
+        for user_id in raid.paired:
+            if user_id > 0 or user_id in raid.acted:
+                continue
+            if raid.fighters[user_id].alive:
+                raid.acted.add(user_id)
+        return raid.round_over
 
     async def _play_round(self, raid: Robbery) -> None:
-        """Свести раунд: по размену на пару, потом слово судьи.
+        """Свести раунд, а пока считать их некому — и следующие.
+
+        Циклом, а не вызовом изнутри вызова: раунды без людей идут один
+        за другим, и стопка вызовов росла бы на всю длину драки.
 
         Сорвалось что угодно — драку всё равно закрываем. Висящая
         драка хуже любой ошибки в ней: из неё не выйти, по городу не
         пройти, и чинится это только перезапуском бота.
         """
         try:
-            await self._round(raid)
+            while await self._round(raid):
+                pass
         except Exception:
             logger.exception("Раунд драки %s сорвался", raid.id)
             await self._bail_out(raid)
@@ -669,8 +774,12 @@ class RobberyService:
             self._results[user_id] = raid
         logger.warning("Драка %s оборвана: бойцы отпущены", raid.id)
 
-    async def _round(self, raid: Robbery) -> None:
-        """Сам раунд: по размену на пару, потом слово судьи."""
+    async def _round(self, raid: Robbery) -> bool:
+        """Сам раунд: по размену на пару, потом слово судьи.
+
+        Истина в ответе — следующий раунд считать сразу, не дожидаясь
+        нажатий: в нём стоит один патруль, а кнопок у него нет.
+        """
         for first_id, second_id in raid.pairs:
             first, second = raid.fighters[first_id], raid.fighters[second_id]
             if not (first.alive and second.alive):
@@ -712,8 +821,12 @@ class RobberyService:
         )
         if outcome.finished:
             await self._finish(raid, outcome)
-        else:
-            self._open_round(raid)
+            return False
+        self._open_round(raid)
+        # Истина — следующий раунд считать сразу: ждать в нём некого.
+        # Так идёт задержание, в котором разыскиваемого уже вынесли, а
+        # патруль ещё стоит на ногах
+        return await self._patrol_acts(raid)
 
     # ---------- развязка ----------
 
@@ -792,6 +905,11 @@ class RobberyService:
             return
         from bot.police_service import reward_arrest, seize_held_cars
 
+        # Ордер спрашиваем до того, как закроем дела, а не после.
+        # Наоборот выходило так: дело с нулевой добычей закрывалось,
+        # возвращать было нечего, ордера после закрытия уже нет — и
+        # задержанный уходил домой, хотя его только что взяли
+        jailed = await _robbery_warrant(self.db, raid.victim)
         # Разыскиваемые машины уезжают в участок вместе с задержанием:
         # наказание за угон назначает суд, а машину возвращают сразу
         raid.seized = await seize_held_cars(
@@ -800,9 +918,13 @@ class RobberyService:
         raid.recovered = await self.db.close_cases(
             raid.victim, raid.attacker, moment
         )
-        if raid.recovered or await _robbery_warrant(self.db, raid.victim):
+        if raid.recovered or jailed:
             await reward_arrest(self.db, raid.attacker, raid.recovered, moment)
-            await self._lock_up(raid, [raid.victim], moment)
+            # Сажает ордер, а не семья: задержание шло по заявлению
+            # жертвы, и одиночка отвечает за своё нападение так же, как
+            # мафиози. Семью спрашивают там, где ордера нет вовсе, —
+            # когда налётчиков берут на месте, при полицейском
+            await self._lock_up(raid, [raid.victim], moment, by_warrant=True)
 
     @staticmethod
     def _badge_on(raid: Robbery, side: int) -> bool:
@@ -810,18 +932,27 @@ class RobberyService:
         return any(one in raid.badges for one in raid.side_ids(side))
 
     async def _lock_up(
-        self, raid: Robbery, user_ids: list[int], moment: int
+        self,
+        raid: Robbery,
+        user_ids: list[int],
+        moment: int,
+        by_warrant: bool = False,
     ) -> None:
-        """Посадить проигравших. Сидят только те, кто в семье.
+        """Посадить проигравших.
 
-        Одиночку сажать не за что: он не мафия, и ордер выписан не на
-        него. В ограблении на стороне налётчика одиночек и не бывает,
-        а вот в помощь мафии мог влезть кто угодно — проверяем.
+        `by_warrant` — брали по ордеру, и тогда сажают всякого: ордер
+        выписан по заявлению жертвы, на его имя, и отвечает он за своё
+        нападение, а не за принадлежность к семье. Раньше одиночка с
+        ордером уходил из участка свободным: посадка смотрела на клан.
+
+        Без ордера — на месте, при полицейском — сидят только те, кто в
+        семье. Одиночку там сажать не за что: заявления нет, дела нет, а
+        в помощь мафии мог влезть кто угодно.
         """
         from bot.police_service import jail
 
         for user_id in user_ids:
-            if not raid.clans.get(user_id):
+            if not by_warrant and not raid.clans.get(user_id):
                 continue
             until = await jail(self.db, user_id, moment)
             raid.jailed.append(
