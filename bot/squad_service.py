@@ -495,6 +495,53 @@ async def pay_the_guard(
     return paid
 
 
+async def pay_the_party(
+    db: Database,
+    squad: dict,
+    party: dict,
+    won: bool,
+    now: int | None = None,
+) -> list[tuple[Player, int]]:
+    """Развязка штурма для бойцов, ходивших с хозяевами на точку.
+
+    `squad` — номер в бою → номер бойца, `party` — отряд штурма
+    номерами того же боя. Своего номера у бойца в штурме нет: номера
+    там раздают по порядку сборки, и обратный путь к базе знает только
+    тот, кто отряд собирал.
+
+    Здоровье записываем всегда: битым он останется и после боя, как
+    игрок. В больницу его не кладём — туда попадает только тот, кого
+    выбили с точки: это цена охраны, а не цена штурма.
+
+    Опыт — за взятую точку и только тем, кто дошёл до конца на ногах:
+    та же мерка, что в обороне, где уложенным не платят.
+    """
+    from bot.game.economy import base_exp
+
+    moment = now_ts() if now is None else now
+    paid: list[tuple[Player, int]] = []
+    for number, npc_id in squad.items():
+        fighter = party.get(number)
+        npc = await db.get_player(npc_id)
+        row = await db.squad_row(npc_id)
+        if npc is None or row is None:  # pragma: no cover - бойца уволили
+            continue
+        if fighter is not None:
+            npc.set_hp(fighter.hp, moment)
+            await db.save_player(npc)
+        if not won or (fighter is not None and not fighter.alive):
+            continue
+        owner = await db.get_player(int(row["owner_id"]))
+        if owner is None:  # pragma: no cover - хозяина удалили
+            continue
+        got = base_exp(npc.level)
+        await add_exp(db, npc, int(row["stars"]), owner, got)
+        paid.append((npc, got))
+    if paid:
+        logger.info("За взятую точку заплачено бойцам: %s", len(paid))
+    return paid
+
+
 async def take_along(db: Database, owner: Player, npc_id: int) -> Player:
     """Взять бойца с собой в бой — в клуб и в рейд.
 
@@ -595,6 +642,7 @@ __all__ = [
     "all_to_hospital",
     "fallen_on_spot",
     "pay_the_guard",
+    "pay_the_party",
     "post",
     "posted",
     "recall",

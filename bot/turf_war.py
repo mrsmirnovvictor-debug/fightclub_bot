@@ -135,9 +135,13 @@ class Siege:
     handed: int = 0
     # Сколько бойцов с точки увезли в больницу в этой драке
     fallen: int = 0
-    # Кому из гарнизона заплатили опытом и сколько: платят за отбитый
-    # штурм, и в сводке это видно отдельной строкой
+    # Кому заплатили опытом и сколько: гарнизону за отбитый штурм или
+    # нападавшим бойцам за взятую точку. В сводке это отдельная строка
     paid: list = field(default_factory=list)
+    # Бойцы отряда, вышедшие на штурм: номер в бою → номер бойца.
+    # Номера свои, из тысячной сотни, чтобы не столкнуться ни с
+    # номерами гарнизона, ни с номерами выставленных на точке
+    squad: dict = field(default_factory=dict)
     timer: asyncio.Task | None = None
     started_at: float = field(default_factory=time.monotonic)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -149,6 +153,16 @@ class Siege:
     @property
     def alive_ids(self) -> list[int]:
         return [one for one, who in self.party.items() if who.alive]
+
+    @property
+    def people(self) -> list[int]:
+        """Люди в отряде. Бойцы отряда стоят под отрицательными номерами."""
+        return [one for one in self.party if one > 0]
+
+    @property
+    def standing_people(self) -> list[int]:
+        """Люди, которые ещё на ногах. По ним судья и считает штурм."""
+        return [one for one in self.people if self.party[one].alive]
 
     @property
     def standing(self) -> list[int]:
@@ -420,6 +434,7 @@ class TurfWar:
         # На штурм идут те, кто стоит у дома и держится на ногах.
         # Ушедшего или добитого отряд не ждёт: он записывался, а не шёл
         party: dict[int, Fighter] = {}
+        siege_squad: dict[int, int] = {}
         for one in muster.members:
             player = await self.db.get_player(one)
             if player is None or not player.can_fight():
@@ -430,6 +445,27 @@ class TurfWar:
         if not party:
             self._drop_muster(muster)
             raise TurfError("Отряд разбежался — штурм отменён.")
+
+        # Бойцы отряда идут за хозяевами. Состав собирают люди: пустой
+        # отряд бойцами не добивают — это проверено выше, по людям.
+        # Номера свои, из тысячной сотни: у гарнизона номера от −1, а у
+        # выставленных на точке — от −100, и столкнуться с ними нельзя,
+        # иначе судья в разборе боя найдёт не того бойца
+        from bot.game.art import recruit_face
+        from bot.squad_service import companion
+
+        number = -1_000
+        for user_id in list(party):
+            mate = await companion(self.db, user_id, moment)
+            if mate is None:
+                continue
+            row, npc = mate
+            fighter = Fighter.from_player(npc, armed=True)
+            fighter.user_id = number
+            fighter.picture = recruit_face(int(row["face"]))
+            party[number] = fighter
+            siege_squad[number] = npc.user_id
+            number -= 1
 
         rows = await survey(self.db, moment)
         here = next(one for one in rows if one.spot.code == muster.spot.code)
@@ -447,11 +483,15 @@ class TurfWar:
             # бойцами отряда ни в прицеле, ни в журнале
             wall={-(number + 1): one for number, one in enumerate(wall)},
             defender_title=await owner_title(self.db, here.owner),
+            squad=siege_squad,
         )
         self._drop_muster(muster)
         self._sieges[siege.id] = siege
         for one in party:
-            self._busy[one] = siege.id
+            # Занятость — про людей: боец занят ровно потому, что занят
+            # его хозяин, и своей записи ему не нужно
+            if one > 0:
+                self._busy[one] = siege.id
         logger.info(
             "Штурм точки %s: отряд %s против гарнизона %s",
             siege.spot.code, len(party), len(wall),
@@ -462,7 +502,36 @@ class TurfWar:
             await self._finish(siege, won=True)
             return siege
         self._open_wave(siege)
+        await self._squad_acts(siege)
         return siege
+
+    async def _squad_acts(self, siege: Siege) -> None:
+        """Ход бойцов отряда: бьют и закрываются наугад, все сразу.
+
+        Кнопок у них нет, и ждать от них нажатия некого: без этого
+        волна стояла бы до конца таймера, а бойцы простояли бы весь
+        штурм живым щитом, ни разу не ударив.
+
+        Замка здесь нет нарочно: сюда приходят из нажатия и из таймера,
+        а они держат замок штурма сами, и второй заход за ним встал бы
+        навсегда — `asyncio.Lock` не пускает дважды даже того, кто его и
+        держит. Третий вход — выход на штурм, и там штурма ещё никто,
+        кроме нас, не видел.
+        """
+        if siege.finished:
+            return
+        mine = [
+            one for one in siege.alive_ids if one < 0 and one not in siege.acted
+        ]
+        if not mine:
+            return
+        for one in mine:
+            self._exchange(siege, one, random_action(siege.party[one], self.rng))
+            if self._judge(siege) is not None:
+                break
+        await count_deeds(self.db, siege.party)
+        if self._judge(siege) is not None or siege.wave_over:
+            await self._close_wave(siege)
 
     def _open_wave(self, siege: Siege) -> None:
         """Начать волну: навести прицелы и дать всем право хода."""
@@ -614,10 +683,16 @@ class TurfWar:
         return {one: 0 for one in siege.party} | {one: 1 for one in siege.wall}
 
     def _judge(self, siege: Siege) -> bool | None:
-        """Кончился ли штурм. None — дерёмся дальше."""
+        """Кончился ли штурм. None — дерёмся дальше.
+
+        Штурм кончается, когда лёг последний живой человек: бойцы
+        отряда одни точку не берут. Это и правило («точку берут
+        ногами», а у бойца своих ног в городе нет), и защита от
+        бесконечной волны — нажимать за бойцов некому.
+        """
         if not siege.standing:
             return True
-        if not siege.alive_ids:
+        if not siege.standing_people:
             return False
         return None
 
@@ -643,6 +718,7 @@ class TurfWar:
             done = False
         if done is None:
             self._open_wave(siege)
+            await self._squad_acts(siege)
             return
         await self._finish(siege, won=done)
 
@@ -701,7 +777,15 @@ class TurfWar:
 
     async def _settle(self, siege: Siege, won: bool) -> None:
         """Сама развязка: точка, казна, павшие и строки итога."""
+        from bot.squad_service import pay_the_party
+
         moment = now_ts()
+        # Бойцы, ходившие на штурм: здоровье им запишут в любом случае,
+        # а опыт — только за взятую точку. В больницу они не попадают:
+        # это цена охраны, а не штурма
+        attackers = await pay_the_party(
+            self.db, siege.squad, siege.party, won, moment
+        )
         if won:
             # Прежнего владельца рассчитываем за неполные сутки: своего
             # следующего расчёта у него уже не будет
@@ -745,6 +829,8 @@ class TurfWar:
             from bot.squad_service import pay_the_guard
 
             siege.paid = await pay_the_guard(self.db, siege.spot.code, moment)
+        if won:
+            siege.paid = attackers
         siege.summary = [
             # Волн ноль — драки не было вовсе: точка стояла пустая
             f"{siege.spot.title} взят без боя: охраны на нём не было."
@@ -764,7 +850,8 @@ class TurfWar:
         if siege.paid:
             got = sum(one for _, one in siege.paid)
             siege.summary.append(
-                f"Бойцы отряда получили опыт за оборону: {got}."
+                f"Бойцы отряда получили опыт за {'штурм' if won else 'оборону'}"
+                f": {got}."
             )
         if siege.handed:
             siege.summary.append(

@@ -1606,3 +1606,147 @@ async def test_the_done_button_is_the_way_out_of_a_hung_assault(db):
         assert war.siege_of_user(rival.user_id) is None
     finally:
         await war.close()
+
+
+# ---------- бойцы отряда в штурме ----------
+#
+# На точку ходят и с бойцами: взятый хозяином выходит вместе с ним,
+# бьёт сам и за взятую точку получает ставку своего уровня. В больницу
+# он при этом не попадает — больница это цена охраны, а не штурма.
+
+
+async def took_along(db, owner_id: int, **over):
+    """Боец в отряде этого игрока, взятый с собой в бой."""
+    npc = await a_guard(db, owner_id, "", **over)
+    await db.set_squad_party(npc.user_id, True)
+    return npc
+
+
+async def test_a_squad_fighter_marches_on_the_spot_with_his_owner(db):
+    """Взятый боец выходит на штурм и бьёт, не дожидаясь нажатий."""
+    from bot.turf_war import TurfWar
+
+    don, squad, clan = await family(db, size=2)
+    await stand(db, squad, "bar")
+    await db.take_turf("bar", "clan", str(clan.id), NOW)
+    await a_guard(db, squad[0], "bar", level=5, name="Охрана")
+
+    rival, rivals, theirs = await family(
+        db, first=40, name="Бешеные псы", sign="silver_wolves"
+    )
+    await stand(db, rivals, "bar")
+    npc = await took_along(db, rival.user_id, level=5, name="Громила")
+
+    war = TurfWar(db)
+    try:
+        muster = await war.open_muster(
+            await db.get_player(rival.user_id), "bar", now=NOW
+        )
+        siege = await war.march(muster.id, rival.user_id, now=NOW)
+
+        # Номер бойца в штурме свой, из тысячной сотни: с гарнизоном не
+        # столкнуться
+        assert list(siege.squad) == [-1_000]
+        assert siege.squad[-1_000] == npc.user_id
+        # И он уже отработал волну, хотя кнопок никто не нажимал.
+        # Проверяем размен, а не урон: удар могли и закрыть блоком, а
+        # броска у штурма своего нет — кости тут честные
+        assert -1_000 in siege.acted
+        assert siege.turn_number > 0
+        assert siege.rounds, "размен бойца должен попасть в разбор боя"
+    finally:
+        await war.close()
+
+
+async def test_a_taken_spot_pays_the_fighters_who_took_it(db):
+    """За взятую точку боец получает ставку своего уровня."""
+    from bot.game.economy import base_exp
+    from bot.turf_war import TurfWar
+
+    don, squad, clan = await family(db, size=2)
+    await db.take_turf("bar", "clan", str(clan.id), NOW)
+    rival, rivals, theirs = await family(
+        db, first=40, name="Бешеные псы", sign="silver_wolves"
+    )
+    await stand(db, rivals, "bar")
+    npc = await took_along(db, rival.user_id, level=5, name="Громила")
+
+    war = TurfWar(db)
+    try:
+        muster = await war.open_muster(
+            await db.get_player(rival.user_id), "bar", now=NOW
+        )
+        siege = await war.march(muster.id, rival.user_id, now=NOW)
+        if not siege.finished:
+            await war._finish(siege, won=True)
+    finally:
+        await war.close()
+
+    paid = await db.get_player(npc.user_id)
+    assert paid.total_exp == base_exp(5)
+    # И он остался в отряде на ногах: больница — цена охраны, не штурма
+    row = await db.squad_row(npc.user_id)
+    assert row["hospital_at"] == 0 and row["spot"] == ""
+    assert "получили опыт за штурм" in " ".join(siege.summary)
+
+
+async def test_a_failed_assault_pays_the_fighters_nothing(db):
+    """Отбили — платить не за что: точку взять не вышло."""
+    from bot.turf_war import TurfWar
+
+    don, squad, clan = await family(db, size=2)
+    await stand(db, squad, "bar")
+    await db.take_turf("bar", "clan", str(clan.id), NOW)
+    await a_guard(db, squad[0], "bar", level=9, name="Охрана")
+
+    rival, rivals, theirs = await family(
+        db, first=40, name="Бешеные псы", sign="silver_wolves"
+    )
+    await stand(db, rivals, "bar")
+    npc = await took_along(db, rival.user_id, level=5, name="Громила")
+
+    war = TurfWar(db)
+    try:
+        muster = await war.open_muster(
+            await db.get_player(rival.user_id), "bar", now=NOW
+        )
+        siege = await war.march(muster.id, rival.user_id, now=NOW)
+        if not siege.finished:
+            await war._finish(siege, won=False)
+    finally:
+        await war.close()
+
+    assert (await db.get_player(npc.user_id)).total_exp == 0
+
+
+async def test_the_assault_ends_when_the_last_person_falls(db):
+    """Бойцы отряда одни точку не берут: штурм — дело людей."""
+    from bot.turf_war import TurfWar
+
+    don, squad, clan = await family(db, size=2)
+    await stand(db, squad, "bar")
+    await db.take_turf("bar", "clan", str(clan.id), NOW)
+    await a_guard(db, squad[0], "bar", level=20, name="Охрана")
+
+    rival, rivals, theirs = await family(
+        db, first=40, name="Бешеные псы", sign="silver_wolves"
+    )
+    await stand(db, rivals, "bar")
+    npc = await took_along(db, rival.user_id, level=5, name="Громила")
+
+    war = TurfWar(db)
+    try:
+        muster = await war.open_muster(
+            await db.get_player(rival.user_id), "bar", now=NOW
+        )
+        siege = await war.march(muster.id, rival.user_id, now=NOW)
+        if siege.finished:  # боец мог успеть лечь сам
+            return
+        # Человека выносят, боец ещё стоит — штурм на этом и кончается
+        siege.party[rival.user_id].hp = 0
+        assert siege.party[-1_000].alive
+        assert war._judge(siege) is False
+        await war._finish(siege, won=False)
+        assert (await db.get_player(npc.user_id)).total_exp == 0
+    finally:
+        await war.close()
