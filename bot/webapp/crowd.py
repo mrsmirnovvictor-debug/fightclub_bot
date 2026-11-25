@@ -252,6 +252,47 @@ async def neighbour_row(
     }
 
 
+def patrol_rows(pair: int, level: int) -> list[dict[str, Any]]:
+    """Патрульные строками в списке дома: кто стоит и чем он тебе будет.
+
+    Уровень показываем тот, каким они выйдут против смотрящего: пять
+    сверху от его собственного. Это не пугалка, а честный ответ на
+    вопрос «что будет, если за мной придут» — число зависит от него, и
+    видеть он должен своё.
+
+    Кнопок у строки нет никаких. Задерживают они сами, а напасть на
+    патруль нельзя: это не сосед, которого можно взять за карман, а
+    городская служба. Зато видно лицо, звание и то, что они на смене.
+    """
+    from bot.game.patrol import officers
+
+    return [
+        {
+            "user_id": one.user_id,
+            "name": one.name,
+            "level": one.level,
+            "clan": "VCPD",
+            "online": True,
+            "presence": "На смене",
+            # По этому полю экран и узнаёт пост: у него своя плашка и
+            # никаких кнопок
+            "patrol": True,
+            "picture": one.picture,
+            "wanted": False,
+            "can_arrest": False,
+            "can_rob": False,
+            "same_clan": False,
+            "calm": 0,
+            "calm_text": "",
+            "busy": False,
+            "why": "Городской патруль. Задерживает по ордеру, без кнопок.",
+            "car": {},
+            "wanted_car": {},
+        }
+        for one in officers(level, pair=pair)
+    ]
+
+
 async def car_mark(
     db, player: Player, one: Player, moment: int
 ) -> dict[str, Any]:
@@ -443,6 +484,10 @@ async def build_crowd(
             else _why_not_rob(row, clan_id, left)
         )
         rows.append(row)
+    # Патруль стоит в списке дома первым: это не сосед, с которым что-то
+    # делают, а то, с чем в этом доме приходится считаться
+    if body["patrol"] >= 0:
+        rows = patrol_rows(body["patrol"], player.level) + rows
     body["crowd"] = rows
     body["note"] = _note(body, clan_id)
     return body

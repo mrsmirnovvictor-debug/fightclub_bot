@@ -1368,6 +1368,111 @@ def _army(
 # солдат выходили слабее пятерых гопников с лидером. Правилось это
 # запасом здоровья и бронёй; клинок остался прежним, он и так на уровне
 # дубинки начальника полиции.
+# ---------- комплект VCPD: форма городского патруля ----------
+#
+# Четверо городских ходят по городу парами и задерживают по ордеру
+# (`bot.game.patrol`). Это их форма: не товар и не приз, купить её
+# негде и выдать некому — в каталоге она лежит ради картинок и чисел,
+# как армейская форма охраны базы.
+#
+# **Ступень одиннадцатая: на одну выше прилавка.** Лучшее, что лежит в
+# лавке клуба, — девятого уровня (линия вышибалы), и форма обязана
+# стоять выше неё: патруль приходит к разыскиваемому на пять уровней
+# старше, и вещи должны этому соответствовать. Но ниже армейской
+# двенадцатой и ниже формы начальника: солдат на базе и начальник
+# участка остаются сильнее городового, иначе должность и рейд ничего
+# не стоили бы.
+#
+# **Числа постоянные.** Набором форма не считается: набор даёт прибавку
+# за число вещей (`bot.game.sets`), а здесь числа выставлены под
+# задержание — прибавка сверху сделала бы патруль сильнее задуманного.
+VCPD_LEVEL = 11
+
+
+def _vcpd(
+    code: str,
+    title: str,
+    slot: Slot,
+    icon: str,
+    **gives,
+) -> Item:
+    """Вещь формы VCPD: картинка — по коду, числа — постоянные."""
+    kind = gives.pop("kind", ItemKind.GEAR)
+    instrumental = str(gives.pop("instrumental", ""))
+    return Item(
+        code,
+        title,
+        slot,
+        icon,
+        kind=kind,
+        instrumental=instrumental,
+        level_required=VCPD_LEVEL,
+        reward=True,
+        **gives,
+    )
+
+
+VCPD_KIT: tuple[Item, ...] = (
+    _vcpd(
+        "vcpd_peaked_cap", "Фуражка VCPD", Slot.HEAD, "🧢",
+        strength=3, agility=1, intuition=2, hp=62,
+        armor_min=12, armor_max=15, anticrit=0.2,
+    ),
+    # Дубинка сержанта: ровный удар и точность. Против дубинки
+    # начальника (22–37) она заметно скромнее — у начальника должность,
+    # а у сержанта смена
+    _vcpd(
+        "vcpd_baton", "Полицейская дубинка", Slot.WEAPON, "🏏",
+        kind=ItemKind.WEAPON, instrumental="дубинкой",
+        strength=5, damage_min=23, damage_max=28,
+        accuracy=0.3, anticrit=0.2,
+    ),
+    # Электрошокер патрульного: урона меньше, попаданий больше. Он не
+    # калечит, а валит — этим патрульный и берёт
+    _vcpd(
+        "vcpd_stun_device", "Электрошокер", Slot.WEAPON, "⚡",
+        kind=ItemKind.WEAPON, instrumental="шокером",
+        strength=4, damage_min=19, damage_max=25,
+        accuracy=0.45, crit=0.25,
+    ),
+    _vcpd(
+        "vcpd_tunic", "Полицейский китель", Slot.JACKET, "🧥",
+        strength=4, agility=2, intuition=2, hp=92,
+        armor_min=15, armor_max=18, dodge=0.2,
+    ),
+    _vcpd(
+        "vcpd_holster_belt", "Пояс с кобурой", Slot.BELT, "🥋",
+        strength=3, agility=1, intuition=1, hp=34,
+        armor_min=12, armor_max=14, accuracy=0.25,
+    ),
+    _vcpd(
+        "vcpd_cuff_belt", "Пояс с наручниками", Slot.BELT, "🥋",
+        strength=2, agility=2, intuition=1, hp=34,
+        armor_min=12, armor_max=14, counter=0.05,
+    ),
+    _vcpd(
+        "vcpd_gloves", "Полицейские перчатки", Slot.GLOVES, "🧤",
+        strength=4, agility=2, intuition=1, hp=26, accuracy=0.2,
+    ),
+    # Щит патрульного: его дело — стоять, пока сержант работает
+    _vcpd(
+        "vcpd_riot_shield", "Полицейский щит", Slot.OFFHAND, "🛡",
+        kind=ItemKind.SHIELD,
+        strength=4, hp=90, armor_min=16, armor_max=19, anticrit=0.45,
+    ),
+    _vcpd(
+        "vcpd_uniform_trousers", "Форменные штаны", Slot.PANTS, "👖",
+        strength=2, agility=2, intuition=2, hp=48,
+        armor_min=12, armor_max=15,
+    ),
+    _vcpd(
+        "vcpd_duty_boots", "Полицейские ботинки", Slot.BOOTS, "🥾",
+        strength=4, agility=1, intuition=1, hp=38,
+        armor_min=13, armor_max=16, dodge=0.15,
+    ),
+)
+
+
 MILITARY_KIT: tuple[Item, ...] = (
     _army(
         "military_helmet", "Шлем с визором", Slot.HEAD, "🪖", "helmet",
@@ -3800,6 +3905,7 @@ ITEMS: tuple[Item, ...] = tuple(
     *SET_WEAPONS,
     *JEWEL_PIECES,
     *CHIEF_KIT,
+    *VCPD_KIT,
     *MILITARY_KIT,
     *CYBER_WEAPONS,
     )

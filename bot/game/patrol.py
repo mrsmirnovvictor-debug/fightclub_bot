@@ -52,15 +52,52 @@ OFFICERS = PAIR_SIZE * PAIRS
 # было видно по номеру
 FIRST_ID = -201
 
-# Классы пары: щит и кулак. Два танка стояли бы насмерть и не брали
-# никого, два бойца брали бы каждого с первого раза
+# Четверо городских: двое патрульных и двое сержантов, у каждого своё
+# лицо. Пара собирается всегда одинаково — патрульный и сержант:
+# щит и кулак. Два танка стояли бы насмерть и не брали никого, два
+# бойца брали бы каждого с первого раза.
+#
+# Классы разводят и экипировку: у патрульного щит и шокер, у сержанта
+# дубинка. Поясов в комплекте два, а слот под пояс один — наручники
+# носит тот, кто держит, кобуру тот, кто бьёт.
 PAIR_CLASSES: tuple[str, ...] = ("tank", "warrior")
 
-# Имена пары. У патрульных нет лиц и нет карточек: это пост, а не люди,
-# как и городская охрана у точек
-PAIR_NAMES: tuple[str, ...] = ("Патрульный", "Сержант")
+# Кто в каком карауле: по человеку на место в паре, и у каждой пары
+# свои двое. Имя с номером — чтобы в журнале боя было видно, который
+# из патрульных работает, а не «Патрульный против Патрульного»
+OFFICER_NAMES: tuple[tuple[str, ...], ...] = (
+    ("Патрульный 01", "Сержант 01"),
+    ("Патрульный 02", "Сержант 02"),
+)
 
-PATROL_ART = "guard_4_tank"
+# Лица: по файлу на каждого из четверых. Лежат рядом с прочими
+# аватарами города, не в папке нанятых: городовых рисовали своим
+# заходом, в форме VCPD
+OFFICER_FACES: tuple[tuple[str, ...], ...] = (
+    ("vcpd_patrolman_01", "vcpd_sergeant_01"),
+    ("vcpd_patrolman_02", "vcpd_sergeant_02"),
+)
+
+# На сколько уровней патруль старше того, за кем пришёл. Пять — это
+# разница, при которой ордер не шутка: прокачанный мафиози знает, что
+# за ним придут всерьёз, а не постоят рядом
+LEVELS_ABOVE = 5
+
+# Что на них надето. Форма одна на всех (фуражка, китель, перчатки,
+# штаны, ботинки), а руки и пояс разные: держит один, бьёт другой
+COMMON_GEAR: tuple[str, ...] = (
+    "vcpd_peaked_cap",
+    "vcpd_tunic",
+    "vcpd_gloves",
+    "vcpd_uniform_trousers",
+    "vcpd_duty_boots",
+)
+CLASS_GEAR: dict[str, tuple[str, ...]] = {
+    # Патрульный держит: щит, шокер и наручники
+    "tank": ("vcpd_riot_shield", "vcpd_stun_device", "vcpd_cuff_belt"),
+    # Сержант работает: дубинка и кобура
+    "warrior": ("vcpd_baton", "vcpd_holster_belt"),
+}
 
 # Сколько патруль стоит в одном доме. Двадцать минут — это и обозримое
 # ожидание для того, кто хочет его переждать, и полный круг маршрута за
@@ -119,40 +156,45 @@ def shift_left(now: int) -> int:
 
 
 def officer_level(suspect_level: int) -> int:
-    """Уровень патрульного: по уровню того, за кем пришли.
+    """Уровень патрульного: на пять выше того, за кем пришли.
 
-    Патруль не бывает слабее разыскиваемого — иначе десятый уровень
-    жил бы под ордером безнаказанно, а ордер стал бы украшением
-    карточки. И не бывает сильнее: берут двое, и этого достаточно.
+    Патруль обязан быть сильнее разыскиваемого, иначе ордер становится
+    украшением карточки: десятый уровень жил бы под ним безнаказанно и
+    бил бы городовых как мишени. Пять уровней сверху — и городской
+    потолок ему не предел: это служба, а не игрок, и лестница опыта на
+    неё не распространяется.
     """
-    return max(1, min(MAX_LEVEL, suspect_level))
+    return max(1 + LEVELS_ABOVE, suspect_level + LEVELS_ABOVE)
 
 
-def patrol_picture() -> str:
-    """Лицо патруля. Одно на всех: это пост, а не человек."""
-    from bot.game.art import npc_avatar
+def officer_face(pair: int, number: int) -> str:
+    """Лицо этого городового: у каждого из четверых своё."""
+    from bot.game.art import patrol_avatar
 
-    return npc_avatar(PATROL_ART)
+    faces = OFFICER_FACES[pair % len(OFFICER_FACES)]
+    return patrol_avatar(faces[number % len(faces)])
 
 
-def _weapon_for(level: int, fclass: str) -> OwnedItem | None:
-    """Оружие патрульного: лучшее с обычного прилавка по его уровню.
+def officer_name(pair: int, number: int) -> str:
+    """Как этого городового зовут в журнале боя и в списке дома."""
+    names = OFFICER_NAMES[pair % len(OFFICER_NAMES)]
+    return names[number % len(names)]
 
-    Тем же способом одевается городская охрана: голыми руками на
-    задержание не выходят, но и фанатской биты патрульному не выдают.
+
+def _gear_for(fclass: str) -> dict[Slot, OwnedItem]:
+    """Форма VCPD на этом патрульном: своя по классу плюс общая.
+
+    Числа у вещей постоянные: комплект нарисован и посчитан под
+    задержание, и подбирать его по уровню, как охране точки, не нужно —
+    у городского патруля своя форма, а не лучшее с прилавка.
     """
-    fits = [
-        item
-        for item in CATALOGUE.values()
-        if item.slot == Slot.WEAPON
-        and item.price
-        and item.level_required <= level
-        and (not item.for_classes or fclass in item.for_classes)
-    ]
-    if not fits:
-        return None
-    best = max(fits, key=lambda item: (item.level_required, item.price))
-    return OwnedItem(item=best, slot=Slot.WEAPON)
+    worn: dict[Slot, OwnedItem] = {}
+    for code in CLASS_GEAR.get(fclass, ()) + COMMON_GEAR:
+        item = CATALOGUE.get(code)
+        if item is None:  # pragma: no cover - вещь убрали из каталога
+            continue
+        worn.setdefault(item.slot, OwnedItem(item=item, slot=item.slot))
+    return worn
 
 
 def _stats_for(level: int) -> Stats:
@@ -165,43 +207,43 @@ def _stats_for(level: int) -> Stats:
     )
 
 
-def officers(level: int, start: int = FIRST_ID) -> list[Fighter]:
+def officers(level: int, start: int = FIRST_ID, pair: int = 0) -> list[Fighter]:
     """Пара патрульных как бойцы боя — по уровню того, за кем пришли."""
     rank = officer_level(level)
-    face = patrol_picture()
     out: list[Fighter] = []
     for number in range(PAIR_SIZE):
         fclass = PAIR_CLASSES[number % len(PAIR_CLASSES)]
-        weapon = _weapon_for(rank, fclass)
         out.append(
             Fighter(
                 user_id=start - number,
-                name=PAIR_NAMES[number % len(PAIR_NAMES)],
+                name=officer_name(pair, number),
                 fclass=FIGHTER_CLASSES[fclass],
                 stats=_stats_for(rank),
                 level=rank,
-                equipment=Equipment(
-                    items={Slot.WEAPON: weapon} if weapon else {}
-                ),
-                picture=face,
+                equipment=Equipment(items=_gear_for(fclass)),
+                picture=officer_face(pair, number),
             )
         )
     return out
 
 
 __all__ = [
+    "CLASS_GEAR",
+    "COMMON_GEAR",
     "FIRST_ID",
+    "LEVELS_ABOVE",
     "OFFICERS",
+    "OFFICER_FACES",
+    "OFFICER_NAMES",
     "PAIRS",
     "PAIR_CLASSES",
-    "PAIR_NAMES",
     "PAIR_SIZE",
-    "PATROL_ART",
     "ROUTES",
     "SHIFT_SECONDS",
+    "officer_face",
     "officer_level",
+    "officer_name",
     "officers",
-    "patrol_picture",
     "patrols_now",
     "route_of",
     "shift_left",

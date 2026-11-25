@@ -827,18 +827,111 @@ def test_two_pairs_walk_two_routes_by_the_clock():
     assert where_now(0, NOW + SHIFT_SECONDS * len(route)) == first
 
 
-def test_the_patrol_comes_at_the_level_of_the_man_it_takes():
-    """Патрульные ровня тому, за кем пришли: ордер не украшение."""
-    from bot.game.patrol import officers
+def test_the_patrol_comes_five_levels_above_the_man_it_takes():
+    """Патруль выходит на пять уровней старше: ордер не украшение.
 
+    Городской потолок им не предел: это служба, а не игрок, и
+    лестница опыта на неё не распространяется. Иначе прокачанный
+    мафиози бил бы городовых как мишени и жил под ордером спокойно.
+    """
+    from bot.game.patrol import LEVELS_ABOVE, officers
+
+    assert LEVELS_ABOVE == 5
     pair = officers(9)
     assert len(pair) == 2
-    assert [one.level for one in pair] == [9, 9]
+    assert [one.level for one in pair] == [14, 14]
     assert [one.fclass.code for one in pair] == ["tank", "warrior"]
     # Номера свои и отрицательные: аккаунта у них нет
     assert all(one.user_id < 0 for one in pair)
     assert len({one.user_id for one in pair}) == 2
-    assert [one.level for one in officers(1)] == [1, 1]
+    assert [one.level for one in officers(1)] == [6, 6]
+
+
+def test_the_four_officers_are_four_different_people():
+    """Четверо, и у каждого своё лицо и своё имя."""
+    from bot.game.patrol import OFFICERS, officers
+
+    first = officers(10, pair=0)
+    second = officers(10, pair=1)
+    names = [one.name for one in first + second]
+    faces = [one.picture for one in first + second]
+    assert len(set(names)) == OFFICERS == 4, names
+    assert len(set(faces)) == OFFICERS, faces
+    assert all(one.startswith("https://") for one in faces)
+    # Пара всегда собирается одинаково: патрульный и сержант
+    assert [one.fclass.code for one in second] == ["tank", "warrior"]
+
+
+def test_the_patrol_wears_the_vcpd_uniform():
+    """Форма VCPD на них настоящая: щит держит один, дубинка у другого.
+
+    Поясов в комплекте два, а слот под пояс один: наручники носит тот,
+    кто держит, кобуру — тот, кто бьёт.
+    """
+    from bot.game.equipment import CATALOGUE
+    from bot.game.gear import Slot
+    from bot.game.patrol import officers
+
+    cop, sergeant = officers(10)
+    worn = {
+        one.name: {slot: item.item.code for slot, item in one.equipment.items.items()}
+        for one in (cop, sergeant)
+    }
+    his = worn[cop.name]
+    hers = worn[sergeant.name]
+    assert his[Slot.OFFHAND] == "vcpd_riot_shield"
+    assert his[Slot.WEAPON] == "vcpd_stun_device"
+    assert his[Slot.BELT] == "vcpd_cuff_belt"
+    assert hers[Slot.WEAPON] == "vcpd_baton"
+    assert hers[Slot.BELT] == "vcpd_holster_belt"
+    assert Slot.OFFHAND not in hers, "щит у сержанта не положен"
+    # Общая форма на обоих
+    for slot in (Slot.HEAD, Slot.JACKET, Slot.GLOVES, Slot.PANTS, Slot.BOOTS):
+        assert his[slot] == hers[slot]
+        assert his[slot].startswith("vcpd_")
+    # Форму не купить и не выдать: в каталоге она ради картинок и чисел
+    for code in set(his.values()) | set(hers.values()):
+        item = CATALOGUE[code]
+        assert item.reward and not item.price and not item.stars, code
+        assert item.picture.endswith(f"items/{code}.jpeg")
+
+
+def test_the_patrol_is_stronger_than_the_man_it_comes_for():
+    """Двое городских сильнее того, за кем пришли, — в этом вся угроза.
+
+    Мерка та же, что у рейдовых противников: живучесть на урон в ход
+    (`scripts/foe_power.py`). Сравниваем с эталонным бойцом — тем, кто
+    купил всё лучшее с прилавка к своему уровню.
+    """
+    from bot.game.classes import get_class
+    from bot.game.combat import Fighter
+    from bot.game.equipment import Equipment, OwnedItem
+    from bot.game.patrol import officers
+    from bot.game.reference import best_kit, developed_stats
+
+    def might(one: Fighter) -> float:
+        from scripts.foe_power import damage_per_turn, toughness
+
+        return toughness(one) * damage_per_turn(one)
+
+    def hero(code: str, level: int) -> Fighter:
+        fclass = get_class(code)
+        kit = {
+            slot: OwnedItem(item=item, slot=slot)
+            for slot, item in best_kit(fclass, level).items()
+        }
+        return Fighter(
+            1, "Игрок", fclass, developed_stats(fclass, level),
+            level=level, equipment=Equipment(items=kit),
+        )
+
+    for level in (4, 7, 10):
+        pair = sum(might(one) for one in officers(level))
+        for code in ("tank", "warrior", "assassin", "rogue"):
+            mine = might(hero(code, level))
+            assert pair >= mine, (
+                f"ур{level} {code}: пара {pair:.0f} против игрока {mine:.0f}"
+            )
 
 
 async def test_the_patrol_takes_the_wanted_man_where_it_stands(db):
@@ -1115,3 +1208,55 @@ async def test_the_map_shows_where_the_patrols_stand(db, client):
 
     assert set(body["patrols"]) == set(patrols_now(clock()))
     assert len(body["patrols"]) == PAIRS
+
+
+async def test_the_house_lists_the_patrol_among_the_neighbours(db, client):
+    """Патрульные стоят в списке дома: лицо, звание и уровень.
+
+    Кнопок у строки нет никаких: задерживают они сами, а напасть на
+    городскую службу нельзя. Уровень показан тот, каким они выйдут
+    против смотрящего — пять сверху от его собственного.
+    """
+    from bot.game.patrol import where_now
+    from bot.game.health import now_ts as clock
+
+    moment = clock()
+    here = where_now(0, moment)
+    one = make_player(50, "Прохожий", where=here, level=7)
+    one.seen_at = moment
+    await db.save_player(one)
+
+    body = await (await client.get(
+        "/api/crowd", headers=headers(one.user_id)
+    )).json()
+
+    patrol = [row for row in body["crowd"] if row.get("patrol")]
+    assert [row["name"] for row in patrol] == ["Патрульный 01", "Сержант 01"]
+    assert [row["level"] for row in patrol] == [12, 12], "семь плюс пять"
+    assert all(row["picture"].startswith("https://") for row in patrol)
+    assert len({row["picture"] for row in patrol}) == 2, "лица разные"
+    assert all(row["clan"] == "VCPD" for row in patrol)
+    # Ни взять за карман, ни задержать: это пост, а не сосед
+    assert not any(row["can_rob"] or row["can_arrest"] for row in patrol)
+    assert all("по ордеру" in row["why"] for row in patrol)
+    # И стоят они первыми: с ними в этом доме приходится считаться
+    assert body["crowd"][0].get("patrol") is True
+
+
+async def test_the_other_pair_has_its_own_faces(db, client):
+    """Во втором доме стоит вторая пара — со своими лицами и именами."""
+    from bot.game.patrol import where_now
+    from bot.game.health import now_ts as clock
+
+    moment = clock()
+    one = make_player(50, "Прохожий", where=where_now(1, moment))
+    one.seen_at = moment
+    await db.save_player(one)
+
+    body = await (await client.get(
+        "/api/crowd", headers=headers(one.user_id)
+    )).json()
+
+    patrol = [row for row in body["crowd"] if row.get("patrol")]
+    assert [row["name"] for row in patrol] == ["Патрульный 02", "Сержант 02"]
+    assert body["patrol"] == 1

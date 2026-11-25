@@ -18475,14 +18475,34 @@ function crowdList(data) {
 
 function neighbourCard(one, data) {
   const box = document.createElement("article");
-  box.className = "neighbour" + (one.online ? "" : " away");
+  box.className = "neighbour" + (one.online ? "" : " away")
+    + (one.patrol ? " patrol" : "");
+
+  // Лицо есть только у городовых: соседей в списке узнают по нику, а
+  // патрульные — пост, и у поста лицо вместо карточки
+  if (one.picture) {
+    const face = document.createElement("img");
+    face.className = "neighbour-face";
+    face.alt = "";
+    face.loading = "lazy";
+    face.decoding = "async";
+    face.addEventListener("error", () => {
+      const mark = document.createElement("span");
+      mark.className = "neighbour-face emoji";
+      mark.textContent = "🚔";
+      face.replaceWith(mark);
+    });
+    face.src = one.picture;
+    box.appendChild(face);
+  }
 
   const head = document.createElement("header");
   head.className = "neighbour-head";
   const name = document.createElement("span");
   name.className = "neighbour-name";
   // Розыск виден всем, не только значку: город знает, кого ищут
-  name.textContent = (one.online ? "🟢 " : "⚪️ ") + (one.wanted ? "🔎 " : "")
+  name.textContent = (one.patrol ? "🚔 " : one.online ? "🟢 " : "⚪️ ")
+    + (one.wanted ? "🔎 " : "")
     + one.name + " [" + one.level + "]";
   const where = document.createElement("span");
   where.className = "neighbour-clan";

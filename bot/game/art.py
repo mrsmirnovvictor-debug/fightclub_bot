@@ -281,6 +281,16 @@ def recruit_face(number: int) -> str:
     return f"{RECRUITS}/npc_male_{number:02d}.png"
 
 
+def patrol_avatar(code: str) -> str:
+    """Лицо городского патрульного: avatars/vcpd_patrolman_01.png.
+
+    Папки `npc` у них нет нарочно: там лежат лица нанятых — охрана,
+    мафия, тренер, — а городовые нарисованы отдельным заходом, своим
+    комплектом формы VCPD, и лежат рядом с прочими аватарами города.
+    """
+    return f"{AVATARS}/{code}.png"
+
+
 def ability_placeholder(tier: int) -> str:
     """Тень невыученного приёма: items/ability_placeholder_3.webp.
 
@@ -456,6 +466,7 @@ __all__ = [
     "DAILY_REWARDS",
     "RECRUITS",
     "RECRUIT_FACES",
+    "patrol_avatar",
     "recruit_face",
     "daily_icon",
     "ability_placeholder",
