@@ -1109,18 +1109,6 @@ CREATE TABLE IF NOT EXISTS mayor (
 -- Нанятые: наёмники семьи и патрульные города. Принадлежат бойцу, а
 -- не стороне: платит за них человек, и в его счёт они идут. `spot`
 -- пусто — нанятый в резерве, не выставлен никуда
-CREATE TABLE IF NOT EXISTS hirelings (
-    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner_id INTEGER NOT NULL,
-    side     TEXT    NOT NULL,
-    grade    TEXT    NOT NULL,
-    spot     TEXT    NOT NULL DEFAULT '',
-    hired_at INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS hirelings_owner ON hirelings(owner_id);
-CREATE INDEX IF NOT EXISTS hirelings_spot ON hirelings(spot);
-
 -- Отряд: кто чей и чем отличается. Сам боец лежит в `players` с
 -- отрицательным номером — оттуда у него рюкзак, вещи, здоровье и
 -- травмы, как у всякого бойца города. Здесь только то, чего у игрока
@@ -4714,20 +4702,6 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount
 
-    # ---------- нанятые: наёмники и патрульные ----------
-
-    async def hire(
-        self, owner_id: int, side: str, grade: str, now: int
-    ) -> int:
-        """Записать нанятого. Возвращает его номер."""
-        cursor = await self.conn.execute(
-            "INSERT INTO hirelings (owner_id, side, grade, hired_at) "
-            "VALUES (?,?,?,?)",
-            (owner_id, side, grade, now),
-        )
-        await self.conn.commit()
-        return int(cursor.lastrowid)
-
     # ---------- отряд ----------
 
     async def squad_of(self, owner_id: int) -> list[dict]:
@@ -4970,23 +4944,6 @@ class Database:
         )
         await self.conn.commit()
 
-    async def hirelings_of(self, owner_id: int) -> list[dict]:
-        """Все нанятые этого бойца: и в резерве, и на точках."""
-        async with self.conn.execute(
-            "SELECT * FROM hirelings WHERE owner_id = ? ORDER BY id",
-            (owner_id,),
-        ) as cursor:
-            rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
-
-    async def hirelings_at(self, spot: str) -> list[dict]:
-        """Кто стоит на этой точке. Пусто — только городская охрана."""
-        async with self.conn.execute(
-            "SELECT * FROM hirelings WHERE spot = ? ORDER BY id", (spot,)
-        ) as cursor:
-            rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
-
     async def posted_counts(self) -> dict[str, int]:
         """Сколько бойцов на каждой точке — для карты одним запросом.
 
@@ -5000,40 +4957,6 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return {str(row["spot"]): int(row["total"]) for row in rows}
-
-    async def post_hireling(self, hire_id: int, owner_id: int, spot: str) -> bool:
-        """Выставить своего нанятого на точку. False — он не твой или уже стоит."""
-        cursor = await self.conn.execute(
-            "UPDATE hirelings SET spot = ? WHERE id = ? AND owner_id = ? "
-            "AND spot = ''",
-            (spot, hire_id, owner_id),
-        )
-        await self.conn.commit()
-        return cursor.rowcount > 0
-
-    async def drop_hireling(self, hire_id: int) -> bool:
-        """Снять одного нанятого насовсем: его убили на точке."""
-        cursor = await self.conn.execute(
-            "DELETE FROM hirelings WHERE id = ?", (hire_id,)
-        )
-        await self.conn.commit()
-        return cursor.rowcount > 0
-
-    async def clear_spot(self, spot: str) -> int:
-        """Вынести всех нанятых с точки. Они гибнут насовсем."""
-        cursor = await self.conn.execute(
-            "DELETE FROM hirelings WHERE spot = ?", (spot,)
-        )
-        await self.conn.commit()
-        return cursor.rowcount
-
-    async def clear_all_hirelings(self) -> int:
-        """Распустить всех нанятых разом. Это для разовых работ."""
-        cursor = await self.conn.execute("DELETE FROM hirelings")
-        await self.conn.commit()
-        return cursor.rowcount
-
-    # ---------- выборы мэра ----------
 
     async def nominate(
         self, day: str, user_id: int, program: str, now: int

@@ -954,22 +954,15 @@ async def test_a_mass_hit_in_a_robbery_reaches_the_second_pair(db):
 async def test_a_siege_splashes_the_garrison_and_blesses_the_squad(db, monkeypatch):
     """В штурме разлёт достаёт весь гарнизон, а заготовка ложится отряду."""
     from bot.game.turf import DAY_SECONDS
-    from bot.hire_service import hire, post
     from bot.turf_war import TurfWar
-    from tests.test_turf import NOW, family, stand
+    from tests.test_turf import NOW, a_guard, family, stand
 
     don, squad, clan = await family(db)
     await db.take_turf("bar", "clan", str(clan.id), NOW - 3 * DAY_SECONDS)
     await stand(db, squad, "bar")
-    # Гарнизон из двух наёмников: разлёту есть куда лететь
+    # Гарнизон из двух бойцов: разлёту есть куда лететь
     for number in squad[:2]:
-        one = await db.get_player(number)
-        one.credits = 20_000
-        await db.save_player(one)
-        await hire(db, await db.get_player(number), "merc_9", now=NOW)
-        his = [row for row in await db.hirelings_of(number) if not row["spot"]]
-        await post(db, await db.get_player(number), int(his[0]["id"]), "bar",
-                   now=NOW)
+        await a_guard(db, number, "bar", level=9, name=f"Боец {number}")
 
     rival, rivals, _ = await family(
         db, first=20, name="Бешеные псы", sign="silver_wolves"

@@ -119,11 +119,6 @@ from bot.estate_service import (
     withdraw as flat_withdraw,
 )
 from bot.turf_service import TurfError, release as turf_release
-from bot.hire_service import (
-    HireError,
-    hire as hire_one,
-    post as post_one,
-)
 from bot.study_service import (
     StudyError,
     attend as study_attend,
@@ -4042,13 +4037,6 @@ async def api_turf_action(request: web.Request) -> web.Response:
             said = await war.use_ability(
                 siege.id, player.user_id, str(data.get("code") or "")
             )
-        elif action == "hire":
-            # Нанятый выходит из кармана того, кто его взял
-            done = await hire_one(db, player, str(data.get("grade") or ""))
-            said = (
-                f"{done['grade'].title} нанят. На руках ещё место: "
-                f"{done['left']}."
-            )
         elif action == "post":
             # Охрану больше не покупают: на точку ставят своего бойца
             from bot.squad_service import SquadError, post as post_guard
@@ -4073,8 +4061,6 @@ async def api_turf_action(request: web.Request) -> web.Response:
             said = ""
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
-    except HireError as error:
-        return web.json_response({"error": str(error)}, status=409)
     except TurfError as error:
         return web.json_response({"error": str(error)}, status=409)
     except (TypeError, ValueError):

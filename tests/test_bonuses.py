@@ -375,20 +375,16 @@ async def test_a_quiet_week_pays_nothing_but_still_closes(db):
 
 async def test_the_pool_is_paid_on_top_of_the_turf_income(db):
     """Бонус ничего не отнимает у дохода с точек: это разные деньги."""
-    from bot.hire_service import hire, post
     from bot.turf_service import survey
+    from tests.test_turf import a_guard
 
     don, squad, clan = await family(db)
     week = week_of(NOW)
     await db.take_turf("bar", "clan", str(clan.id), week)
     boss = await db.get_player(don.user_id)
-    boss.credits = 20_000
     boss.location = "bar"
     await db.save_player(boss)
-    await hire(db, await db.get_player(don.user_id), "merc_5", now=week)
-    mine = (await db.hirelings_of(don.user_id))[0]
-    await post(db, await db.get_player(don.user_id), int(mine["id"]), "bar",
-               now=week)
+    await a_guard(db, don.user_id, "bar", level=5, name="Охрана")
     for _ in range(30):
         await note_raid(db, clan.id, NOW)
 

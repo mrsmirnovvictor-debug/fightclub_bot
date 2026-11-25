@@ -76,16 +76,12 @@ async def run(db: Database, now: int | None = None) -> list[str]:
 
     if await db.mark_chore(WIPE_TURF, moment):
         wiped = await db.wipe_turf()
-        # Выставленных снимаем вместе с владельцами: охрана без точки —
-        # это строки в таблице, за которые уже заплачено, а стоять им
-        # больше негде
-        hired = await db.clear_all_hirelings()
-        logger.info(
-            "Точки сброшены: владельцев %s, выставленных %s", wiped, hired
-        )
-        done.append(
-            f"город сброшен: снято владельцев {wiped}, охраны {hired}"
-        )
+        # Выставленных снимать не нужно: охрану держат бойцы отряда, и
+        # снятая точка просто перестаёт быть их постом. Прежние наёмники
+        # были строками в своей таблице, и их приходилось стирать
+        # отдельно — таблицы этой больше нет
+        logger.info("Точки сброшены: владельцев %s", wiped)
+        done.append(f"город сброшен: снято владельцев {wiped}")
 
     if await db.mark_chore(RAGNAR_CHIEF, moment):
         done.append(await _seat_the_chief(db, moment))

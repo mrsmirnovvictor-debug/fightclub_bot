@@ -369,7 +369,7 @@ async def garrison(
     однажды на ней подрался. Раньше сюда подставлялась городская
     охрана, и выходило, что город стережёт дом мафии от другой мафии.
     """
-    from bot.hire_service import guards
+    from bot.game.guards import guards
     from bot.squad_service import posted
 
     out: list[Fighter] = []

@@ -14157,22 +14157,15 @@ async def test_the_spot_panel_says_why_the_deed_is_off(server, db):
     говорит словом. Неверная причина хуже, чем никакой: с ней уходят с
     готовым, но ложным ответом.
     """
-    from bot.hire_service import hire, post
     from bot.turf_war import TurfWar
     from bot.webapp.turf import build_war
-    from tests.test_turf import NOW, family, stand
+    from tests.test_turf import NOW, a_guard, family, stand
     from tests.test_police import cop
 
     don, squad, clan = await family(db)
-    boss = await db.get_player(don.user_id)
-    boss.credits = 20_000
-    await db.save_player(boss)
     await db.take_turf("bar", "clan", str(clan.id), NOW - 3 * 24 * 3600)
     await stand(db, [don.user_id], "bar")
-    await hire(db, await db.get_player(don.user_id), "merc_7", now=NOW)
-    mine = (await db.hirelings_of(don.user_id))[0]
-    await post(db, await db.get_player(don.user_id), int(mine["id"]), "bar",
-               now=NOW)
+    await a_guard(db, don.user_id, "bar", level=7, name="Головорез")
 
     officer = await cop(db, 94, "Ragnar", where="bar")
     rival, rivals, _ = await family(

@@ -245,7 +245,7 @@ async def _spot_panel(db, row: dict[str, Any] | None) -> dict[str, Any] | None:
     """
     from bot.game.art import recruit_face
     from bot.game.classes import FIGHTER_CLASSES
-    from bot.game.hirelings import GUARD_LEVEL, GUARD_SIZE, guard_picture
+    from bot.game.guards import GUARD_LEVEL, GUARD_SIZE, guard_picture
     from bot.game.turf import CLAN
 
     if row is None:

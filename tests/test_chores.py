@@ -12,33 +12,33 @@ from bot.game.health import now_ts
 from tests.test_robbery import NOW, family, stand
 
 
-async def test_the_wipe_clears_the_city_and_the_hired(db):
-    """Сброс города: владельцы сняты, выставленные распущены."""
-    from bot.hire_service import hire, post
+async def test_the_wipe_clears_the_city_and_leaves_the_squads(db):
+    """Сброс города снимает владельцев, а бойцов не трогает.
 
-    from tests.test_turf import patrolled
+    Прежде вместе с точками распускали наёмников: они были строками в
+    своей таблице, за которые уже заплачено, а стоять им больше негде.
+    Боец отряда — не строка охраны, а человек хозяина: точка снята, он
+    просто перестал быть на ней постом.
+    """
+    from tests.test_turf import a_guard, patrolled
 
     don, squad, clan = await family(db)
     await db.take_turf("bar", "clan", str(clan.id), NOW)
-    # Городская точка держится патрульным: без него обзор вернёт её
-    # городу в тот же миг
+    # Городская точка держится бойцом: без него обзор вернёт её городу
+    # в тот же миг
     await patrolled(db, "casino", user_id=88, when=NOW)
     await stand(db, [don.user_id], "bar")
-    rich = await db.get_player(don.user_id)
-    rich.credits = 10_000
-    await db.save_player(rich)
-    await hire(db, await db.get_player(don.user_id), "merc_5", now=NOW)
-    taken = (await db.hirelings_of(don.user_id))[0]
-    await post(db, await db.get_player(don.user_id), int(taken["id"]), "bar",
-               now=NOW)
+    npc = await a_guard(db, don.user_id, "bar", level=5, name="Охрана")
 
     assert len(await db.turf_rows()) == 2
-    assert len(await db.hirelings_of(don.user_id)) == 1
+    assert len(await db.squad_of(don.user_id)) == 1
 
     done = await chores.run(db, now_ts())
     assert done and "город сброшен" in done[0]
     assert await db.turf_rows() == {}
-    assert await db.hirelings_of(don.user_id) == []
+    # Боец цел и остался у хозяина: город сбросили, а отряд не его
+    assert len(await db.squad_of(don.user_id)) == 1
+    assert await db.get_player(npc.user_id) is not None
 
 
 async def test_the_chore_runs_once_and_not_again(db):
