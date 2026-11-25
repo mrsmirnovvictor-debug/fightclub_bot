@@ -58,9 +58,9 @@ async def state(client, user_id: int) -> dict:
 def live(body: dict) -> list[dict]:
     """Вызовы живых бойцов из ответа вкладки.
 
-    Заявка Тренера висит в том же списке и висит всегда: она следует из
-    его состояния, а не из чьего-то вызова. Тестам про живых бойцов она
-    только мешает, поэтому отбирается здесь, в одном месте.
+    Тренер и свои бойцы приезжают тем же ответом, но своим списком —
+    «Тренировки»: это бои против города, и среди живых заявок им не
+    место. Отбор остаётся на случай, если в заявки опять попадёт NPC.
     """
     return [row for row in body["challenges"] if not row.get("npc")]
 
@@ -718,8 +718,12 @@ async def test_the_analyst_follows_the_fight(arena):
 
 
 def npc_row(body: dict) -> dict | None:
-    """Заявка Тренера из ответа вкладки, если она там есть."""
-    return next((row for row in body["challenges"] if row.get("npc")), None)
+    """Заявка Тренера из ответа вкладки, если она там есть.
+
+    Лежит она в «Тренировках», а не среди живых заявок: бой против
+    города — это отдельный раздел клуба.
+    """
+    return next((row for row in body["training"] if row.get("npc")), None)
 
 
 async def test_the_trainer_calls_from_the_ring_list(arena):
@@ -735,7 +739,8 @@ async def test_the_trainer_calls_from_the_ring_list(arena):
     row = npc_row(body)
 
     assert row is not None, "Тренера на ринге нет"
-    assert body["challenges"][0] is row, "заявка Тренера стоит не первой"
+    assert body["training"][0] is row, "заявка Тренера стоит не первой"
+    assert row not in body["challenges"], "Тренер попал в живые заявки"
     assert row["open"] is True
     assert row["note"] == "Твой учитель, который поможет набраться опыта."
     assert row["challenger"]["name"] == "Тренер"
@@ -1038,6 +1043,25 @@ async def a_squad_row(db, owner_id: int, level: int = 4):
     return (await db.squad_of(owner_id))[0], npc
 
 
+async def test_the_spar_stands_in_the_training_list_and_not_in_the_calls(arena):
+    """Свой боец зовёт в «Тренировки», а не в список живых заявок.
+
+    Разделы в клубе разные: в одном ищут живого соперника, в другом
+    работают с Тренером и своими. Смешанные в один список, они путали
+    одно с другим — новичок шёл драться и находил своего же бойца.
+    """
+    client, _, db = arena
+    _, npc = await a_squad_row(db, 42)
+
+    body = await state(client, 42)
+
+    rows = [row for row in body["training"] if row.get("spar")]
+    assert [row["spar"] for row in rows] == [npc.user_id]
+    # Тренер стоит первым, свои бойцы — за ним
+    assert body["training"][0].get("spar") is None
+    assert not any(row.get("spar") for row in body["challenges"])
+
+
 async def test_a_free_fighter_stands_in_the_ring_list(db):
     """Свой боец — такая же заявка, как у Тренера, и зовут его так же."""
     from bot.webapp.fight import spar_row
@@ -1050,7 +1074,10 @@ async def test_a_free_fighter_stands_in_the_ring_list(db):
     call = spar_row(row, npc, owner, busy=False)
     assert call["npc"] is True and call["spar"] == npc.user_id
     assert call["open"] is True
-    assert "опыт ему, а не тебе" in call["note"]
+    # Опыт идёт обоим — и бойцу, и хозяину за победу, — а в рейтинг и
+    # статистику спарринг не идёт: подпись говорит ровно это
+    assert "Опыт идёт обоим" in call["note"]
+    assert "статистику бой не идёт" in call["note"]
     assert call["challenger"]["name"] == "Громила"
     assert call["challenger"]["level"] == npc.level
     assert call["mirror"] is False, "своего бойца под себя не подгоняют"

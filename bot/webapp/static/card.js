@@ -3832,8 +3832,20 @@ async function showFighter(fighter) {
     });
     if (!response.ok) throw new Error("Карточка не открылась.");
     const card = await response.json();
-    el("sheet-note").textContent =
-      card.fclass.emoji + " " + card.fclass.title + " · " + card.city;
+    // Боец отряда подписывается так же, как в разделе «Отряд»:
+    // звёздами и тем, где он сейчас. Город и класс — это про человека,
+    // а у бойца города нет, зато есть звёзды, по которым его и брали.
+    // Кнопок хозяина здесь нет нарочно: состав собирают в отряде, где
+    // за всплывашкой перерисовывается список
+    if (card.squad) {
+      el("sheet-title").textContent =
+        card.name + " [" + card.level + "] " + starMark(card.stars);
+      el("sheet-note").textContent =
+        card.fclass.emoji + " " + card.fclass.title + " · " + card.state_text;
+    } else {
+      el("sheet-note").textContent =
+        card.fclass.emoji + " " + card.fclass.title + " · " + card.city;
+    }
     el("sheet-list").textContent = "";
     el("sheet-list").appendChild(fighterCard(card));
   } catch (error) {
@@ -3878,7 +3890,7 @@ function pickClubSection(name) {
   // показываем здешний
   if (name !== house.start && !allowed.includes(name)) name = house.start;
   clubSection = name;
-  ["fights", "battle", "raid", "players", "ladder", "stats"].forEach(
+  ["fights", "battle", "training", "raid", "players", "ladder", "stats"].forEach(
     (section) => {
       el("club-" + section).classList.toggle("hidden", section !== name);
     }
@@ -3888,7 +3900,8 @@ function pickClubSection(name) {
   // но вместо вызовов в нём записка: так видно, что бои есть, просто не
   // здесь, — а кнопки, на которые сервер всё равно ответит отказом, не
   // рисуются вовсе
-  const locked = (name === "fights" || name === "battle") && !canFightHere();
+  const locked =
+    ["fights", "battle", "training"].includes(name) && !canFightHere();
   if (locked) sayNoFightsHere(name);
   if (name === "players" && !clubData) loadClub();
   // Рейтинг недели перечитываем всякий раз, а не только впервые: он
@@ -3905,8 +3918,8 @@ function pickClubSection(name) {
 }
 
 function sayNoFightsHere(name) {
-  const note = name === "fights" ? "fights-note" : "battle-note";
-  const body = name === "fights" ? "fights-body" : "battle-body";
+  const note = name + "-note";
+  const body = name + "-body";
   el(note).textContent = "";
   const said = document.createElement("p");
   said.className = "club-locked";
@@ -3976,6 +3989,7 @@ function clubSections() {
   return [
     ["fights", "Одиночные бои"],
     ["battle", "Групповые бои"],
+    ["training", "Тренировки"],
   ];
 }
 
@@ -4117,6 +4131,35 @@ function renderFights(data) {
     body.appendChild(openForm(data));
     if (data.challenges.length) body.appendChild(challengeList(data));
   }
+  renderTraining(data);
+}
+
+/** Раздел «Тренировки»: Тренер и свои бойцы.
+ *
+ * Приезжают они тем же ответом, что и ринг, поэтому рисуются здесь, а
+ * не своим запросом: состояние у разделов общее — вышел на ринг, и
+ * принимать в тренировках уже нечего.
+ */
+function renderTraining(data) {
+  const note = el("training-note");
+  const body = el("training-body");
+  body.textContent = "";
+  if (data.duel) {
+    // Ринг у клуба один, и панель боя живёт в «Одиночных боях». Бой
+    // начался отсюда — уводим туда же: иначе человек остался бы
+    // смотреть на пустой раздел, пока на ринге идёт его бой
+    if (clubSection === "training") pickClubSection("fights");
+    note.textContent = "Ты на ринге. Тренировка подождёт.";
+    return;
+  }
+  const rows = data.training || [];
+  if (!rows.length) {
+    note.textContent =
+      "Учиться не у кого: Тренер берёт новичков, а бойцов отряда у тебя нет.";
+    return;
+  }
+  note.textContent = "Бои против города: опыт идёт, рейтинг — нет.";
+  body.appendChild(trainingList(data));
 }
 
 function openForm(data) {
@@ -4194,45 +4237,68 @@ function challengeList(data) {
   head.textContent = "Кто зовёт драться";
   box.appendChild(head);
   data.challenges.forEach((challenge) => {
-    const card = document.createElement("div");
-    card.className = "fight-card";
-    const line = document.createElement("p");
-    line.className = "fight-line";
-    const said = document.createElement("span");
-    said.textContent =
-      challenge.mode.emoji + " " + challenge.challenger.emoji + " " +
-      challenge.challenger.name + " [" + challenge.challenger.level + "] — " +
-      challenge.mode.title + (challenge.personal ? ", лично тебе" : "");
-    line.appendChild(said);
-    line.appendChild(rivalInfo(challenge.challenger));
-    card.appendChild(line);
-    // У заявки Тренера есть подпись: свободен — про отражение, занято —
-    // почему сейчас нельзя. Без неё совпадение класса с твоим читалось
-    // бы как ошибка, а исчезающая строка — как сбой
-    if (challenge.npc && challenge.note) {
-      const note = document.createElement("p");
-      note.className = "fight-note";
-      note.textContent = challenge.note;
-      card.appendChild(note);
-    }
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btn neon wide";
-    btn.textContent = "Принять вызов";
-    btn.disabled = !data.can_fight || (challenge.npc && !challenge.open);
-    btn.addEventListener("click", () =>
-      fightAction(
-        challenge.spar
-          ? { action: "spar", npc: challenge.spar }
-          : challenge.npc
-            ? { action: "lesson" }
-            : { action: "join", challenge_id: challenge.id }
-      )
-    );
-    card.appendChild(btn);
-    box.appendChild(card);
+    box.appendChild(fightCall(challenge, data));
   });
   return box;
+}
+
+/** Список тренировок: Тренер и свои бойцы одной полкой.
+ *
+ * Карточка в ней та же, что у живой заявки: это тот же выход на ринг,
+ * и описывать его вторым способом значило бы делать из тренировки
+ * другое дело, чем бой.
+ */
+function trainingList(data) {
+  const box = document.createElement("div");
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "С кем поработать";
+  box.appendChild(head);
+  (data.training || []).forEach((challenge) => {
+    box.appendChild(fightCall(challenge, data));
+  });
+  return box;
+}
+
+/** Карточка одного вызова: строка с соперником, подпись и кнопка. */
+function fightCall(challenge, data) {
+  const card = document.createElement("div");
+  card.className = "fight-card";
+  const line = document.createElement("p");
+  line.className = "fight-line";
+  const said = document.createElement("span");
+  said.textContent =
+    challenge.mode.emoji + " " + challenge.challenger.emoji + " " +
+    challenge.challenger.name + " [" + challenge.challenger.level + "] — " +
+    challenge.mode.title + (challenge.personal ? ", лично тебе" : "");
+  line.appendChild(said);
+  line.appendChild(rivalInfo(challenge.challenger));
+  card.appendChild(line);
+  // У заявки Тренера есть подпись: свободен — про отражение, занято —
+  // почему сейчас нельзя. Без неё совпадение класса с твоим читалось
+  // бы как ошибка, а исчезающая строка — как сбой
+  if (challenge.npc && challenge.note) {
+    const note = document.createElement("p");
+    note.className = "fight-note";
+    note.textContent = challenge.note;
+    card.appendChild(note);
+  }
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn neon wide";
+  btn.textContent = "Принять вызов";
+  btn.disabled = !data.can_fight || (challenge.npc && !challenge.open);
+  btn.addEventListener("click", () =>
+    fightAction(
+      challenge.spar
+        ? { action: "spar", npc: challenge.spar }
+        : challenge.npc
+          ? { action: "lesson" }
+          : { action: "join", challenge_id: challenge.id }
+    )
+  );
+  card.appendChild(btn);
+  return card;
 }
 
 function fightBar(fighter) {

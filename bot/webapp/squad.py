@@ -90,6 +90,31 @@ async def build_squad(
     }
 
 
+def wear_hired_face(card: dict[str, Any], npc: Player, number: int) -> str:
+    """Поставить бойцу в рамку то лицо, с которым его наняли.
+
+    `build_card` его не знает: у игрока лицо берётся от образа, а у
+    бойца образа нет вовсе — его лицо лежит в строке отряда. Без этой
+    правки в рамке стоял бы классовый аватар, и купленный боец
+    оказывался бы другим человеком — в отряде одним, в клубе другим.
+
+    Правка нужна всюду, где карточку бойца собирают, а собирают её в
+    двух местах: в разделе «Отряд» и под значком ℹ️ в клубе. Поэтому
+    она живёт здесь, а не в каждом из них своей копией.
+
+    Возвращает адрес лица: он нужен и самой карточке, отдельным полем.
+    """
+    face = recruit_face(number)
+    card["avatar"] = dict(
+        card.get("avatar") or {},
+        url=face,
+        look="",
+        look_title=npc.fclass.title,
+        photo=False,
+    )
+    return face
+
+
 async def build_fighter(
     db: Database,
     owner: Player,
@@ -114,19 +139,7 @@ async def build_fighter(
     # Смотрит хозяин, и карточка должна быть «своей»: иначе страница
     # спрячет инвентарь, который он как раз и пришёл менять
     card = build_card(npc, bot_token, viewer_id=npc_id, now=moment)
-    # Лицо в рамке — то самое, которое стояло на витрине при найме.
-    # `build_card` его не знает: у игрока лицо берётся от образа, а у
-    # бойца образа нет вовсе — его лицо лежит в строке отряда. Без этой
-    # правки в карточке стоял бы классовый аватар, и купленный боец
-    # оказывался бы в ней другим человеком
-    face = recruit_face(row["face"])
-    card["avatar"] = dict(
-        card.get("avatar") or {},
-        url=face,
-        look="",
-        look_title=npc.fclass.title,
-        photo=False,
-    )
+    face = wear_hired_face(card, npc, row["face"])
     card.update(
         {
             "squad": True,
@@ -308,4 +321,13 @@ async def build_market(
     }
 
 
-__all__ = ["EMPTY_NOTE", "build_fighter", "build_market", "build_hire", "build_squad", "fighter_row", "where_is"]
+__all__ = [
+    "EMPTY_NOTE",
+    "build_fighter",
+    "build_hire",
+    "build_market",
+    "build_squad",
+    "fighter_row",
+    "wear_hired_face",
+    "where_is",
+]

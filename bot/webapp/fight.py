@@ -251,7 +251,9 @@ def spar_row(row: dict, npc: Player, owner: Player, busy: bool) -> dict[str, Any
         "personal": False,
         "in_app": True,
         "open": not why,
-        "note": why or "Твой боец. Спарринг даёт опыт ему, а не тебе.",
+        "note": why or (
+            "Твой боец. Опыт идёт обоим, в рейтинг и статистику бой не идёт."
+        ),
         "mirror": False,
         "challenger": {
             "user_id": npc.user_id,
@@ -429,7 +431,13 @@ def build_fights(
     trainer: dict[str, Any] | None = None,
     squad: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Всё, что нужно вкладке «Бои», одним ответом."""
+    """Всё, что нужно вкладке «Бои», одним ответом.
+
+    Ответ один на три раздела клуба: идущий бой, живые заявки
+    («Одиночные бои») и тренировки — Тренер и свои бойцы. Разделы
+    опрашивают один и тот же адрес, потому что состояние у них общее:
+    вышел на ринг — и в тренировках принимать уже нечего.
+    """
     body: dict[str, Any] = {
         "attacks": [dict(row) for row in ATTACK_BUTTONS],
         "blocks": [dict(row) for row in BLOCK_BUTTONS],
@@ -437,6 +445,10 @@ def build_fights(
         "duel": None,
         "challenge": None,
         "challenges": [],
+        # Тренировки живут своим разделом: это бои против города, а не
+        # чужие заявки. Смешанные в один список, они путали одно с
+        # другим — новичок искал живого соперника и находил Тренера
+        "training": [],
         "can_fight": player.can_fight(),
         # Драться можно только в клубе. Список боёв при этом отдаём:
         # ушедшему за покупками полезно видеть, что его ждут
@@ -458,12 +470,11 @@ def build_fights(
     own = service.challenge_of_user(player.user_id)
     if own is not None:
         body["challenge"] = challenge_payload(own, player.user_id)
-    # Заявка Тренера стоит первой: в пустом клубе это единственный бой,
-    # который новичку доступен, и искать его под чужими вызовами незачем
-    # Свои бойцы идут сразу за Тренером и прежде чужих вызовов: это
-    # тоже бой «против города», и искать его под живыми заявками
-    # пришлось бы дольше, чем он того стоит
-    body["challenges"] = ([trainer] if trainer else []) + list(squad or []) + [
+    # Тренер и свои бойцы — в «Тренировки», живые заявки — в «Одиночные
+    # бои». Тренер стоит первым: в пустом клубе это единственный бой,
+    # который новичку доступен, и искать его под своими бойцами незачем
+    body["training"] = ([trainer] if trainer else []) + list(squad or [])
+    body["challenges"] = [
         challenge_payload(challenge, player.user_id)
         for challenge in service.open_challenges()
         if service.challenge_for(player.user_id, challenge)

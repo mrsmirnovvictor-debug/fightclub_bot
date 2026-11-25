@@ -510,6 +510,41 @@ async def api_travel(request: web.Request) -> web.Response:
     )
 
 
+async def _squad_card(
+    db, viewer_id: int, player: Player, bot_token: str
+) -> dict[str, Any] | None:
+    """Карточка бойца отряда — та же, что в разделе «Отряд». Иначе пусто.
+
+    Значок ℹ️ в клубе открывает ту же всплывашку, что и список отряда, и
+    открывать она должна то же самое. Своей сборкой здесь она показывала
+    бы классовый аватар: лицо, с которым бойца наняли, лежит в строке
+    отряда, и `build_card` про него не знает — купленный боец оказывался
+    бы в клубе другим человеком, чем в отряде.
+
+    Чужому бойцу достаётся только лицо: звёзды, место службы и кнопки
+    хозяина — это хозяйское дело, а лицо он носит и в бою, и в толпе, и
+    прятать его от соперника незачем.
+
+    Отрицательный номер — ещё не боец отряда: под ними же ходят Тренер,
+    городская охрана и патруль. Не отряд — пусто, и карточка собирается
+    обычным порядком.
+    """
+    from bot.webapp.squad import build_fighter, wear_hired_face
+
+    if player.user_id >= 0:
+        return None
+    row = await db.squad_row(player.user_id)
+    if row is None:
+        return None
+    if row["owner_id"] == viewer_id:
+        owner = await db.get_player(viewer_id)
+        if owner is not None:
+            return await build_fighter(db, owner, player.user_id, bot_token)
+    card = build_card(player, bot_token, viewer_id)
+    wear_hired_face(card, player, row["face"])
+    return card
+
+
 async def api_card(request: web.Request) -> web.Response:
     viewer = await _viewer(request)
     db = request.app[DB_KEY]
@@ -559,7 +594,9 @@ async def api_card(request: web.Request) -> web.Response:
         if verdict:
             player = await db.get_player(player.user_id) or player
             said = f"{said} {verdict}".strip()
-    card = build_card(player, config.bot_token, viewer.user_id)
+    card = await _squad_card(db, viewer.user_id, player, config.bot_token)
+    if card is None:
+        card = build_card(player, config.bot_token, viewer.user_id)
     # Место в недельном рейтинге живёт не в карточке, а в рейтинге, и
     # считается по всей неделе сразу. Кладём его сюда, и только здесь:
     # эта ручка открывается раз за заход, а карточка приезжает ещё и в

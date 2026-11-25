@@ -281,6 +281,71 @@ async def test_api_opens_someone_elses_card_by_start_param(client, db):
     assert "credits" in card["record"]  # данные общие, скрывает их уже страница
 
 
+async def a_hired_fighter(db, owner_id: int, face: int = 7, stars: int = 2):
+    """Боец в отряде этого игрока: своё лицо из пула и звёзды."""
+    npc_id = await db.next_npc_id()
+    await db.save_player(
+        make_player(user_id=npc_id, nickname="Громила", class_code="tank")
+    )
+    await db.add_squad(npc_id, owner_id, stars, face, 0)
+    return npc_id
+
+
+async def test_api_opens_your_fighter_with_the_face_he_was_hired_with(client, db):
+    """Карточка своего бойца — та же, что в разделе «Отряд».
+
+    Значок ℹ️ в клубе открывает ту же всплывашку, что и список отряда:
+    в бою своего бойца зовут оттуда же, где смотрят. Собранная здесь
+    своим порядком, она ставила бы в рамку классовый аватар — лицо, с
+    которым бойца наняли, лежит в строке отряда, а не в образе, — и
+    купленный боец оказывался бы в клубе другим человеком.
+    """
+    from bot.game.art import recruit_face
+
+    await db.save_player(make_player(user_id=42, nickname="Тайлер"))
+    npc_id = await a_hired_fighter(db, 42, face=7, stars=2)
+
+    response = await client.get(
+        f"/api/card?user_id={npc_id}",
+        headers={"X-Telegram-Init-Data": make_init_data(user_id=42)},
+    )
+    card = await response.json()
+
+    assert response.status == 200
+    assert card["avatar"]["url"] == recruit_face(7)
+    assert not card["avatar"]["look"], "классовый образ в рамку не идёт"
+    # И всё то же, чем подписан боец в отряде: звёзды и место службы
+    assert card["squad"] is True
+    assert card["stars"] == 2
+    assert card["face"] == recruit_face(7)
+    assert card["state"] == "free"
+
+
+async def test_api_shows_a_strangers_fighter_with_his_face_and_no_stars(client, db):
+    """Чужому бойцу достаётся лицо, но не хозяйская подпись.
+
+    Лицо он носит и в бою, и в толпе — прятать его от соперника
+    незачем. Звёзды, место службы и кнопки хозяина — хозяйское дело: по
+    чужой карточке состав чужого отряда не разбирают.
+    """
+    from bot.game.art import recruit_face
+
+    await db.save_player(make_player(user_id=42, nickname="Тайлер"))
+    await db.save_player(make_player(user_id=77, nickname="Марла"))
+    npc_id = await a_hired_fighter(db, 77, face=3)
+
+    response = await client.get(
+        f"/api/card?user_id={npc_id}",
+        headers={"X-Telegram-Init-Data": make_init_data(user_id=42)},
+    )
+    card = await response.json()
+
+    assert response.status == 200
+    assert card["avatar"]["url"] == recruit_face(3)
+    assert "stars" not in card and "squad" not in card
+    assert card["is_self"] is False
+
+
 async def test_api_says_when_there_is_no_character(client):
     response = await client.get(
         "/api/card", headers={"X-Telegram-Init-Data": make_init_data()}

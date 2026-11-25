@@ -116,6 +116,7 @@ EMPTY_RING = {
     "duel": None,
     "challenge": None,
     "challenges": [],
+    "training": [],
     "can_fight": True,
 }
 
@@ -3958,6 +3959,18 @@ async def open_ring(pw, server, fights):
     return browser, page
 
 
+async def open_training(pw, server, fights):
+    """Открыть вкладку клуба на разделе «Тренировки».
+
+    Тренер и свои бойцы стоят своим разделом: живые заявки — это одно
+    дело, бой против города — другое.
+    """
+    browser, page = await open_ring(pw, server, fights)
+    await page.evaluate("pickClubSection('training')")
+    await page.wait_for_selector("#club-training:not(.hidden)")
+    return browser, page
+
+
 def a_rated(user_id, nick, level, rating, fclass="warrior"):
     """Боец с местом в рейтинге: прозвище, уровень и ELO."""
     one = make_player()
@@ -4319,7 +4332,7 @@ async def test_the_club_building_keeps_the_view_from_inside(server):
 
 
 async def test_the_club_building_offers_fights_and_squads(server):
-    """В здании клуба два дела: бой один на один и бой отрядом.
+    """В здании клуба три дела: бой один на один, бой отрядом и тренировка.
 
     Рейтинг и статистика сюда не идут: это не дело, а справка, и за ней
     не ходят ногами через весь город.
@@ -4329,7 +4342,7 @@ async def test_the_club_building_offers_fights_and_squads(server):
 
         sections = await page.locator("#club-sections .chip").all_inner_texts()
         # рейда среди пузырей нет: в подвал спускаются из казино
-        assert sections == ["Одиночные бои", "Групповые бои"]
+        assert sections == ["Одиночные бои", "Групповые бои", "Тренировки"]
         assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
         assert await page.locator("#club-fights").is_visible()
         assert await page.locator("#club-players").is_hidden()
@@ -8019,7 +8032,7 @@ async def test_the_club_keeps_all_its_sections_away_from_the_ring(server):
         await page.wait_for_selector("#club:not(.hidden)")
 
         chips = await page.locator("#club-sections .chip").all_inner_texts()
-        assert chips == ["Одиночные бои", "Групповые бои"]
+        assert chips == ["Одиночные бои", "Групповые бои", "Тренировки"]
         # и стоят они по центру экрана, а не прижаты к левому краю
         box = await page.locator("#club-sections").bounding_box()
         first = await page.locator("#club-sections .chip").first.bounding_box()
@@ -22177,7 +22190,7 @@ async def test_a_whole_row_opens_the_fighter_card(server):
 def trainer_call(open_now: bool = True) -> dict:
     """Ринг, на котором висит одна заявка — от Тренера."""
     ring = json.loads(json.dumps(EMPTY_RING))
-    ring["challenges"] = [
+    ring["training"] = [
         {
             "id": -1,
             "npc": True,
@@ -22200,14 +22213,88 @@ def trainer_call(open_now: bool = True) -> dict:
     return ring
 
 
+def spar_call(npc_id: int = -101) -> dict:
+    """Ринг, на котором зовёт драться свой боец, а не живой игрок."""
+    ring = json.loads(json.dumps(EMPTY_RING))
+    ring["training"] = [
+        {
+            "id": -npc_id,
+            "npc": True,
+            "spar": npc_id,
+            "mode": {"code": "fist", "title": "кулачный бой", "emoji": "🥊"},
+            "mine": False,
+            "personal": False,
+            "in_app": True,
+            "open": True,
+            "note": "Твой боец. Опыт идёт обоим.",
+            "mirror": False,
+            "challenger": {
+                "user_id": npc_id, "name": "Громила", "level": 4,
+                "emoji": "🛡", "fclass": "Танк",
+            },
+        }
+    ]
+    return ring
+
+
+async def test_the_club_opens_your_fighter_like_the_squad_does(server):
+    """Значок ℹ️ в клубе открывает ту же всплывашку, что раздел «Отряд».
+
+    Своего бойца зовут на ринг из клуба, а смотрят в отряде — и
+    смотреть он должен одинаково: то же лицо в рамке, те же звёзды, то
+    же место службы. Прежде в клубе в рамке стоял классовый аватар, и
+    купленный боец оказывался в ней другим человеком.
+    """
+    face = "https://example.invalid/npc_recruits/npc_male_07.png"
+    npc = make_player()
+    npc.user_id = -101
+    npc.nickname = "Громила"
+    npc.class_code = "tank"
+    fighter = build_card(npc, TOKEN, viewer_id=-101)
+    fighter["avatar"] = dict(
+        fighter["avatar"], url=face, look="", look_title="Танк", photo=False
+    )
+    fighter.update(
+        {"squad": True, "stars": 2, "face": face, "state": "free",
+         "state_text": "Свободен", "in_party": False}
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_training(pw, server, spar_call())
+
+        async def card_of(route):
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(fighter),
+            )
+
+        await page.route("**/api/card*", card_of)
+        # Лицу нужен ответ: иначе картинка падает, и рамка честно
+        # показывает значок вместо неё — проверять было бы нечего
+        await page.route(IMAGES, lambda route: route.fulfill(
+            status=200, content_type="image/png", body=PIXEL
+        ))
+        await page.locator("#training-body .fighter-info").click()
+        await page.wait_for_selector(".sheet-doll")
+
+        # Лицо в рамке — то, с которым бойца наняли
+        assert await page.locator(".sheet-doll .avatar img").get_attribute(
+            "src"
+        ) == face
+        # Подпись как в отряде: звёзды у имени, место службы под ним
+        assert "⭐⭐" in await page.locator("#sheet-title").inner_text()
+        assert "Свободен" in await page.locator("#sheet-note").inner_text()
+        await browser.close()
+
+
 async def test_the_trainer_stands_in_the_ring_list_and_takes_the_fight(server):
     """Заявка Тренера читается как чужой вызов, а кнопка ведёт на урок."""
     sent = []
 
     async with async_playwright() as pw:
-        browser, page = await open_ring(pw, server, trainer_call())
+        browser, page = await open_training(pw, server, trainer_call())
 
-        body = await page.locator("#fights-body").inner_text()
+        body = await page.locator("#training-body").inner_text()
         assert "Тренер [5]" in body, body
         assert "кулачный бой" in body
         # Подпись про учителя, а не про занятость: Тренер свободен
@@ -22231,9 +22318,11 @@ async def test_the_trainer_stands_in_the_ring_list_and_takes_the_fight(server):
 async def test_a_busy_trainer_keeps_his_row_with_the_button_dead(server):
     """Занят — строка на месте, под ней причина, кнопка не нажимается."""
     async with async_playwright() as pw:
-        browser, page = await open_ring(pw, server, trainer_call(open_now=False))
+        browser, page = await open_training(
+            pw, server, trainer_call(open_now=False)
+        )
 
-        body = await page.locator("#fights-body").inner_text()
+        body = await page.locator("#training-body").inner_text()
         assert "Тренер [5]" in body, body
         assert "занят" in await page.locator(".fight-note").inner_text()
         assert await page.get_by_role("button", name="Принять вызов").is_disabled()
@@ -22386,7 +22475,7 @@ async def test_the_standoff_lets_you_read_the_rival_before_the_gong(server):
 async def test_the_trainers_row_says_who_he_is(server):
     """У заявки Тренера есть подпись о нём и та же кнопка ℹ️."""
     async with async_playwright() as pw:
-        browser, page = await open_ring(pw, server, trainer_call())
+        browser, page = await open_training(pw, server, trainer_call())
 
         note = await page.locator(".fight-note").inner_text()
         assert note == "Твой учитель, который поможет набраться опыта.", note
@@ -22502,9 +22591,9 @@ async def test_the_club_wears_the_same_segmented_switch_as_the_desk(server):
         assert "segments" in (await box.get_attribute("class")), await box.get_attribute(
             "class"
         )
-        # Обе надписи в одну строку, и выбранная отмечена
+        # Все надписи в одну строку, и выбранная отмечена
         chips = box.locator(".chip")
-        assert await chips.count() == 2
+        assert await chips.count() == 3
         boxes = [await chips.nth(i).bounding_box() for i in range(2)]
         assert abs(boxes[0]["y"] - boxes[1]["y"]) < 2, "разделы встали в два ряда"
         assert await box.locator(".chip.on").inner_text() == "Одиночные бои"
