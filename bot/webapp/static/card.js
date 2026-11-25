@@ -16609,6 +16609,10 @@ const DOJO_TABS = [
   // Найм живёт здесь же: школа — единственное место в городе, где
   // берут бойцов в отряд
   ["hire", "Найм бойцов"],
+  // И рынок рядом с витриной: приходят сюда за одним и тем же — за
+  // бойцом, — и выбирают между «нанять первого уровня» и «купить
+  // выросшего». Этот выбор удобно делать, не выходя из школы
+  ["market", "Трансферы"],
 ];
 
 // Витрина найма приезжает своей дверью: её собирает не школа, а служба
@@ -16744,6 +16748,403 @@ function recruitCard(one, data) {
   );
   card.appendChild(body);
   return card;
+}
+
+// ---------- трансферный рынок школы ----------
+//
+// Три полки и три разных вопроса: кого можно купить, кого просят у
+// меня и что я сам предложил. Свалить их в одну значило бы заставить
+// искать своё среди чужого — а своё тут самое срочное: предложение
+// ждёт ответа, и пока его нет, сделка висит.
+//
+// Цену и доплату набирают руками, потому что торг — это и есть
+// числа. Выбор бойца — пузырями: их мало, шесть от силы, и выпадающий
+// список ради шести строк был бы лишней дверью.
+
+let transferData = null;
+// Что набрано в форме продажи: кого выставляем и за сколько
+let sellWho = 0;
+let sellPrice = "";
+// По какому лоту составляется обмен, кого кладём и сколько доплаты
+let swapLot = 0;
+let swapGive = 0;
+let swapExtra = "";
+
+async function loadTransfers() {
+  try {
+    const response = await fetch("api/transfers", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Рынок не отвечает.");
+    transferData = await response.json();
+    if (transferData.card) render(transferData.card, true);
+    if (dojoTab === "market") renderDojo(dojoData || {});
+  } catch (error) {
+    el("dojo-note").textContent = error.message;
+  }
+}
+
+async function transferAction(payload) {
+  try {
+    transferData = await post("api/transfers", payload);
+    haptic((feedback) => feedback.impactOccurred("light"));
+    // Форма сделала своё дело и закрывается: оставленная открытой, она
+    // предложила бы повторить то, что уже случилось
+    swapLot = 0;
+    swapGive = 0;
+    swapExtra = "";
+    if (transferData.card) render(transferData.card, true);
+    renderDojo(dojoData || {});
+  } catch (error) {
+    popup("Трансферы", error.message);
+    await loadTransfers();
+  }
+}
+
+/** Вкладка «Трансферы»: продать своего, свои лоты, предложения, рынок. */
+function dojoTransferBox() {
+  const wrap = document.createElement("div");
+  const data = transferData;
+  if (!data) {
+    const wait = document.createElement("p");
+    wait.className = "thing-note";
+    wait.textContent = "Школа поднимает трансферные бумаги…";
+    wrap.appendChild(wait);
+    return wrap;
+  }
+
+  wrap.appendChild(transferSellBox(data));
+  if ((data.mine || []).length) wrap.appendChild(transferMineBox(data));
+  if ((data.offers || []).length) wrap.appendChild(transferOffersBox(data));
+  wrap.appendChild(transferLotsBox(data));
+  return wrap;
+}
+
+/** Строка бойца на рынке: лицо, имя, класс, уровень и звёзды. */
+function transferFace(one) {
+  const row = document.createElement("div");
+  row.className = "recruit";
+
+  const pic = document.createElement("img");
+  pic.className = "recruit-face";
+  pic.alt = "";
+  pic.loading = "lazy";
+  pic.decoding = "async";
+  pic.addEventListener("error", () => {
+    const mark = document.createElement("span");
+    mark.className = "recruit-face emoji";
+    mark.textContent = one.class_emoji;
+    pic.replaceWith(mark);
+  });
+  pic.src = one.face;
+  row.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "recruit-body";
+  const name = document.createElement("h3");
+  name.className = "recruit-name";
+  name.textContent = one.name;
+  const said = document.createElement("p");
+  said.className = "recruit-said";
+  said.textContent =
+    one.class_emoji +
+    " " +
+    one.class_title +
+    " · " +
+    one.level +
+    " ур. · " +
+    starMark(one.stars);
+  body.append(name, said);
+  row.appendChild(body);
+  return row;
+}
+
+/** Полка «Выставить своего»: кого и за сколько. */
+function transferSellBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Выставить своего бойца";
+  box.appendChild(head);
+
+  const free = data.free || [];
+  if (!free.length) {
+    const empty = document.createElement("p");
+    empty.className = "thing-note";
+    empty.textContent =
+      "Свободных бойцов нет. На рынок идут только те, кто не держит " +
+      "точку и не лежит в больнице.";
+    box.appendChild(empty);
+    return box;
+  }
+
+  const who = document.createElement("div");
+  who.className = "bubbles";
+  who.id = "market-who";
+  free.forEach((one) => {
+    who.appendChild(
+      chip(one.name + " · " + one.level + " ур.", sellWho === one.id, () => {
+        sellWho = one.id;
+        renderDojo(dojoData || {});
+      })
+    );
+  });
+  box.appendChild(field("Кого продаём", who));
+
+  const price = document.createElement("input");
+  price.type = "number";
+  price.inputMode = "numeric";
+  price.min = String(data.min_price);
+  price.max = String(data.max_price);
+  price.className = "field-input";
+  price.id = "market-price";
+  price.value = sellPrice;
+  box.appendChild(
+    field("Цена, 💰 (от " + data.min_price + ")", price)
+  );
+
+  const foot = document.createElement("div");
+  foot.className = "shelf-foot";
+  // Кнопка оживает по ходу набора, а не после перерисовки: перерисовка
+  // на каждой цифре отняла бы у поля курсор, и цену набирали бы с
+  // третьей попытки
+  const put = button("Выставить на рынок", {
+    neon: true,
+    onClick: () => {
+      if (!sellWho || !Number(price.value || 0)) return;
+      sellPrice = "";
+      transferAction({
+        action: "put_up",
+        npc: sellWho,
+        price: Number(price.value || 0),
+      });
+    },
+  });
+  put.disabled = !sellWho || !sellPrice;
+  price.addEventListener("input", () => {
+    sellPrice = price.value;
+    put.disabled = !sellWho || !sellPrice;
+  });
+  foot.appendChild(put);
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent = data.note || "";
+  foot.appendChild(note);
+  box.appendChild(foot);
+  return box;
+}
+
+/** Полка «Мои лоты»: что выставлено и кто что предложил. */
+function transferMineBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Мои лоты";
+  box.appendChild(head);
+
+  (data.mine || []).forEach((lot) => {
+    const card = transferFace(lot);
+    const body = card.querySelector(".recruit-body");
+    const price = document.createElement("p");
+    price.className = "recruit-said";
+    price.textContent = "Цена " + lot.price + " 💰";
+    body.appendChild(price);
+    body.appendChild(
+      button("Снять с рынка", {
+        secondary: true,
+        onClick: () => transferAction({ action: "take_down", npc: lot.id }),
+      })
+    );
+    box.appendChild(card);
+
+    (lot.bids || []).forEach((bid) => {
+      const row = document.createElement("article");
+      row.className = "recruit bid";
+      const said = document.createElement("div");
+      said.className = "recruit-body";
+      const who = document.createElement("h3");
+      who.className = "recruit-name";
+      who.textContent = bid.buyer;
+      const what = document.createElement("p");
+      what.className = "recruit-said";
+      // Что именно предложили: бойца с доплатой, одного бойца или
+      // одни деньги — три разных ответа, и писать их надо по-разному
+      what.textContent = bid.give
+        ? bid.give.name +
+          " (" +
+          bid.give.level +
+          " ур. · " +
+          starMark(bid.give.stars) +
+          ")" +
+          (bid.extra ? " и " + bid.extra + " 💰" : "")
+        : bid.extra + " 💰";
+      said.append(who, what);
+      said.appendChild(
+        button("Принять", {
+          neon: true,
+          onClick: () => transferAction({ action: "accept", bid: bid.id }),
+        })
+      );
+      said.appendChild(
+        button("Отклонить", {
+          secondary: true,
+          onClick: () => transferAction({ action: "decline", bid: bid.id }),
+        })
+      );
+      row.appendChild(said);
+      box.appendChild(row);
+    });
+  });
+  return box;
+}
+
+/** Полка «Мои предложения»: что я предложил и чем могу забрать назад. */
+function transferOffersBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Мои предложения";
+  box.appendChild(head);
+
+  (data.offers || []).forEach((one) => {
+    const card = transferFace(one.lot);
+    const body = card.querySelector(".recruit-body");
+    const what = document.createElement("p");
+    what.className = "recruit-said";
+    what.textContent =
+      "Предложено: " +
+      (one.give ? one.give.name : "") +
+      (one.give && one.extra ? " и " : "") +
+      (one.extra ? one.extra + " 💰" : "");
+    body.appendChild(what);
+    body.appendChild(
+      button("Отозвать", {
+        secondary: true,
+        onClick: () => transferAction({ action: "withdraw", bid: one.id }),
+      })
+    );
+    box.appendChild(card);
+  });
+  return box;
+}
+
+/** Полка «Кого продают»: чужие лоты, выкуп и обмен. */
+function transferLotsBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Кого продают · отряд " + data.squad + " из " + data.limit;
+  box.appendChild(head);
+
+  const lots = data.lots || [];
+  if (!lots.length) {
+    const empty = document.createElement("p");
+    empty.className = "thing-note";
+    empty.textContent = "Сейчас никого не продают. Загляни позже.";
+    box.appendChild(empty);
+    return box;
+  }
+
+  lots.forEach((lot) => {
+    const card = transferFace(lot);
+    const body = card.querySelector(".recruit-body");
+    const whose = document.createElement("p");
+    whose.className = "recruit-said";
+    whose.textContent = "Хозяин: " + lot.owner;
+    body.appendChild(whose);
+    body.appendChild(
+      button(lot.price + " 💰 купить", {
+        neon: true,
+        disabled: !lot.can_buy,
+        hint: lot.why,
+        onClick: () => transferAction({ action: "buy", npc: lot.id }),
+      })
+    );
+    // Причина — строкой под кнопкой, а не подсказкой на ней: погасшая
+    // кнопка не нажимается, и всплывашку с объяснением никто не увидит
+    if (lot.why) {
+      const why = document.createElement("p");
+      why.className = "thing-note";
+      why.textContent = lot.why;
+      body.appendChild(why);
+    }
+    body.appendChild(
+      button(swapLot === lot.id ? "Не менять" : "Предложить обмен", {
+        secondary: true,
+        onClick: () => {
+          swapLot = swapLot === lot.id ? 0 : lot.id;
+          swapGive = 0;
+          swapExtra = "";
+          renderDojo(dojoData || {});
+        },
+      })
+    );
+    box.appendChild(card);
+    if (swapLot === lot.id) box.appendChild(transferSwapForm(data, lot));
+  });
+  return box;
+}
+
+/** Форма обмена под лотом: кого отдаём и сколько доплачиваем. */
+function transferSwapForm(data, lot) {
+  const box = document.createElement("div");
+  box.className = "shelf-foot";
+  box.id = "market-swap";
+
+  const free = data.free || [];
+  const who = document.createElement("div");
+  who.className = "bubbles";
+  who.appendChild(
+    chip("Только деньги", !swapGive, () => {
+      swapGive = 0;
+      renderDojo(dojoData || {});
+    })
+  );
+  free.forEach((one) => {
+    who.appendChild(
+      chip(one.name + " · " + one.level + " ур.", swapGive === one.id, () => {
+        swapGive = one.id;
+        renderDojo(dojoData || {});
+      })
+    );
+  });
+  box.appendChild(field("Кого отдаём", who));
+
+  const extra = document.createElement("input");
+  extra.type = "number";
+  extra.inputMode = "numeric";
+  extra.min = "0";
+  extra.max = String(data.max_price);
+  extra.className = "field-input";
+  extra.id = "market-extra";
+  extra.value = swapExtra;
+  box.appendChild(field("Доплата, 💰", extra));
+
+  // Пустое предложение отказала бы и служба, но отказ после нажатия
+  // хуже погашенной кнопки: тут и так видно, чего не хватает
+  const send = button("Отправить предложение", {
+    neon: true,
+    onClick: () => {
+      if (!swapGive && !Number(extra.value || 0)) return;
+      transferAction({
+        action: "offer",
+        npc: lot.id,
+        give: swapGive,
+        extra: Number(extra.value || 0),
+      });
+    },
+  });
+  send.disabled = !swapGive && !Number(swapExtra || 0);
+  extra.addEventListener("input", () => {
+    swapExtra = extra.value;
+    send.disabled = !swapGive && !Number(swapExtra || 0);
+  });
+  box.appendChild(send);
+  return box;
 }
 
 // ---------- суд: дела об угоне ----------
@@ -17011,7 +17412,13 @@ function pickDojoTab(name) {
 
 function renderDojo(data) {
   dojoData = data;
-  el("dojo-note").textContent = data.said || data.note || "";
+  // У найма и трансферов своя дверь и свои ответы: «боец выставлен»
+  // приходит оттуда, а не из школы. Писать надо то, что сказал
+  // последний ответ, иначе он теряется молча, и игрок жмёт второй раз
+  const own =
+    dojoTab === "hire" ? hireData : dojoTab === "market" ? transferData : null;
+  el("dojo-note").textContent =
+    (own && own.said) || data.said || data.note || "";
 
   const tabs = el("dojo-tabs");
   tabs.textContent = "";
@@ -17035,6 +17442,11 @@ function renderDojo(data) {
     // дорисуем, когда придёт
     if (!hireData) loadHire();
     body.appendChild(dojoHireBox());
+    return;
+  }
+  if (dojoTab === "market") {
+    if (!transferData) loadTransfers();
+    body.appendChild(dojoTransferBox());
     return;
   }
   body.appendChild(dojoStudyBox(data));

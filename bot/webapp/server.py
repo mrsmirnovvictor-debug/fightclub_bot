@@ -3788,6 +3788,89 @@ async def api_hire_action(request: web.Request) -> web.Response:
     return await _hire_state(request, fresh, said)
 
 
+async def _transfers_state(request: web.Request, player, said: str = "") -> web.Response:
+    from bot.webapp.squad import build_market
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_market(db, player, now_ts())
+    body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_transfers(request: web.Request) -> web.Response:
+    """Трансферный рынок школы: кого продают и что предлагают."""
+    player = await _at(request, Service.DOJO)
+    return await _transfers_state(request, player)
+
+
+async def api_transfers_action(request: web.Request) -> web.Response:
+    """Дела на рынке: выставить, снять, купить, предложить, ответить.
+
+    Семь действий в одной ручке, потому что все они возвращают один и
+    тот же экран: разделённые, они повторяли бы сборку рынка семь раз.
+    """
+    from bot.transfer_service import (
+        TransferError,
+        accept,
+        buy,
+        decline,
+        offer,
+        put_up,
+        take_down,
+        withdraw,
+    )
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.DOJO)
+    try:
+        npc_id = int(data.get("npc") or 0)
+        bid_id = int(data.get("bid") or 0)
+        price = int(data.get("price") or 0)
+        give_id = int(data.get("give") or 0)
+        extra = int(data.get("extra") or 0)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    try:
+        if action == "put_up":
+            await put_up(db, player, npc_id, price, now_ts())
+            said = f"Боец выставлен за {price} 💰."
+        elif action == "take_down":
+            await take_down(db, player, npc_id)
+            said = "Лот снят с рынка."
+        elif action == "buy":
+            npc = await buy(db, player, npc_id, now_ts())
+            said = f"{npc.nickname} теперь в твоём отряде."
+        elif action == "offer":
+            await offer(db, player, npc_id, give_id, extra, now_ts())
+            said = "Предложение отправлено хозяину."
+        elif action == "accept":
+            deal = await accept(db, player, bid_id, now_ts())
+            got = deal["got"]
+            said = (
+                f"{deal['gave'].nickname} уходит, {got.nickname} приходит."
+                if got
+                else f"{deal['gave'].nickname} продан."
+            )
+        elif action == "decline":
+            await decline(db, player, bid_id)
+            said = "Предложение отклонено."
+        elif action == "withdraw":
+            await withdraw(db, player, bid_id)
+            said = "Предложение отозвано."
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except TransferError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _transfers_state(request, fresh, said)
+
+
 async def api_prison(request: web.Request) -> web.Response:
     """Тюрьма: свой срок и все, кто сидит сейчас.
 
@@ -4469,8 +4552,8 @@ def create_app(
             web.get("/api/fights", api_fights),
             web.post("/api/fight", api_fight),
             web.get("/api/history", api_history),
-            web.get("/api/market", api_market),
-            web.post("/api/market", api_market_action),
+            web.get("/api/transfers", api_transfers),
+            web.post("/api/transfers", api_transfers_action),
             web.get("/api/bank", api_bank),
             web.post("/api/bank", api_bank_action),
             web.post("/api/purse", api_purse),
@@ -4529,6 +4612,8 @@ def create_app(
             web.post("/api/squad", api_squad_action),
             web.get("/api/hire", api_hire),
             web.post("/api/hire", api_hire_action),
+            web.get("/api/market", api_market),
+            web.post("/api/market", api_market_action),
             web.get("/api/charge", api_charge),
             web.post("/api/charge", api_charge_action),
             web.get("/api/wash", api_wash),

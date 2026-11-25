@@ -167,4 +167,129 @@ async def build_hire(
     }
 
 
-__all__ = ["EMPTY_NOTE", "build_fighter", "build_hire", "build_squad", "fighter_row", "where_is"]
+async def _lot_face(db: Database, npc_id: int) -> dict[str, Any] | None:
+    """Боец в строке рынка: кто он и чем хорош.
+
+    Отдаём то же, что видно в отряде, — лицо, класс, уровень, звёзды.
+    Характеристики не показываем: их считает формула по этим же трём
+    числам, и строка стала бы вдвое длиннее, не сказав нового.
+    """
+    row = await db.squad_row(npc_id)
+    if row is None:
+        return None
+    npc = await db.get_player(npc_id)
+    if npc is None:  # pragma: no cover - сломанная база
+        return None
+    fclass = FIGHTER_CLASSES[npc.class_code]
+    return {
+        "id": npc_id,
+        "name": npc.nickname,
+        "level": npc.level,
+        "stars": int(row["stars"]),
+        "face": recruit_face(int(row["face"])),
+        "class_title": fclass.title,
+        "class_emoji": fclass.emoji,
+    }
+
+
+async def build_market(
+    db: Database, player: Player, now: int | None = None
+) -> dict[str, Any]:
+    """Трансферный рынок: чужие лоты, свои лоты и свои предложения.
+
+    Три полки, потому что три разных вопроса: кого можно взять, кого у
+    меня просят и что я сам предложил. Свалить их в одну значило бы
+    заставить искать своё среди чужого.
+    """
+    from bot.transfer_service import MAX_PRICE, MIN_PRICE
+
+    moment = now_ts() if now is None else now
+    held = await db.squad_of(player.user_id)
+    free = [row for row in held if not row["hospital_at"] and not row["spot"]]
+    room = len(held) < SQUAD_LIMIT
+
+    lots: list[dict[str, Any]] = []
+    mine: list[dict[str, Any]] = []
+    for lot in await db.list_transfers():
+        card = await _lot_face(db, int(lot["npc_id"]))
+        if card is None:  # pragma: no cover - бойца уже нет
+            continue
+        owner = await db.get_player(int(lot["owner_id"]))
+        price = int(lot["price"])
+        card = dict(
+            card,
+            price=price,
+            owner=owner.nickname if owner else "боец",
+            owner_id=int(lot["owner_id"]),
+        )
+        if int(lot["owner_id"]) == player.user_id:
+            card["bids"] = [
+                {
+                    "id": int(bid["id"]),
+                    "buyer": (
+                        (await db.get_player(int(bid["buyer_id"]))).nickname
+                        if await db.get_player(int(bid["buyer_id"]))
+                        else "боец"
+                    ),
+                    "give": await _lot_face(db, int(bid["give_id"]))
+                    if bid["give_id"]
+                    else None,
+                    "extra": int(bid["extra"]),
+                }
+                for bid in await db.bids_for(int(lot["npc_id"]))
+            ]
+            mine.append(card)
+            continue
+        # Почему нельзя — словами и до нажатия: цена на кнопке и так
+        # видна, а остальное игрок узнавал бы отказом
+        why = ""
+        if card["level"] > player.level:
+            why = f"Он {card['level']} уровня, а ты {player.level}."
+        elif not room:
+            why = "В отряде нет места."
+        elif player.credits < price:
+            why = "Не хватает кредитов."
+        card["can_buy"] = not why
+        card["why"] = why
+        lots.append(card)
+
+    offers: list[dict[str, Any]] = []
+    for lot in await db.list_transfers():
+        for bid in await db.bids_for(int(lot["npc_id"])):
+            if int(bid["buyer_id"]) != player.user_id:
+                continue
+            card = await _lot_face(db, int(lot["npc_id"]))
+            if card is None:  # pragma: no cover
+                continue
+            offers.append(
+                {
+                    "id": int(bid["id"]),
+                    "lot": card,
+                    "give": await _lot_face(db, int(bid["give_id"]))
+                    if bid["give_id"]
+                    else None,
+                    "extra": int(bid["extra"]),
+                }
+            )
+
+    return {
+        "lots": lots,
+        "mine": mine,
+        "offers": offers,
+        # Кого можно выставить или положить в обмен: занятые не идут
+        "free": [
+            await _lot_face(db, int(row["npc_id"])) for row in free
+        ],
+        "squad": len(held),
+        "limit": SQUAD_LIMIT,
+        "credits": player.credits,
+        "min_price": MIN_PRICE,
+        "max_price": MAX_PRICE,
+        "note": (
+            "Боец уходит без вещей: за экипировку платил хозяин, и она "
+            "остаётся у него."
+        ),
+    }
+
+
+__all__ = ["EMPTY_NOTE", "build_fighter", "build_market", "build_hire", "build_squad", "fighter_row", "where_is"]

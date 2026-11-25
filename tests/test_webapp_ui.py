@@ -1035,7 +1035,7 @@ async def open_page(
     police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
     quests=None, study=None, turf=None, crowd=None, elections=None,
     cars=None, keys=None, dorm=None, charge=None, dojo=None, barber=None,
-    squad=None, hire=None,
+    squad=None, hire=None, transfers=None,
     court=None, blackout=None, casino=None, ladder=None,
     images=False,
     broken=None,
@@ -1108,6 +1108,10 @@ async def open_page(
         canned(squad or {"rows": [], "limit": 6, "note": SQUAD_EMPTY}),
     )
     await page.route("**/api/hire", canned(hire or {"cards": []}))
+    await page.route(
+        "**/api/transfers", canned(transfers or {"lots": [], "mine": [],
+                                                 "offers": [], "free": []})
+    )
     await page.route("**/api/barber", canned(barber or {}))
     # Ключи — либо один список машин на руках, либо весь ответ целиком:
     # у этого экрана есть и вторая полка, «У этого здания»
@@ -9463,7 +9467,7 @@ async def test_the_school_wears_the_fight_club_look(server):
         assert "segments" in tabs, tabs
         said = await page.locator("#dojo-tabs .chip").all_inner_texts()
         assert [one.strip() for one in said] == [
-            "Ваши приёмы", "Обучение", "Найм бойцов",
+            "Ваши приёмы", "Обучение", "Найм бойцов", "Трансферы",
         ]
         # Выбран ровно один раздел
         assert await page.locator("#dojo-tabs .chip.on").count() == 1
@@ -9539,6 +9543,341 @@ async def test_the_last_reroll_closes_the_button_until_monday(server):
         foot = page.locator(".shelf-foot .btn")
         assert "Пересмотры кончились" in await foot.inner_text()
         assert await foot.is_disabled()
+        await browser.close()
+
+
+# ---------- трансферы: четвёртая вкладка школы ----------
+#
+# На рынке три полки, и путаница между ними дороже любой вёрстки: своё
+# предложение, принятое как чужое, уводит бойца не туда. Поэтому
+# проверки тут в основном про то, кто где нарисован и какая кнопка под
+# какой строкой.
+
+
+def lot_face(npc_id: int, name: str, level: int = 4, stars: int = 3) -> dict:
+    """Боец строкой рынка — так, как его отдаёт школа."""
+    return {
+        "id": npc_id,
+        "name": name,
+        "level": level,
+        "stars": stars,
+        "face": f"https://example.invalid/{npc_id}.png",
+        "class_title": "Танк",
+        "class_emoji": "🛡️",
+    }
+
+
+def transfers_state(**kwargs) -> dict:
+    """Рынок так, как его отдаёт школа."""
+    body = {
+        "lots": [],
+        "mine": [],
+        "offers": [],
+        "free": [],
+        "squad": 1,
+        "limit": 6,
+        "credits": 5_000,
+        "min_price": 100,
+        "max_price": 1_000_000,
+        "note": "Боец уходит без вещей.",
+    }
+    body.update(kwargs)
+    return body
+
+
+async def open_transfers(pw, server, transfers=None):
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    browser, page = await open_page(
+        pw, server, card, build_shop(player),
+        dojo=EMPTY_DOJO, hire=hire_state(), transfers=transfers or transfers_state(),
+    )
+    await page.evaluate("() => { showTab('dojo'); loadDojo(); }")
+    await page.wait_for_selector("#dojo-tabs .chip")
+    await page.locator("#dojo-tabs .chip", has_text="Трансферы").click()
+    await page.wait_for_selector("#dojo-body .shelf")
+    return browser, page
+
+
+async def test_the_school_has_a_transfer_tab_next_to_the_shelf(server):
+    """Трансферы — четвёртая дорожка школы, рядом с наймом."""
+    async with async_playwright() as pw:
+        browser, page = await open_transfers(pw, server)
+
+        said = await page.locator("#dojo-tabs .chip").all_inner_texts()
+        assert [one.strip() for one in said] == [
+            "Ваши приёмы", "Обучение", "Найм бойцов", "Трансферы",
+        ], said
+        heads = await page.locator("#dojo-body .shelf-head").all_inner_texts()
+        assert "Выставить своего бойца" in heads[0]
+        await browser.close()
+
+
+async def test_an_empty_market_says_so_instead_of_showing_nothing(server):
+    """Никого не продают — об этом пишут словами."""
+    async with async_playwright() as pw:
+        browser, page = await open_transfers(pw, server)
+
+        body = await page.locator("#dojo-body").inner_text()
+        assert "Сейчас никого не продают" in body, body
+        # И выставлять некого: свободных бойцов нет
+        assert "Свободных бойцов нет" in body, body
+        await browser.close()
+
+
+async def test_a_lot_shows_its_fighter_its_owner_and_its_price(server):
+    """Чужой лот: лицо, класс, уровень, звёзды, хозяин и цена на кнопке."""
+    lot = dict(lot_face(-101, "Громила"), price=700, owner="Марла",
+               owner_id=43, can_buy=True, why="")
+    async with async_playwright() as pw:
+        browser, page = await open_transfers(
+            pw, server, transfers_state(lots=[lot])
+        )
+
+        said = await page.locator(".recruit-said").first.inner_text()
+        assert "Танк" in said and "4 ур." in said and said.endswith("⭐⭐⭐")
+        body = await page.locator(".recruit").first.inner_text()
+        assert "Хозяин: Марла" in body, body
+        buy = page.locator(".recruit .btn", has_text="купить").first
+        assert "700 💰 купить" in await buy.inner_text()
+        await browser.close()
+
+
+async def test_a_lot_out_of_reach_says_why_on_a_dead_button(server):
+    """Нельзя — кнопка погашена, а причина написана рядом."""
+    lot = dict(lot_face(-101, "Громила", level=9), price=700, owner="Марла",
+               owner_id=43, can_buy=False, why="Он 9 уровня, а ты 4.")
+    async with async_playwright() as pw:
+        browser, page = await open_transfers(
+            pw, server, transfers_state(lots=[lot])
+        )
+
+        buy = page.locator(".recruit .btn", has_text="купить").first
+        assert await buy.is_disabled()
+        # Причина — строкой под кнопкой: подсказку на погасшей кнопке
+        # не нажать, и объяснение осталось бы ненайденным
+        body = await page.locator(".recruit").first.inner_text()
+        assert "Он 9 уровня, а ты 4." in body, body
+        await browser.close()
+
+
+async def test_my_lot_stands_apart_with_its_offers_under_it(server):
+    """Свой лот — своя полка, и предложения приписаны под ним."""
+    mine = dict(lot_face(-101, "Громила"), price=700, owner="Тайлер",
+                owner_id=42, bids=[
+                    {"id": 7, "buyer": "Марла",
+                     "give": lot_face(-202, "Тихий", level=3, stars=2),
+                     "extra": 150},
+                ])
+    async with async_playwright() as pw:
+        browser, page = await open_transfers(
+            pw, server, transfers_state(mine=[mine])
+        )
+
+        heads = await page.locator("#dojo-body .shelf-head").all_inner_texts()
+        assert "Мои лоты" in heads[1]
+        bid = page.locator(".recruit.bid")
+        said = await bid.inner_text()
+        assert "Марла" in said and "Тихий" in said and "150 💰" in said, said
+        buttons = await bid.locator(".btn").all_inner_texts()
+        assert [one.strip() for one in buttons] == ["Принять", "Отклонить"]
+        await browser.close()
+
+
+async def test_a_money_only_offer_reads_as_money(server):
+    """Без бойца в обмене пишут только сумму, а не пустое место."""
+    mine = dict(lot_face(-101, "Громила"), price=700, owner="Тайлер",
+                owner_id=42, bids=[
+                    {"id": 7, "buyer": "Марла", "give": None, "extra": 900},
+                ])
+    async with async_playwright() as pw:
+        browser, page = await open_transfers(
+            pw, server, transfers_state(mine=[mine])
+        )
+
+        said = await page.locator(".recruit.bid .recruit-said").inner_text()
+        assert said.strip() == "900 💰", said
+        await browser.close()
+
+
+async def test_my_own_offers_can_be_taken_back(server):
+    """Своё предложение видно и отзывается одной кнопкой."""
+    offer = {
+        "id": 7,
+        "lot": lot_face(-101, "Громила"),
+        "give": lot_face(-202, "Тихий"),
+        "extra": 150,
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_transfers(
+            pw, server, transfers_state(offers=[offer])
+        )
+
+        heads = await page.locator("#dojo-body .shelf-head").all_inner_texts()
+        assert "Мои предложения" in heads[1]
+        body = await page.locator("#dojo-body").inner_text()
+        assert "Предложено: Тихий и 150 💰" in body, body
+        assert await page.locator(".btn", has_text="Отозвать").count() == 1
+        await browser.close()
+
+
+async def test_listing_a_fighter_needs_a_name_and_a_price(server):
+    """Кнопка «Выставить» оживает, когда выбран боец и назначена цена."""
+    async with async_playwright() as pw:
+        browser, page = await open_transfers(
+            pw, server, transfers_state(free=[lot_face(-101, "Громила")])
+        )
+
+        put = page.locator(".btn", has_text="Выставить на рынок")
+        assert await put.is_disabled()
+        await page.locator("#market-who .chip", has_text="Громила").click()
+        assert await put.is_disabled()  # бойца выбрали, цены нет
+        await page.fill("#market-price", "700")
+        await page.dispatch_event("#market-price", "input")
+        assert not await put.is_disabled()
+        await browser.close()
+
+
+async def test_listing_sends_the_fighter_and_the_price(server):
+    """Нажатие доносит до школы, кого выставили и за сколько."""
+    heard = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_transfers(
+            pw, server, transfers_state(free=[lot_face(-101, "Громила")])
+        )
+        async def catch(route):
+            if route.request.method == "POST":
+                heard.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(transfers_state(said="Готово")),
+            )
+
+        await page.route("**/api/transfers", catch)
+
+        await page.locator("#market-who .chip", has_text="Громила").click()
+        await page.fill("#market-price", "700")
+        await page.dispatch_event("#market-price", "input")
+        await page.locator(".btn", has_text="Выставить на рынок").click()
+        await page.wait_for_function("() => document.querySelector('#dojo-note')"
+                                     ".textContent.includes('Готово')")
+
+        assert heard[0] == {"action": "put_up", "npc": -101, "price": 700}
+        await browser.close()
+
+
+async def test_the_swap_form_opens_under_the_lot_it_belongs_to(server):
+    """Форма обмена раскрывается под своим лотом и прячется обратно."""
+    lot = dict(lot_face(-101, "Громила"), price=700, owner="Марла",
+               owner_id=43, can_buy=True, why="")
+    async with async_playwright() as pw:
+        browser, page = await open_transfers(
+            pw, server, transfers_state(lots=[lot], free=[lot_face(-202, "Тихий")])
+        )
+
+        assert await page.locator("#market-swap").count() == 0
+        await page.locator(".btn", has_text="Предложить обмен").click()
+        await page.wait_for_selector("#market-swap")
+        chips = await page.locator("#market-swap .chip").all_inner_texts()
+        assert [one.strip() for one in chips] == ["Только деньги", "Тихий · 4 ур."]
+        # Та же кнопка закрывает её: открытая форма — это выбор, а не шаг
+        await page.locator(".btn", has_text="Не менять").click()
+        await page.wait_for_selector("#market-swap", state="detached")
+        await browser.close()
+
+
+async def test_an_empty_swap_cannot_be_sent(server):
+    """Ни бойца, ни денег — предложение не отправляют."""
+    lot = dict(lot_face(-101, "Громила"), price=700, owner="Марла",
+               owner_id=43, can_buy=True, why="")
+    async with async_playwright() as pw:
+        browser, page = await open_transfers(
+            pw, server, transfers_state(lots=[lot], free=[lot_face(-202, "Тихий")])
+        )
+        await page.locator(".btn", has_text="Предложить обмен").click()
+        await page.wait_for_selector("#market-swap")
+
+        send = page.locator(".btn", has_text="Отправить предложение")
+        assert await send.is_disabled()
+        await page.fill("#market-extra", "150")
+        await page.dispatch_event("#market-extra", "input")
+        assert not await send.is_disabled()
+        await browser.close()
+
+
+async def test_a_swap_sends_the_lot_the_fighter_and_the_extra(server):
+    """В школу уходят три числа: чей лот, кого отдаём и сколько сверху."""
+    heard = []
+    lot = dict(lot_face(-101, "Громила"), price=700, owner="Марла",
+               owner_id=43, can_buy=True, why="")
+
+    async with async_playwright() as pw:
+        browser, page = await open_transfers(
+            pw, server, transfers_state(lots=[lot], free=[lot_face(-202, "Тихий")])
+        )
+        await page.locator(".btn", has_text="Предложить обмен").click()
+        await page.wait_for_selector("#market-swap")
+        async def catch(route):
+            if route.request.method == "POST":
+                heard.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(transfers_state(said="Отправлено")),
+            )
+
+        await page.route("**/api/transfers", catch)
+
+        await page.locator("#market-swap .chip", has_text="Тихий").click()
+        await page.fill("#market-extra", "150")
+        await page.dispatch_event("#market-extra", "input")
+        await page.locator(".btn", has_text="Отправить предложение").click()
+        await page.wait_for_function("() => document.querySelector('#dojo-note')"
+                                     ".textContent.includes('Отправлено')")
+
+        assert heard[0] == {
+            "action": "offer", "npc": -101, "give": -202, "extra": 150,
+        }
+        # И форма закрылась: предложение уже отправлено
+        assert await page.locator("#market-swap").count() == 0
+        await browser.close()
+
+
+async def test_a_market_refusal_comes_back_as_words(server):
+    """Отказ школы показывают всплывашкой, а не молчанием."""
+    lot = dict(lot_face(-101, "Громила"), price=700, owner="Марла",
+               owner_id=43, can_buy=True, why="")
+    async with async_playwright() as pw:
+        browser, page = await open_transfers(
+            pw, server, transfers_state(lots=[lot])
+        )
+        async def catch(route):
+            if route.request.method == "POST":
+                await route.fulfill(
+                    status=409, content_type="application/json",
+                    body=json.dumps({"error": "Этого бойца уже забрали."}),
+                )
+                return
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(transfers_state(lots=[lot])),
+            )
+
+        await page.route("**/api/transfers", catch)
+        said = []
+        await page.expose_function("heard", lambda text: said.append(text))
+        await page.evaluate(
+            "() => { window.popup = (title, text) => { window.heardSaid = true;"
+            " heard(text); }; }"
+        )
+
+        await page.locator(".btn", has_text="купить").click()
+        # Отказ не только говорят: рынок перечитывают — вдруг бойца
+        # действительно забрали, и полка уже другая
+        await page.wait_for_function(
+            "() => window.heardSaid === true", timeout=5_000
+        )
+        assert said == ["Этого бойца уже забрали."], said
         await browser.close()
 
 
@@ -16622,7 +16961,7 @@ async def test_the_court_shows_the_docket_to_the_robe_and_the_ladder_to_all(
 # ---------- школа боевых искусств ----------
 
 
-async def test_the_school_has_three_tabs_and_opens_on_your_tricks(server, db):
+async def test_the_school_has_four_tabs_and_opens_on_your_tricks(server, db):
     """Вкладок три: свои приёмы, обучение и найм. Первой стоит своё."""
     from bot.webapp.dojo import build_dojo
     from tests.test_dojo_school import student
@@ -16639,7 +16978,7 @@ async def test_the_school_has_three_tabs_and_opens_on_your_tricks(server, db):
         await page.wait_for_selector("#dojo-body .shelf")
 
         assert await page.locator("#dojo-tabs .chip").all_inner_texts() == [
-            "Ваши приёмы", "Обучение", "Найм бойцов",
+            "Ваши приёмы", "Обучение", "Найм бойцов", "Трансферы",
         ]
         assert await page.locator("#dojo-tabs .chip.on").inner_text() == (
             "Ваши приёмы"

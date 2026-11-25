@@ -6947,6 +6947,16 @@ body.dark .recruit {
    взяли, и место не занимает кто-то новый */
 .recruit.taken { opacity: 0.5; }
 
+/* Предложение по лоту — приписка под ним, а не отдельный боец: сдвиг
+   вправо и бледная рамка говорят «это ответ на то, что выше» */
+.recruit.bid {
+  margin-left: 24px;
+  border-style: dashed;
+  background: transparent;
+}
+
+body.dark .recruit.bid { background: transparent; }
+
 .recruit-face {
   width: 72px;
   height: 96px;
