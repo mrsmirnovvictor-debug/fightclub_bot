@@ -2219,12 +2219,6 @@ async def api_trade_action(request: web.Request) -> web.Response:
     except TradeError as error:
         return web.json_response({"error": str(error)}, status=409)
 
-    # Непустая своя часть стола — событие для бармена: одно из его
-    # заданий ровно в том и состоит, чтобы занять стол и что-нибудь на
-    # него положить. Контрагент и сам обмен для этого не нужны
-    mine = trades.trade_of(player.user_id)
-    if mine is not None and not mine.side(player.user_id).empty:
-        await notice(request.app[DB_KEY], player, QuestGoal.TRADE.value)
     # Кредиты и вещи могли только что переехать: перечитываем бойца, чтобы
     # на столе и в рюкзаке было то же, что в базе
     fresh = await request.app[DB_KEY].get_player(player.user_id)

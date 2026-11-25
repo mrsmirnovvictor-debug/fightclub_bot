@@ -1524,3 +1524,25 @@ def test_every_seen_catalog_is_known_to_the_server():
             assert need.target in SEEN_CATALOGS, quest.code
             # И проверка кода у него не заглушка
             assert not _seen_has(need.target, "нет-такого-кода")
+
+
+async def test_the_market_errand_closes_by_coming_to_the_market(db):
+    """«Торговля и обмен» закрывается приходом на рынок, а не столом.
+
+    Стол складывается только с другим игроком: он занимает вторую
+    сторону, он же подтверждает. Задание из первых глав, привязанное к
+    столу, повисло бы в ожидании второй стороны — а бармен посылает
+    посмотреть, как это работает.
+    """
+    player = await enlist(db, make_player(level=2))
+    for one in chapter_quests("city"):
+        await walk(db, player, one.code)
+    for code in ("work", "study_intro"):
+        await walk(db, player, code)
+    await take(db, player, "trade_intro")
+
+    await notice_visit(db, player, Service.TRADE)
+
+    log = await journal(db, player)
+    assert "visit:trade" in log["trade_intro"].marks
+    await hand(db, player, "trade_intro")
