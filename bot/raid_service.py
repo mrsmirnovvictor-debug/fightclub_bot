@@ -808,8 +808,14 @@ class RaidService:
 
         Наугад — тем же броском, каким дерётся охрана точки: отряд
         помогает хозяину, а не играет за него.
+
+        Замка здесь нет нарочно: зовут отсюда из начала волны, а оно
+        приходит из нажатия или из таймера, и замок волны они держат
+        сами — второй заход за ним встал бы навсегда.
         """
-        mine = [uid for uid in session.alive_ids if uid < 0 and uid not in session.acted]
+        mine = [
+            uid for uid in session.alive_ids if uid < 0 and uid not in session.acted
+        ]
         if not mine:
             return
         for user_id in mine:
