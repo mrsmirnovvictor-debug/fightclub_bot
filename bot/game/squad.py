@@ -68,6 +68,36 @@ REROLL_PRICES: tuple[int, ...] = (50, 50, 100, 100, 200, 200, 400, 400)
 REROLL_LIMIT = len(REROLL_PRICES)
 
 
+# Сколько спаррингов с хозяином в сутки идут бойцу в опыт и какой
+# долей. Первый — полной, второй — половиной, третий и дальше — ничем:
+# та же лестница, что у уроков Тренера, и по той же причине. Спарринг
+# безопасен и бесплатен, и без убывающей доли отряд качался бы об
+# хозяина круглые сутки, не выходя в город
+SPAR_SHARES: tuple[float, ...] = (1.0, 0.5)
+SPAR_LESSONS = len(SPAR_SHARES)
+
+
+def spar_share(done_today: int) -> float:
+    """Какой долей идёт очередной спарринг этих суток."""
+    if done_today < 0:
+        done_today = 0
+    if done_today >= len(SPAR_SHARES):
+        return 0.0
+    return SPAR_SHARES[done_today]
+
+
+def spar_exp(full: int, done_today: int) -> int:
+    """Опыт бойца за спарринг с хозяином.
+
+    Ноль — занятий на сегодня хватит: третий бой подряд ничего не даёт
+    и об этом сказано до боя, а не после.
+    """
+    share = spar_share(done_today)
+    if share <= 0:
+        return 0
+    return max(1, int(round(full * share)))
+
+
 def bonus_points(stars: int, level: int) -> int:
     """Сколько бонусных очков накопил боец этой звёздности к уровню.
 
@@ -156,6 +186,10 @@ __all__ = [
     "REROLL_LIMIT",
     "REROLL_PRICES",
     "SHOWCASE_SIZE",
+    "SPAR_LESSONS",
+    "SPAR_SHARES",
+    "spar_exp",
+    "spar_share",
     "SQUAD_LIMIT",
     "STARS",
     "STAR_CHANCE",

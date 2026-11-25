@@ -354,6 +354,21 @@ async def test_a_beaten_fighter_waits_in_hospital_until_he_is_taken(db):
         await discharge(db, player, npc.user_id)
 
 
+async def test_the_hour_zero_lays_a_fighter_down_and_not_up(db):
+    """Нулём в строке записана выписка, и часом он быть не может.
+
+    `to_hospital(..., 0)` просилось прочитать ноль как время и тем
+    самым выписать бойца вместо того, чтобы уложить. Пустой час тут
+    значит «сейчас».
+    """
+    player = await enlist(db)
+    shop = await showcase(db, player, WEEK, random.Random(1))
+    npc = await hire(db, player, shop["cards"][0]["slot"], WEEK)
+
+    await to_hospital(db, npc.user_id, 0)
+    assert (await db.squad_row(npc.user_id))["hospital_at"] > 0
+
+
 async def test_dismissal_hands_the_gear_back_and_takes_the_man_away(db):
     """Вещи хозяину, боец из города, место в отряде свободно."""
     player = await enlist(db)

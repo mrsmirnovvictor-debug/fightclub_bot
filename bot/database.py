@@ -8925,6 +8925,28 @@ class Database:
             row = await cursor.fetchone()
         return int(row["fights"]) if row else 0
 
+    async def count_duels_with(
+        self, user_id: int, rival_id: int, since: int
+    ) -> int:
+        """Сколько боёв между этими двумя было с указанного мига.
+
+        Считаются все, чем бы ни кончились: спарринг со своим бойцом —
+        это тренировка, и платят за неё по числу занятий, а не по
+        числу побед. Победами меряют Тренера: там опыт за выигранный
+        урок, и это разные вопросы к одной таблице.
+        """
+        async with self.conn.execute(
+            """
+            SELECT COUNT(*) AS fights FROM duels
+            WHERE ((challenger_id = ? AND opponent_id = ?)
+                OR (challenger_id = ? AND opponent_id = ?))
+              AND created_at >= datetime(?, 'unixepoch')
+            """,
+            (user_id, rival_id, rival_id, user_id, int(since)),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["fights"]) if row else 0
+
     async def count_wins_over(
         self, user_id: int, rival_id: int, since: int
     ) -> int:

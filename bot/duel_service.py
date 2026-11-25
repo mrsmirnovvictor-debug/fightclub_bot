@@ -24,6 +24,7 @@ from bot.game.equipment import BARE_HANDS_ICON
 from bot.game.health import now_ts
 from bot.game.modes import FightMode
 from bot.game.scout import SCOUT_FIGHTS, Habits, read_habits
+from bot.game.squad import spar_exp
 from bot.game.trainer import TRAINER_ID, lesson_exp, trainer_moves
 from bot.trainer_service import calls, ensure_trainer, refuse, shaped_for
 from bot.game.combat import (
@@ -42,6 +43,7 @@ from bot.game.combat import (
 from bot.game.fightlog import turn_payload
 from bot.game.economy import (
     DRAW_EXP_SHARE,
+    base_exp,
     LOSS_EXP_SHARE,
     REPEAT_WINDOW_HOURS,
     apply_share,
@@ -693,6 +695,51 @@ class DuelService:
         await self._start_round(session)
         return session
 
+    async def start_spar(self, owner: Player, npc_id: int) -> DuelSession:
+        """Вывести хозяина против собственного бойца.
+
+        Это тренировка, а не бой: соперник свой, ставить на кон нечего,
+        и потому здесь нет ни рейтинга, ни побед с поражениями, ни
+        больницы. Платят только бойцу и только опытом — за это он и
+        выходит.
+
+        Боец дерётся как есть: со своими характеристиками и своими
+        вещами, ничего не подгоняем под хозяина. Подгонка нужна была
+        Тренеру, потому что он один на весь город; свой боец у каждого
+        свой, и равнять его не с кем.
+        """
+        from bot.squad_service import SquadError
+
+        if self._busy.get(owner.user_id) == "duel":
+            raise DuelError("Ты уже на ринге в другом бою.")
+        if not owner.can_fight():
+            raise DuelError(health_warning(owner))
+
+        row = await self.db.squad_row(npc_id)
+        if row is None or row["owner_id"] != owner.user_id:
+            raise DuelError("Это не твой боец.")
+        if row["hospital_at"]:
+            raise DuelError("Этот боец в больнице. Сперва забери его.")
+        if row["spot"]:
+            raise DuelError("Он держит точку. Сперва сними его оттуда.")
+        if self._busy.get(npc_id):
+            raise DuelError("Он уже на ринге.")
+        npc = await self.db.get_player(npc_id)
+        if npc is None:  # pragma: no cover - сломанная база
+            raise SquadError("Этого бойца уже нет.")
+        if not npc.can_fight():
+            raise DuelError(f"{npc.nickname} ещё не отдышался.")
+        if self._busy.get(owner.user_id) == "challenge":
+            await self._withdraw_challenges_of(owner.user_id)
+
+        session = self._make_session(
+            None, None, owner, npc, mode=FightMode.FIST
+        )
+        session.npc = npc_id
+        session.started = True
+        await self._start_round(session)
+        return session
+
     async def _start_round(self, session: DuelSession) -> None:
         session.round_number += 1
         session.choices = {}
@@ -1092,6 +1139,61 @@ class DuelService:
             log=session.rounds,
         )
 
+    async def _apply_spar(
+        self, session: DuelSession, result: RoundResult
+    ) -> Rewards:
+        """Итоги спарринга со своим бойцом: опыт бойцу, и только.
+
+        Хозяину не платят ничего. Соперник его собственный, рисковать
+        нечем, и платить обоим значило бы завести в городе самую
+        выгодную и самую скучную качалку: двое своих бьют друг друга
+        круглые сутки, и оба растут.
+
+        Бойцу платят по числу занятий за сутки, а не побед: это
+        тренировка, и важно, что он вышел, а не чем кончилось. Третий
+        спарринг подряд не даёт ничего, и об этом сказано до боя.
+
+        Ни рейтинга, ни побед, ни больницы: проигравший спарринг
+        отлёживается здоровьем, как после любого боя, и назавтра снова
+        в строю.
+        """
+        assert session.npc is not None
+        npc_id = session.npc
+        owner_id = next(
+            user_id for user_id in session.order if user_id != npc_id
+        )
+        owner = await self.db.get_player(owner_id)
+        npc = await self.db.get_player(npc_id)
+        row = await self.db.squad_row(npc_id)
+        if owner is None or npc is None or row is None:
+            return Rewards()  # pragma: no cover - бойца убрали по ходу боя
+
+        # Занятия за сутки считаются до того, как этот бой лёг в
+        # историю: запись идёт после итогов
+        done = await self.db.count_duels_with(
+            owner_id, npc_id, day_opens(now_ts())
+        )
+        full = base_exp(npc.level)
+        got = spar_exp(full, done)
+        from bot.squad_service import add_exp
+
+        levels = await add_exp(self.db, npc, int(row["stars"]), owner, got)
+
+        # Здоровье обоих — то, с чем вышли из боя
+        npc.set_hp(session.fighters[npc_id].hp)
+        await self.db.save_player(npc)
+        owner.set_hp(session.fighters[owner_id].hp)
+        await self.db.save_player(owner)
+
+        said = (
+            f"{npc.nickname} получает {got} опыта."
+            if got
+            else f"{npc.nickname} на сегодня отработал: опыта больше нет."
+        )
+        if levels:
+            said += f" Уровень: {npc.level}."
+        return Rewards(report=said, screen=said)
+
     async def _apply_lesson(
         self, session: DuelSession, result: RoundResult
     ) -> Rewards:
@@ -1212,8 +1314,10 @@ class DuelService:
         self, session: DuelSession, result: RoundResult
     ) -> Rewards:
         """Начислить опыт, кредиты и рейтинг. Вернуть итоги двумя текстами."""
-        if session.npc is not None:
+        if session.npc == TRAINER_ID:
             return await self._apply_lesson(session, result)
+        if session.npc is not None:
+            return await self._apply_spar(session, result)
         players: dict[int, Player] = {}
         for user_id in session.order:
             player = await self.db.get_player(user_id)

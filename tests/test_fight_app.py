@@ -1017,3 +1017,88 @@ async def test_the_panel_carries_the_number_of_the_exchange(arena):
         )
     second = (await state(client, 42))["duel"]
     assert second["number"] == 2, second["number"]
+
+
+# ---------- спарринг со своим бойцом ----------
+
+
+async def a_squad_row(db, owner_id: int, level: int = 4):
+    """Боец в отряде этого игрока: строка отряда и карточка."""
+    from bot.game.classes import get_class
+    from bot.game.squad import npc_stats
+
+    npc_id = await db.next_npc_id()
+    stats = npc_stats(get_class("tank"), 1, level)
+    npc = Player(
+        user_id=npc_id, nickname="Громила", class_code="tank", level=level,
+        **stats.as_dict(),
+    )
+    await db.save_player(npc)
+    await db.add_squad(npc_id, owner_id, 1, 1, 0)
+    return (await db.squad_of(owner_id))[0], npc
+
+
+async def test_a_free_fighter_stands_in_the_ring_list(db):
+    """Свой боец — такая же заявка, как у Тренера, и зовут его так же."""
+    from bot.webapp.fight import spar_row
+
+    owner = make_player(42, "Тайлер")
+    owner.level = 9
+    await db.save_player(owner)
+    row, npc = await a_squad_row(db, owner.user_id)
+
+    call = spar_row(row, npc, owner, busy=False)
+    assert call["npc"] is True and call["spar"] == npc.user_id
+    assert call["open"] is True
+    assert "опыт ему, а не тебе" in call["note"]
+    assert call["challenger"]["name"] == "Громила"
+    assert call["challenger"]["level"] == npc.level
+    assert call["mirror"] is False, "своего бойца под себя не подгоняют"
+
+
+async def test_a_busy_fighter_stays_in_the_list_but_greyed_out(db):
+    """Занятого не прячут, а гасят: исчезающая строка читается как сбой.
+
+    И у каждой занятости своя подпись: по ней видно, что делать —
+    забрать из больницы, снять с точки или подождать.
+    """
+    from bot.squad_service import to_hospital
+    from bot.webapp.fight import spar_row
+
+    owner = make_player(42, "Тайлер")
+    owner.level = 9
+    await db.save_player(owner)
+    row, npc = await a_squad_row(db, owner.user_id)
+
+    assert spar_row(row, npc, owner, busy=True)["open"] is False
+    assert "Уже на ринге" in spar_row(row, npc, owner, busy=True)["note"]
+
+    await db.set_squad_spot(npc.user_id, "bar")
+    row = (await db.squad_of(owner.user_id))[0]
+    held = spar_row(row, npc, owner, busy=False)
+    assert held["open"] is False and "точку" in held["note"]
+
+    await db.set_squad_spot(npc.user_id, "")
+    await to_hospital(db, npc.user_id)
+    row = (await db.squad_of(owner.user_id))[0]
+    hurt = spar_row(row, npc, owner, busy=False)
+    assert hurt["open"] is False and "больнице" in hurt["note"]
+
+
+async def test_the_squad_calls_come_from_the_database_not_the_ring(db):
+    """Строки отряда собирает служба отряда, а не сессия боёв.
+
+    Отряд живёт в базе, и за ним ходят туда: сессия боёв про него не
+    знает вовсе. Пустой отряд — пустой список, и у большинства новичков
+    он таким и будет.
+    """
+    from bot.squad_service import fighters
+
+    owner = make_player(42, "Тайлер")
+    owner.level = 9
+    await db.save_player(owner)
+    assert await fighters(db, owner.user_id) == []
+
+    await a_squad_row(db, owner.user_id)
+    held = await fighters(db, owner.user_id)
+    assert len(held) == 1 and held[0][1].nickname == "Громила"

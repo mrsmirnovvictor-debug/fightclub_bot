@@ -4214,9 +4214,11 @@ function challengeList(data) {
     btn.disabled = !data.can_fight || (challenge.npc && !challenge.open);
     btn.addEventListener("click", () =>
       fightAction(
-        challenge.npc
-          ? { action: "lesson" }
-          : { action: "join", challenge_id: challenge.id }
+        challenge.spar
+          ? { action: "spar", npc: challenge.spar }
+          : challenge.npc
+            ? { action: "lesson" }
+            : { action: "join", challenge_id: challenge.id }
       )
     );
     card.appendChild(btn);

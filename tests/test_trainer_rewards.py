@@ -385,3 +385,125 @@ async def test_blocks_against_the_trainer_close_the_defence_quest(duels, db):
 
     marks = set((await journal(db, learner))["armor_intro"].marks)
     assert blocks_held(marks) == BLOCK_HITS
+
+
+# ---------- спарринг с собственным бойцом ----------
+
+
+async def a_fighter(db, owner_id: int, level: int = 3, stars: int = 1):
+    """Завести бойца в отряде этого игрока."""
+    from bot.game.classes import get_class
+    from bot.game.squad import npc_stats
+
+    npc_id = await db.next_npc_id()
+    stats = npc_stats(get_class("tank"), stars, level)
+    npc = Player(
+        user_id=npc_id, nickname="Громила", class_code="tank", level=level,
+        **stats.as_dict(),
+    )
+    await db.save_player(npc)
+    await db.add_squad(npc_id, owner_id, stars, 1, 0)
+    return npc
+
+
+async def _spar(duels, db, owner: Player, npc_id: int, *, won: bool = True):
+    """Провести спарринг до итога."""
+    session = await duels.start_spar(owner, npc_id)
+    result = a_verdict(owner.user_id if won else npc_id)
+    await duels._apply_results(session, result)
+    await duels._record(session, result)
+    duels._forget(session)
+    return await db.get_player(npc_id)
+
+
+async def test_a_spar_pays_the_fighter_and_not_the_owner(duels, db):
+    """За спарринг платят бойцу опытом, а хозяину — ничем.
+
+    Соперник у хозяина собственный, рисковать нечем, и платить обоим
+    значило бы завести самую выгодную и самую скучную качалку в
+    городе: двое своих бьют друг друга круглые сутки, и оба растут.
+    """
+    from bot.game.economy import base_exp
+
+    owner = a_learner(level=10)
+    owner.location = "bar"
+    await db.save_player(owner)
+    npc = await a_fighter(db, owner.user_id, level=3)
+
+    grown = await _spar(duels, db, owner, npc.user_id)
+    assert grown.total_exp == base_exp(3), "ставка своего уровня целиком"
+
+    after = await db.get_player(owner.user_id)
+    assert after.total_exp == 0, "хозяину за своего же бойца не платят"
+    assert after.wins == 0 and after.losses == 0, "в победы спарринг не идёт"
+    assert after.rating == owner.rating, "и рейтинг не двигает"
+
+
+async def test_the_third_spar_of_the_day_gives_nothing(duels, db):
+    """Два занятия в сутки: первое целиком, второе вполовину, третье даром."""
+    from bot.game.economy import base_exp
+    from bot.game.squad import spar_exp
+
+    owner = a_learner(level=10)
+    owner.location = "bar"
+    await db.save_player(owner)
+    npc = await a_fighter(db, owner.user_id, level=3)
+    full = base_exp(3)
+
+    first = await _spar(duels, db, owner, npc.user_id)
+    assert first.total_exp == full
+
+    second = await _spar(duels, db, owner, npc.user_id)
+    assert second.total_exp - first.total_exp == spar_exp(full, 1)
+
+    third = await _spar(duels, db, owner, npc.user_id)
+    assert third.total_exp == second.total_exp, "на сегодня отработал"
+
+
+async def test_a_spar_pays_the_loser_too(duels, db):
+    """Платят за занятие, а не за победу: важно, что боец вышел."""
+    from bot.game.economy import base_exp
+
+    owner = a_learner(level=10)
+    owner.location = "bar"
+    await db.save_player(owner)
+    npc = await a_fighter(db, owner.user_id, level=3)
+
+    beaten = await _spar(duels, db, owner, npc.user_id, won=True)
+    assert beaten.total_exp == base_exp(3)
+
+
+async def test_a_busy_or_beaten_fighter_does_not_spar(duels, db):
+    """На ринг не зовут того, кто в больнице или держит точку."""
+    from bot.duel_service import DuelError
+    from bot.squad_service import to_hospital
+
+    owner = a_learner(level=10)
+    owner.location = "bar"
+    await db.save_player(owner)
+    npc = await a_fighter(db, owner.user_id)
+
+    await db.set_squad_spot(npc.user_id, "bar")
+    with pytest.raises(DuelError, match="точку"):
+        await duels.start_spar(owner, npc.user_id)
+
+    await db.set_squad_spot(npc.user_id, "")
+    await to_hospital(db, npc.user_id, 0)
+    with pytest.raises(DuelError, match="больнице"):
+        await duels.start_spar(owner, npc.user_id)
+
+
+async def test_another_mans_fighter_is_not_yours_to_spar(duels, db):
+    """Чужого бойца на ринг не выводят."""
+    from bot.duel_service import DuelError
+
+    owner = a_learner(level=10)
+    owner.location = "bar"
+    await db.save_player(owner)
+    stranger = a_learner(level=10, user_id=77)
+    stranger.location = "bar"
+    await db.save_player(stranger)
+    npc = await a_fighter(db, owner.user_id)
+
+    with pytest.raises(DuelError, match="не твой"):
+        await duels.start_spar(stranger, npc.user_id)

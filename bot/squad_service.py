@@ -280,8 +280,12 @@ async def to_hospital(db: Database, npc_id: int, now: int | None = None) -> None
 
     Точка при этом слетает сама: лежачий её не держит, и оставить его
     в гарнизоне значило бы драться бойцом, которого там нет.
+
+    Ноль часа здесь не бывает: нулём в строке записана выписка, и
+    принять его за время значило бы выписать вместо того, чтобы
+    уложить. Поэтому пустой час читается как «сейчас».
     """
-    moment = now_ts() if now is None else now
+    moment = now or now_ts()
     await db.set_squad_hospital(npc_id, moment)
     logger.info("Боец %s попал в больницу", npc_id)
 

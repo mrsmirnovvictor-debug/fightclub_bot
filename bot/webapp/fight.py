@@ -221,6 +221,48 @@ def trainer_row(
     }
 
 
+def spar_row(row: dict, npc: Player, owner: Player, busy: bool) -> dict[str, Any]:
+    """Строка спарринга со своим бойцом — такая же заявка, как у Тренера.
+
+    Выглядит вызовом, потому что это он и есть: хозяин выходит против
+    своего человека. Отличает её `spar` — номер бойца, которого зовут
+    на ринг; живого вызова за ней нет.
+
+    Занятого бойца из списка не прячем, а гасим с подписью: исчезающая
+    строка читалась бы как сбой, а по подписи видно, что с ним не так —
+    лежит, держит точку или уже на ринге.
+    """
+    fclass = get_class(npc.class_code)
+    why = ""
+    if row["hospital_at"]:
+        why = "В больнице. Забери его, и выходите на ринг."
+    elif row["spot"]:
+        why = "Держит точку. Сними его оттуда, если нужен здесь."
+    elif busy:
+        why = "Уже на ринге."
+    elif not npc.can_fight():
+        why = "Ещё не отдышался после боя."
+    return {
+        "id": -npc.user_id,
+        "npc": True,
+        "spar": npc.user_id,
+        "mode": mode_payload(FightMode.FIST),
+        "mine": False,
+        "personal": False,
+        "in_app": True,
+        "open": not why,
+        "note": why or "Твой боец. Спарринг даёт опыт ему, а не тебе.",
+        "mirror": False,
+        "challenger": {
+            "user_id": npc.user_id,
+            "name": npc.nickname,
+            "level": npc.level,
+            "emoji": fclass.emoji,
+            "fclass": fclass.title,
+        },
+    }
+
+
 def duel_payload(session: DuelSession, viewer_id: int) -> dict[str, Any]:
     """Панель боя: кто с кем, чей ход, что уже нажато и чем всё кончилось."""
     mine = session.choices.get(viewer_id)
@@ -385,6 +427,7 @@ def build_fights(
     player: Player,
     service: DuelService | None,
     trainer: dict[str, Any] | None = None,
+    squad: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Всё, что нужно вкладке «Бои», одним ответом."""
     body: dict[str, Any] = {
@@ -417,7 +460,10 @@ def build_fights(
         body["challenge"] = challenge_payload(own, player.user_id)
     # Заявка Тренера стоит первой: в пустом клубе это единственный бой,
     # который новичку доступен, и искать его под чужими вызовами незачем
-    body["challenges"] = ([trainer] if trainer else []) + [
+    # Свои бойцы идут сразу за Тренером и прежде чужих вызовов: это
+    # тоже бой «против города», и искать его под живыми заявками
+    # пришлось бы дольше, чем он того стоит
+    body["challenges"] = ([trainer] if trainer else []) + list(squad or []) + [
         challenge_payload(challenge, player.user_id)
         for challenge in service.open_challenges()
         if service.challenge_for(player.user_id, challenge)

@@ -1378,6 +1378,25 @@ async def _trainer_call(
     return trainer_row(trainer, player, busy=duels.is_busy(TRAINER_ID))
 
 
+async def _squad_calls(
+    request: web.Request, player: Player, duels: DuelService | None
+) -> list[dict[str, Any]]:
+    """Строки своих бойцов для вкладки «Бои».
+
+    Отряд живёт в базе, а не в сессии боёв, поэтому за ним ходят сюда.
+    Пустой отряд — пустой список: у большинства новичков его и нет.
+    """
+    from bot.squad_service import fighters
+    from bot.webapp.fight import spar_row
+
+    if duels is None:
+        return []
+    return [
+        spar_row(row, npc, player, busy=bool(duels.is_busy(npc.user_id)))
+        for row, npc in await fighters(request.app[DB_KEY], player.user_id)
+    ]
+
+
 async def api_fights(request: web.Request) -> web.Response:
     """Состояние вкладки «Бои» целиком: вызовы, свой вызов или идущий бой.
 
@@ -1387,7 +1406,12 @@ async def api_fights(request: web.Request) -> web.Response:
     player = await _fighter(request)
     duels = request.app.get(DUELS_KEY)
     return web.json_response(
-        build_fights(player, duels, await _trainer_call(request, player, duels))
+        build_fights(
+            player,
+            duels,
+            await _trainer_call(request, player, duels),
+            await _squad_calls(request, player, duels),
+        )
     )
 
 
@@ -1409,6 +1433,10 @@ async def api_fight(request: web.Request) -> web.Response:
             await duels.withdraw_challenge(player.user_id)
         elif action == "join":
             await duels.accept_challenge(_int_field(data, "challenge_id"), player)
+        elif action == "spar":
+            # Спарринг со своим бойцом. Живого вызова за ним тоже нет:
+            # зовут своего, и он выходит сразу
+            await duels.start_spar(player, _int_field(data, "npc"))
         elif action == "lesson":
             # Урок у Тренера. Живого вызова за ним нет: заявка следует из
             # его состояния, и принять её — значит сразу встать на ринг
