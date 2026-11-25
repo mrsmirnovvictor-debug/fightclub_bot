@@ -416,12 +416,12 @@ async def _spar(duels, db, owner: Player, npc_id: int, *, won: bool = True):
     return await db.get_player(npc_id)
 
 
-async def test_a_spar_pays_the_fighter_and_not_the_owner(duels, db):
-    """За спарринг платят бойцу опытом, а хозяину — ничем.
+async def test_a_spar_pays_both_the_fighter_and_his_owner(duels, db):
+    """За спарринг платят обоим: бойцу за занятие, хозяину за победу.
 
-    Соперник у хозяина собственный, рисковать нечем, и платить обоим
-    значило бы завести самую выгодную и самую скучную качалку в
-    городе: двое своих бьют друг друга круглые сутки, и оба растут.
+    Хозяину — по правилу уроков Тренера: опыт только за победу и по
+    обычной формуле клуба. Ни рейтинга, ни побед спарринг не двигает:
+    соперник собственный, и место среди живых игроков им не добывают.
     """
     from bot.game.economy import base_exp
 
@@ -434,9 +434,51 @@ async def test_a_spar_pays_the_fighter_and_not_the_owner(duels, db):
     assert grown.total_exp == base_exp(3), "ставка своего уровня целиком"
 
     after = await db.get_player(owner.user_id)
-    assert after.total_exp == 0, "хозяину за своего же бойца не платят"
+    assert after.total_exp > 0, "за победу хозяину платят"
     assert after.wins == 0 and after.losses == 0, "в победы спарринг не идёт"
     assert after.rating == owner.rating, "и рейтинг не двигает"
+
+
+async def test_a_lost_spar_pays_the_owner_nothing(duels, db):
+    """Проиграл своему бойцу — опыта нет: платят за победу.
+
+    Бойцу при этом платят всё равно: ему важно, что он вышел.
+    """
+    owner = a_learner(level=10)
+    owner.location = "bar"
+    await db.save_player(owner)
+    npc = await a_fighter(db, owner.user_id, level=3)
+
+    grown = await _spar(duels, db, owner, npc.user_id, won=False)
+    assert grown.total_exp > 0, "боец вышел и отработал"
+    assert (await db.get_player(owner.user_id)).total_exp == 0
+
+
+async def test_the_squad_is_not_six_trainers(duels, db):
+    """Счёт побед общий на отряд: шесть бойцов — не шесть Тренеров.
+
+    Урезание у Тренера считают по победам за сутки. Если бы отряд
+    считался по каждому бойцу отдельно, хозяин получал бы полную плату
+    шесть раз подряд — качаться об отряд стало бы выгоднее, чем выходить
+    в город.
+    """
+    owner = a_learner(level=10)
+    owner.location = "bar"
+    await db.save_player(owner)
+    first = await a_fighter(db, owner.user_id, level=3)
+    second = await a_fighter(db, owner.user_id, level=3)
+
+    await _spar(duels, db, owner, first.user_id)
+    owner = await db.get_player(owner.user_id)
+    after_first = owner.total_exp
+    owner.heal_full()
+    owner.location = "bar"
+    await db.save_player(owner)
+
+    await _spar(duels, db, owner, second.user_id)
+    after_second = (await db.get_player(owner.user_id)).total_exp
+    second_pay = after_second - after_first
+    assert 0 < second_pay < after_first, "вторая победа платит вполовину"
 
 
 async def test_the_third_spar_of_the_day_gives_nothing(duels, db):

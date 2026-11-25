@@ -1142,20 +1142,24 @@ class DuelService:
     async def _apply_spar(
         self, session: DuelSession, result: RoundResult
     ) -> Rewards:
-        """Итоги спарринга со своим бойцом: опыт бойцу, и только.
+        """Итоги спарринга со своим бойцом: опыт обоим, каждому по своему.
 
-        Хозяину не платят ничего. Соперник его собственный, рисковать
-        нечем, и платить обоим значило бы завести в городе самую
-        выгодную и самую скучную качалку: двое своих бьют друг друга
-        круглые сутки, и оба растут.
-
-        Бойцу платят по числу занятий за сутки, а не побед: это
+        **Бойцу** платят по числу занятий за сутки, а не побед: это
         тренировка, и важно, что он вышел, а не чем кончилось. Третий
         спарринг подряд не даёт ничего, и об этом сказано до боя.
 
+        **Хозяину** платят так же, как за урок у Тренера: опыт только
+        за победу, по обычной формуле клуба и с урезанием по счёту
+        побед за сутки. Счёт общий на весь отряд — иначе шесть бойцов
+        стали бы шестью Тренерами, и качаться об отряд было бы выгоднее,
+        чем выходить в город. Уровень хозяина стоит с обеих сторон
+        формулы: боец может быть и младше, и платить по старшему из
+        двоих значило бы платить за фору, которой хозяин не брал.
+
         Ни рейтинга, ни побед, ни больницы: проигравший спарринг
         отлёживается здоровьем, как после любого боя, и назавтра снова
-        в строю.
+        в строю. Задания спарринг тоже не закрывает: они про бои в
+        городе, а не про домашнюю тренировку.
         """
         assert session.npc is not None
         npc_id = session.npc
@@ -1179,10 +1183,35 @@ class DuelService:
 
         levels = await add_exp(self.db, npc, int(row["stars"]), owner, got)
 
+        # Хозяину — за победу и по счёту своих же побед за сутки: то же
+        # правило, что у Тренера, и считается тем же способом
+        mine = session.fighters[owner_id]
+        his = session.fighters[npc_id]
+        wins_today = await self.db.count_wins_over_squad(
+            owner_id, day_opens(now_ts())
+        )
+        exp = (
+            lesson_exp(
+                win_exp(
+                    mine.damage_dealt,
+                    owner.level,
+                    owner.level,
+                    mine.max_hp + his.max_hp,
+                    2,
+                    exp_share=owner.exp_share(),
+                ),
+                wins_today,
+            )
+            if result.winner_id == owner_id
+            else 0
+        )
+        await record_injuries(self.db, result.injuries, {owner_id: owner})
+
         # Здоровье обоих — то, с чем вышли из боя
-        npc.set_hp(session.fighters[npc_id].hp)
+        npc.set_hp(his.hp)
         await self.db.save_player(npc)
-        owner.set_hp(session.fighters[owner_id].hp)
+        owner.set_hp(mine.hp)
+        report = owner.grant_exp(exp)
         await self.db.save_player(owner)
 
         said = (
@@ -1192,7 +1221,13 @@ class DuelService:
         )
         if levels:
             said += f" Уровень: {npc.level}."
-        return Rewards(report=said, screen=said)
+        both = self._two_ways(
+            [(owner, report)], damage={owner_id: mine.damage_dealt}
+        )
+        return Rewards(
+            report=f"{both.report}\n\n{said}" if both.report else said,
+            screen=f"{both.screen}\n\n{said}" if both.screen else said,
+        )
 
     async def _apply_lesson(
         self, session: DuelSession, result: RoundResult

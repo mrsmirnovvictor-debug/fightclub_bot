@@ -8945,6 +8945,30 @@ class Database:
             row = await cursor.fetchone()
         return int(row["wins"]) if row else 0
 
+    async def count_wins_over_squad(self, user_id: int, since: int) -> int:
+        """Сколько раз хозяин побил своих бойцов с указанного мига.
+
+        Счёт общий на весь отряд, а не на каждого бойца: иначе отряд из
+        шести стал бы шестью Тренерами, и качаться об него было бы
+        выгоднее, чем выходить в город. У Тренера счёт такой же — по
+        победам за сутки, — и урезание берётся оттуда же.
+
+        Проданный боец из счёта выпадает: он больше не твой, и бои с
+        ним были боями с другим отрядом.
+        """
+        async with self.conn.execute(
+            """
+            SELECT COUNT(*) AS wins FROM duels
+            WHERE winner_id = ?
+              AND (challenger_id IN (SELECT npc_id FROM squad WHERE owner_id = ?)
+                OR opponent_id IN (SELECT npc_id FROM squad WHERE owner_id = ?))
+              AND created_at >= datetime(?, 'unixepoch')
+            """,
+            (user_id, user_id, user_id, int(since)),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["wins"]) if row else 0
+
     async def recent_duels(self, chat_id: int, limit: int = 5) -> list[dict[str, Any]]:
         async with self.conn.execute(
             """
