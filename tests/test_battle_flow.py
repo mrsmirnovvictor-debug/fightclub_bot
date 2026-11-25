@@ -889,6 +889,8 @@ async def a_companion(
     stats = npc_stats(get_class("tank"), 1, level)
     npc = Player(
         user_id=npc_id, nickname=name, class_code="tank", level=level,
+        # Городские заводятся без рейтинга — так их делает и найм
+        rating=0,
         **stats.as_dict(),
     )
     await db.save_player(npc)
@@ -1074,11 +1076,18 @@ async def test_a_squad_fighter_does_not_grow_past_his_owner(bot, db):
 
 
 async def test_the_squad_fighter_stays_out_of_the_ladder(bot, db):
-    """Рейтинга бойцу не платят: ELO — место среди живых игроков."""
+    """Рейтинга бойцу не платят, а бой в его счёт идёт.
+
+    ELO — место среди живых игроков, и боец в нём не стоит: его
+    рейтинг не двигается ни победой, ни поражением, и в карточке
+    строки с рейтингом у него нет вовсе. Зато победы, поражения и
+    ничьи считаются как у человека — это его собственный счёт боёв.
+    """
     service, players, mine = await a_team_fight(bot, db)
     session = service.battle_in_chat(CHAT_ID, THREAD_ID)
     npc = mine[0]
     was = (await db.get_player(npc.user_id)).rating
+    assert was == 0, "городские заводятся без рейтинга"
 
     for _ in range(PATIENCE):
         if service.battle_in_chat(CHAT_ID, THREAD_ID) is None:
@@ -1087,7 +1096,7 @@ async def test_the_squad_fighter_stays_out_of_the_ladder(bot, db):
 
     saved = await db.get_player(npc.user_id)
     assert saved.rating == was
-    assert saved.wins == 0 and saved.losses == 0 and saved.draws == 0
+    assert saved.wins + saved.losses + saved.draws == 1, "бой записан"
     await service.shutdown()
 
 
@@ -1162,4 +1171,19 @@ async def test_each_fighter_earns_his_own_in_the_club(bot, db):
         )
         checked += 1
     assert checked, "хоть один боец должен был дожить до итога"
+    await service.shutdown()
+
+
+async def test_the_companion_comes_out_with_his_own_face(bot, db):
+    """На ринг боец выходит со своим лицом, купленным при найме."""
+    from bot.game.art import recruit_face
+
+    service, players, mine = await a_team_fight(bot, db)
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    npc = mine[0]
+
+    row = await db.squad_row(npc.user_id)
+    assert session.fighters[npc.user_id].picture == recruit_face(row["face"])
+    # У человека лица в бою нет: его показывает карточка
+    assert not session.fighters[players[0].user_id].picture
     await service.shutdown()

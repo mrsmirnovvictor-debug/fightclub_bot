@@ -3765,7 +3765,11 @@ function fighterCard(card) {
     sheet.appendChild(level);
   }
 
-  sheet.appendChild(ratingRow(card.record));
+  // Рейтинга может не быть вовсе: городские в лестницу не входят, и
+  // строка с чужим числом врала бы про них
+  if (card.record && card.record.rating != null) {
+    sheet.appendChild(ratingRow(card.record));
+  }
   sheet.appendChild(heroBoxes(card));
 
   const born = document.createElement("p");
@@ -7172,7 +7176,8 @@ function paintRating(card) {
 
   const elo = document.createElement("span");
   elo.className = "hero-elo";
-  elo.textContent = num(heroCard.record.rating);
+  elo.textContent =
+    heroCard.record.rating == null ? "—" : num(heroCard.record.rating);
   box.appendChild(elo);
 
   const place = weekPlace || 0;

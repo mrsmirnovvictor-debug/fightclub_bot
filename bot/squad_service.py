@@ -68,6 +68,10 @@ def _blank(name: str, class_code: str, level: int, stars: int) -> Player:
         intuition=stats.intuition,
         endurance=stats.endurance,
         free_points=0,
+        # Рейтинга у бойца нет вовсе: ELO — место среди живых игроков,
+        # и боец в этой лестнице не стоит. Ноль, а не стартовая тысяча:
+        # тысяча означала бы «он в ней есть, просто ещё не дрался»
+        rating=0,
     )
 
 

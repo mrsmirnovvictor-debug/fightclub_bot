@@ -1583,6 +1583,22 @@ class Database:
         await self._migrate_dojo()
         await self._migrate_jail()
         await self._migrate_squad()
+        await self._clear_npc_rating()
+
+    async def _clear_npc_rating(self) -> None:
+        """Снять рейтинг с городских: в лестнице они не стоят.
+
+        Заводились они с обычной стартовой тысячей — числом, которого
+        не заработали и потерять не могут, — и в карточке Тренера или
+        бойца отряда оно выглядело как настоящее место в рейтинге.
+        Новые городские приходят с нулём, а старым его снимаем здесь.
+        """
+        cursor = await self.conn.execute(
+            "UPDATE players SET rating = 0 WHERE user_id < 0 AND rating <> 0"
+        )
+        await self.conn.commit()
+        if cursor.rowcount:
+            logger.info("База обновлена: снят рейтинг у %s городских", cursor.rowcount)
 
     async def _migrate_squad(self) -> None:
         """Дописать отряду, кого хозяин берёт с собой в бой.

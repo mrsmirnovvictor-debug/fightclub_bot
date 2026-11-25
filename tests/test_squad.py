@@ -28,6 +28,7 @@ from bot.game.squad import (
 )
 from bot.game.work import week_of
 from bot.models import Player
+from bot.webapp.card import build_card
 from bot.squad_service import (
     SquadError,
     add_exp,
@@ -595,3 +596,81 @@ def test_a_fighter_is_paid_by_his_level_and_his_damage():
     assert fight_exp(0, 5, 9, 600, 3) > quiet
     # Ничего не набил — всё равно платят: вышел и выиграл
     assert quiet > 0
+
+
+# ---------- лицо, рейтинг и счёт боёв ----------
+
+
+async def test_the_card_shows_the_face_he_was_hired_with(db):
+    """В карточке бойца то лицо, которое стояло на витрине при найме.
+
+    Образа у бойца нет, и `build_card` без подсказки берёт картинку
+    класса — купленный боец оказывался в карточке другим человеком.
+    """
+    from bot.game.art import recruit_face
+    from bot.webapp.squad import build_fighter
+
+    player = await enlist(db)
+    shop = await showcase(db, player, WEEK, random.Random(1))
+    npc = await hire(db, player, shop["cards"][0]["slot"], WEEK)
+    row = await db.squad_row(npc.user_id)
+    face = recruit_face(row["face"])
+
+    card = await build_fighter(db, player, npc.user_id, "token", WEEK)
+    assert card["face"] == face
+    assert card["avatar"]["url"] == face
+    assert card["avatar"]["photo"] is False
+    # Классовый образ в рамку больше не попадает
+    assert not card["avatar"]["look"]
+
+
+async def test_a_fighter_has_no_rating_at_all(db):
+    """У бойца нет рейтинга: ELO — лестница живых игроков.
+
+    Ноль в базе и пусто в карточке. Прежде он заводился со стартовой
+    тысячей, и карточка показывала место, которого у него нет.
+    """
+    from bot.webapp.squad import build_fighter
+
+    player = await enlist(db)
+    shop = await showcase(db, player, WEEK, random.Random(1))
+    npc = await hire(db, player, shop["cards"][0]["slot"], WEEK)
+
+    assert (await db.get_player(npc.user_id)).rating == 0
+    card = await build_fighter(db, player, npc.user_id, "token", WEEK)
+    assert card["record"]["rating"] is None
+    # А у человека рейтинг на месте
+    mine = build_card(player, "token", viewer_id=player.user_id)
+    assert mine["record"]["rating"] == player.rating
+
+
+async def test_the_trainer_has_no_rating_either(db):
+    """И у Тренера его нет: он не игрок и в лестнице не стоит."""
+    from bot.trainer_service import ensure_trainer
+    from bot.webapp.card import build_card as card_of
+
+    trainer = await ensure_trainer(db)
+    assert trainer.rating == 0
+    assert card_of(trainer, "token", viewer_id=trainer.user_id)["record"][
+        "rating"
+    ] is None
+
+
+async def test_the_old_npc_rating_is_cleared_on_boot(db):
+    """Старым городским рейтинг снимают при обновлении базы.
+
+    Заводились они с тысячей, и в живой базе она у них осталась:
+    новый ноль сам по себе прошлое не исправит.
+    """
+    player = await enlist(db)
+    shop = await showcase(db, player, WEEK, random.Random(1))
+    npc = await hire(db, player, shop["cards"][0]["slot"], WEEK)
+    stale = await db.get_player(npc.user_id)
+    stale.rating = 1_000
+    await db.save_player(stale)
+
+    await db._clear_npc_rating()
+
+    assert (await db.get_player(npc.user_id)).rating == 0
+    # Живого игрока это не трогает
+    assert (await db.get_player(player.user_id)).rating == player.rating

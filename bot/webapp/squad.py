@@ -114,11 +114,24 @@ async def build_fighter(
     # Смотрит хозяин, и карточка должна быть «своей»: иначе страница
     # спрячет инвентарь, который он как раз и пришёл менять
     card = build_card(npc, bot_token, viewer_id=npc_id, now=moment)
+    # Лицо в рамке — то самое, которое стояло на витрине при найме.
+    # `build_card` его не знает: у игрока лицо берётся от образа, а у
+    # бойца образа нет вовсе — его лицо лежит в строке отряда. Без этой
+    # правки в карточке стоял бы классовый аватар, и купленный боец
+    # оказывался бы в ней другим человеком
+    face = recruit_face(row["face"])
+    card["avatar"] = dict(
+        card.get("avatar") or {},
+        url=face,
+        look="",
+        look_title=npc.fclass.title,
+        photo=False,
+    )
     card.update(
         {
             "squad": True,
             "stars": row["stars"],
-            "face": recruit_face(row["face"]),
+            "face": face,
             "owner_id": row["owner_id"],
             "state": state,
             "state_text": said,

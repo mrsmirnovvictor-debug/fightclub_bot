@@ -449,11 +449,18 @@ class BattleService:
         # все, кого хозяин взял, от одного до полного отряда. В
         # мясорубке их не берут вовсе: там каждый сам за себя, и боец
         # вышел бы против собственного хозяина
+        faces: dict[int, str] = {}
         if lobby.kind is BattleKind.TEAM:
+            from bot.game.art import recruit_face
+
             for user_id in list(players):
-                for _, npc in await companions(self.db, user_id):
+                for row, npc in await companions(self.db, user_id):
                     players[npc.user_id] = npc
                     teams[npc.user_id] = teams[user_id]
+                    # Лицо — то, которое стояло на витрине при найме:
+                    # у бойца нет образа, и классовый аватар показал бы
+                    # в бою не того, кого хозяин покупал
+                    faces[npc.user_id] = recruit_face(int(row["face"]))
 
         if not self._enough(lobby.kind, teams):
             await self.voice.edit(
@@ -468,7 +475,10 @@ class BattleService:
             kind=lobby.kind,
             mode=lobby.mode,
             fighters={
-                user_id: Fighter.from_player(player, armed=lobby.mode.armed)
+                user_id: self._faced(
+                    Fighter.from_player(player, armed=lobby.mode.armed),
+                    faces.get(user_id, ""),
+                )
                 for user_id, player in players.items()
             },
             teams=teams,
@@ -489,6 +499,13 @@ class BattleService:
         await self.voice.send(session.chat_id, session.thread_id, battle_intro(session))
         await self._start_round(session)
         return session
+
+    @staticmethod
+    def _faced(fighter: Fighter, face: str) -> Fighter:
+        """Приписать бойцу лицо, если оно у него есть. Игроку — нет."""
+        if face:
+            fighter.picture = face
+        return fighter
 
     @staticmethod
     def _enough(kind: BattleKind, teams: dict[int, int]) -> bool:
@@ -877,6 +894,16 @@ class BattleService:
             # ELO — это место среди живых игроков, и приводить на ринг
             # собственного бойца, чтобы поднять себе место, нельзя
             if user_id < 0:
+                # Бой идёт бойцу в счёт, как и человеку: победы,
+                # поражения и ничьи у него свои, и в карточке их видно.
+                # Рейтинга при этом нет — его в лестнице живых игроков
+                # не считают вовсе
+                if outcome.draw:
+                    player.draws += 1
+                elif won:
+                    player.wins += 1
+                else:
+                    player.losses += 1
                 player.set_hp(fighter.hp)
                 await self.db.save_player(player)
                 exp = await self._pay_the_squad(

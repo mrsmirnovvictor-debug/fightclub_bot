@@ -718,16 +718,23 @@ class RaidService:
         # собирают не они: проверка минимального отряда прошла выше, по
         # живым игрокам. Иначе один человек с отрядом открывал бы любой
         # рейд в одиночку
+        from bot.game.art import recruit_face
         from bot.squad_service import companions
 
+        faces: dict[int, str] = {}
         for user_id in list(players):
-            for _, npc in await companions(self.db, user_id):
+            for row, npc in await companions(self.db, user_id):
                 players[npc.user_id] = npc
+                # Лицо с витрины найма: классовый аватар показал бы в
+                # подвале не того бойца, которого хозяин растил
+                faces[npc.user_id] = recruit_face(int(row["face"]))
 
-        fighters = {
-            user_id: Fighter.from_player(player, armed=True)
-            for user_id, player in players.items()
-        }
+        fighters = {}
+        for user_id, player in players.items():
+            one = Fighter.from_player(player, armed=True)
+            if faces.get(user_id):
+                one.picture = faces[user_id]
+            fighters[user_id] = one
         # Банда собирается под отряд, который вышел на самом деле, а не
         # под тот, что записался: кто не дошёл, того и противника нет
         enemies = raid_foes(
@@ -1287,6 +1294,11 @@ class RaidService:
         """
         from bot.squad_service import add_exp
 
+        # Рейд идёт бойцу в счёт подвала, как и человеку: по этим двум
+        # числам в карточке видно, сколько он ходил и сколько выиграл
+        npc.raid_fights += 1
+        if outcome.won:
+            npc.raid_wins += 1
         injury = session.hurt.get(npc.user_id)
         if injury is not None:
             await hurt_player(self.db, npc, injury)

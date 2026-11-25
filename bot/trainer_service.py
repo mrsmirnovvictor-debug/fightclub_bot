@@ -52,6 +52,10 @@ async def ensure_trainer(db: Database) -> Player:
         intuition=stats.intuition,
         endurance=stats.endurance,
         level=BODY_LEVEL,
+        # Рейтинга у Тренера нет: он не игрок и в лестнице не стоит.
+        # Прежде в его карточке висела стартовая тысяча — число, которое
+        # он не заработал и потерять не может
+        rating=0,
     )
     await db.save_player(trainer)
     return trainer

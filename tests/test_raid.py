@@ -1237,6 +1237,7 @@ async def a_companion(
     stats = npc_stats(get_class("tank"), 1, level)
     npc = Player(
         user_id=npc_id, nickname=name, class_code="tank", level=level,
+        rating=0,
         **stats.as_dict(),
     )
     await db.save_player(npc)
@@ -1463,4 +1464,29 @@ async def test_each_fighter_earns_his_own_in_the_cellar(bot, db):
     assert paid[0].total_exp > paid[1].total_exp
     # И младшему всё равно платят: вышел и выиграл — заработал
     assert paid[1].total_exp > 0
+    await service.shutdown()
+
+
+async def test_the_raid_goes_into_the_fighters_record(bot, db):
+    """Рейд идёт бойцу в счёт подвала: походы и победы — свои."""
+    service = make_service(bot, db)
+    players, npc, session = await raid_with_a_companion(service, db)
+    weaken(session)
+    await storm(service, session, players)
+
+    saved = await db.get_player(npc.user_id)
+    assert (saved.raid_fights, saved.raid_wins) == (1, 1)
+    # Рейтинга у него нет и не появляется
+    assert saved.rating == 0
+
+
+async def test_the_companion_fights_with_his_own_face(bot, db):
+    """В подвал боец идёт со своим лицом, а не с картинкой класса."""
+    from bot.game.art import recruit_face
+
+    service = make_service(bot, db)
+    players, npc, session = await raid_with_a_companion(service, db)
+
+    row = await db.squad_row(npc.user_id)
+    assert session.fighters[npc.user_id].picture == recruit_face(row["face"])
     await service.shutdown()
