@@ -320,7 +320,7 @@ async def test_only_the_seller_answers_and_only_the_buyer_withdraws(db):
         await withdraw(db, third, bid)
 
     await decline(db, seller, bid)
-    assert await db.bid_row(bid) is None
+    assert await db.transfer_bid(bid) is None
 
 
 async def test_taking_the_lot_down_clears_its_offers(db):
@@ -331,8 +331,8 @@ async def test_taking_the_lot_down_clears_its_offers(db):
     bid = await offer(db, buyer, npc.user_id, 0, 300, NOW)
 
     await take_down(db, seller, npc.user_id)
-    assert await db.bid_row(bid) is None
-    assert await db.bids_for(npc.user_id) == []
+    assert await db.transfer_bid(bid) is None
+    assert await db.transfer_bids(npc.user_id) == []
 
 
 # ---------- рынок через http ----------
@@ -491,3 +491,22 @@ async def test_the_market_does_not_offer_a_busy_fighter(client, db):
     body = await (await client.get("/api/transfers", headers=headers(42))).json()
     assert [one["name"] for one in body["free"]] == ["Громила"]
     assert free.user_id in [one["id"] for one in body["free"]]
+
+
+async def test_a_bought_fighter_does_not_follow_his_new_owner_uninvited(db):
+    """Выбор «идёт в бой» делал прежний хозяин — он и остаётся с ним.
+
+    Иначе покупатель обнаружил бы в своём первом рейде бойца, которого
+    не звал, — и состав оказался бы не тот, что он собирал.
+    """
+    from bot.squad_service import companion, take_along
+
+    seller, buyer = await two_sides(db)
+    npc = await a_fighter(db, seller.user_id)
+    await take_along(db, seller, npc.user_id)
+    await put_up(db, seller, npc.user_id, 500, NOW)
+
+    await buy(db, buyer, npc.user_id, NOW)
+
+    assert await companion(db, buyer.user_id) is None
+    assert (await db.squad_row(npc.user_id))["in_party"] == 0

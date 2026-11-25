@@ -268,7 +268,7 @@ async def dismiss(db: Database, player: Player, npc_id: int) -> Player:
     for item in await db.list_gear(npc_id):
         await db.hand_over_gear(item.id, npc_id, player.user_id)
     await db.drop_transfer(npc_id)
-    await db.drop_bids_of(npc_id)
+    await db.drop_transfer_bids(npc_id)
     await db.drop_squad(npc_id)
     await db.delete_player(npc_id)
     logger.info("Боец %s уволил %s", player.user_id, npc_id)
@@ -495,6 +495,61 @@ async def pay_the_guard(
     return paid
 
 
+async def take_along(db: Database, owner: Player, npc_id: int) -> Player:
+    """Взять бойца с собой в бой — в клуб и в рейд.
+
+    Берут одного: прежний выбранный снимается сам. Занятого не берут —
+    он держит точку или лежит в больнице, и спор двух режимов за одного
+    бойца решается здесь, до боя, а не в середине волны.
+    """
+    row = await db.squad_row(npc_id)
+    if row is None or row["owner_id"] != owner.user_id:
+        raise SquadError("Это не твой боец.")
+    if row["hospital_at"]:
+        raise SquadError("Этот боец в больнице. Сперва забери его.")
+    if row["spot"]:
+        raise SquadError("Он держит точку. Там он и нужен.")
+    npc = await db.get_player(npc_id)
+    if npc is None:  # pragma: no cover - сломанная база
+        raise SquadError("Этого бойца уже нет.")
+    await db.set_squad_party(npc_id, True)
+    logger.info("Боец %s берёт с собой %s", owner.user_id, npc_id)
+    return npc
+
+
+async def leave_behind(db: Database, owner: Player, npc_id: int) -> Player:
+    """Оставить бойца дома: в бой хозяин идёт один."""
+    row = await db.squad_row(npc_id)
+    if row is None or row["owner_id"] != owner.user_id:
+        raise SquadError("Это не твой боец.")
+    npc = await db.get_player(npc_id)
+    if npc is None:  # pragma: no cover - сломанная база
+        raise SquadError("Этого бойца уже нет.")
+    await db.set_squad_party(npc_id, False)
+    return npc
+
+
+async def companion(
+    db: Database, owner_id: int, now: int | None = None
+) -> tuple[dict, Player] | None:
+    """Кто идёт в бой за этим игроком. Пусто — он идёт один.
+
+    Битого не берём: в бой он вышел бы с остатком здоровья и лёг бы в
+    первом размене, а лечить его хозяин может только до боя. Так же
+    решает и живой игрок — `can_fight` у них общий.
+    """
+    moment = now_ts() if now is None else now
+    row = await db.squad_party(owner_id)
+    if row is None:
+        return None
+    npc = await db.get_player(int(row["npc_id"]))
+    if npc is None:  # pragma: no cover - сломанная база
+        return None
+    if not npc.can_fight(moment):
+        return None
+    return row, npc
+
+
 async def add_exp(
     db: Database, npc: Player, stars: int, owner: Player, amount: int
 ) -> int:
@@ -534,6 +589,9 @@ async def add_exp(
 __all__ = [
     "SquadError",
     "add_exp",
+    "companion",
+    "leave_behind",
+    "take_along",
     "all_to_hospital",
     "fallen_on_spot",
     "pay_the_guard",

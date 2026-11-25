@@ -1123,7 +1123,11 @@ CREATE TABLE IF NOT EXISTS squad (
     -- лежит, пока хозяин не заберёт
     hospital_at INTEGER NOT NULL DEFAULT 0,
     -- Точка, которую держит. Пусто — свободен и может идти в бой
-    spot        TEXT    NOT NULL DEFAULT ''
+    spot        TEXT    NOT NULL DEFAULT '',
+    -- Берёт ли хозяин этого бойца с собой в бой: в групповой бой клуба
+    -- и в рейд. Единица у одного бойца из отряда — больше одного за
+    -- хозяином не идёт
+    in_party    INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS squad_owner ON squad(owner_id);
@@ -1578,6 +1582,24 @@ class Database:
         await self._migrate_card_log()
         await self._migrate_dojo()
         await self._migrate_jail()
+        await self._migrate_squad()
+
+    async def _migrate_squad(self) -> None:
+        """Дописать отряду, кого хозяин берёт с собой в бой.
+
+        Отряд появился раньше этой колонки, и на живой базе `CREATE
+        TABLE IF NOT EXISTS` её не добавит: таблица уже есть. У старых
+        строк ноль — хозяин ходит один, пока сам не выберет бойца.
+        """
+        async with self.conn.execute("PRAGMA table_info(squad)") as cursor:
+            columns = {row["name"] for row in await cursor.fetchall()}
+        if not columns or "in_party" in columns:
+            return
+        await self.conn.execute(
+            "ALTER TABLE squad ADD COLUMN in_party INTEGER NOT NULL DEFAULT 0"
+        )
+        await self.conn.commit()
+        logger.info("База обновлена: добавлена колонка squad.in_party")
 
     async def _migrate_jail(self) -> None:
         """Дописать камере, когда отсидка началась и кто посадил.
@@ -4767,9 +4789,12 @@ class Database:
 
         Точка при этом слетает: держать чужую точку человек нового
         хозяина не может, а снимать её молча нельзя — это видно в бою.
+        Слетает и выбор «идёт в бой»: его делал прежний хозяин, и новый
+        не должен обнаружить в своём рейде бойца, которого не звал.
         """
         await self.conn.execute(
-            "UPDATE squad SET owner_id = ?, spot = '' WHERE npc_id = ?",
+            "UPDATE squad SET owner_id = ?, spot = '', in_party = 0 "
+            "WHERE npc_id = ?",
             (owner_id, npc_id),
         )
         await self.conn.commit()
@@ -4790,6 +4815,43 @@ class Database:
             "UPDATE squad SET spot = ? WHERE npc_id = ?", (spot, npc_id)
         )
         await self.conn.commit()
+
+    async def set_squad_party(self, npc_id: int, on: bool) -> None:
+        """Взять бойца с собой в бой или оставить дома.
+
+        Взятый сменяет прежнего: за хозяином идёт один, и выбор нового
+        сам снимает старого. Иначе отряд уходил бы в бой вчетвером —
+        молча и не тем составом, который игрок себе представлял.
+        """
+        if not on:
+            await self.conn.execute(
+                "UPDATE squad SET in_party = 0 WHERE npc_id = ?", (npc_id,)
+            )
+            await self.conn.commit()
+            return
+        await self.conn.execute(
+            "UPDATE squad SET in_party = 0 WHERE owner_id = ("
+            "SELECT owner_id FROM squad WHERE npc_id = ?)",
+            (npc_id,),
+        )
+        await self.conn.execute(
+            "UPDATE squad SET in_party = 1 WHERE npc_id = ?", (npc_id,)
+        )
+        await self.conn.commit()
+
+    async def squad_party(self, owner_id: int) -> dict | None:
+        """Боец, которого хозяин берёт с собой. Пусто — идёт один.
+
+        Занятый не идёт: он держит точку или лежит в больнице, и спор
+        между двумя режимами за одного бойца решается здесь, а не в бою.
+        """
+        async with self.conn.execute(
+            "SELECT * FROM squad WHERE owner_id = ? AND in_party = 1 "
+            "AND spot = '' AND hospital_at = 0 LIMIT 1",
+            (owner_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
 
     # ---------- витрина найма ----------
 
@@ -4902,7 +4964,7 @@ class Database:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
-    async def add_bid(
+    async def add_transfer_bid(
         self, npc_id: int, buyer_id: int, give_id: int, extra: int, at: int
     ) -> int:
         """Оставить встречное предложение по лоту."""
@@ -4914,7 +4976,7 @@ class Database:
         await self.conn.commit()
         return int(cursor.lastrowid or 0)
 
-    async def bids_for(self, npc_id: int) -> list[dict]:
+    async def transfer_bids(self, npc_id: int) -> list[dict]:
         """Все предложения по лоту, старые первыми."""
         async with self.conn.execute(
             "SELECT * FROM transfer_bids WHERE npc_id = ? ORDER BY id", (npc_id,)
@@ -4922,14 +4984,14 @@ class Database:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
-    async def bid_row(self, bid_id: int) -> dict | None:
+    async def transfer_bid(self, bid_id: int) -> dict | None:
         async with self.conn.execute(
             "SELECT * FROM transfer_bids WHERE id = ?", (bid_id,)
         ) as cursor:
             row = await cursor.fetchone()
         return dict(row) if row else None
 
-    async def drop_bid(self, bid_id: int) -> bool:
+    async def drop_transfer_bid(self, bid_id: int) -> bool:
         """Снять предложение. Ложь — его уже сняли или приняли."""
         cursor = await self.conn.execute(
             "DELETE FROM transfer_bids WHERE id = ?", (bid_id,)
@@ -4937,7 +4999,7 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount > 0
 
-    async def drop_bids_of(self, npc_id: int) -> None:
+    async def drop_transfer_bids(self, npc_id: int) -> None:
         """Снять предложения, в которых этот боец отдавался в обмен."""
         await self.conn.execute(
             "DELETE FROM transfer_bids WHERE give_id = ?", (npc_id,)

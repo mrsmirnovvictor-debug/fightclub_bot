@@ -44,6 +44,7 @@ from bot.game.combat import (
     Fighter,
     group_aftermath,
     heal_line,
+    random_action,
     resolve_round,
     spread_heal,
 )
@@ -226,6 +227,10 @@ class BattleSession:
         return self.opponent_of(user_id) is not None
 
     def is_ready(self, user_id: int) -> bool:
+        # Боец из отряда кнопок не жмёт: он всегда готов, иначе раунд
+        # ждал бы его до конца таймера и бой тянулся бы вдвое дольше
+        if user_id < 0:
+            return True
         choice = self.choices.get(user_id)
         weapons = self.fighters[user_id].attacks_per_round
         return bool(choice and choice.ready_for(weapons))
@@ -428,6 +433,8 @@ class BattleService:
     # ---------- бой ----------
 
     async def _start_from_lobby(self, lobby: Lobby) -> BattleSession | None:
+        from bot.squad_service import companion
+
         members = dict(lobby.members)
         self._forget_lobby(lobby)
 
@@ -437,6 +444,18 @@ class BattleService:
             if player is not None and player.can_fight():
                 players[user_id] = player
         teams = {user_id: members[user_id] for user_id in players}
+
+        # Бойцы отряда выходят вместе с хозяевами и за их сторону. В
+        # мясорубке их не берут вовсе: там каждый сам за себя, и боец
+        # вышел бы против собственного хозяина
+        if lobby.kind is BattleKind.TEAM:
+            for user_id in list(players):
+                mate = await companion(self.db, user_id)
+                if mate is None:
+                    continue
+                _, npc = mate
+                players[npc.user_id] = npc
+                teams[npc.user_id] = teams[user_id]
 
         if not self._enough(lobby.kind, teams):
             await self.voice.edit(
@@ -461,7 +480,10 @@ class BattleService:
         if session.key is not None:
             self._by_chat[session.key] = session.id
         for user_id in session.fighters:
-            self._busy[user_id] = "battle"
+            # Занятость — про людей: боец отряда занят ровно потому, что
+            # занят его хозяин, и своей записи ему не нужно
+            if user_id > 0:
+                self._busy[user_id] = "battle"
 
         await self.voice.edit(
             lobby.chat_id, lobby.message_id, "🔔 Состав собран, бой начинается."
@@ -500,6 +522,20 @@ class BattleService:
             text,
         )
         session.prompt_message_id = message.message_id if message else None
+
+        # Раунд, в котором жать кнопки некому, считается сразу: так
+        # бывает, когда в парах остались только бойцы отряда — они
+        # всегда готовы. Иначе ход стоял бы до конца таймера, хотя все,
+        # кто мог выбрать, уже выбрали.
+        #
+        # Считаем на месте, а не через `_resolve`: сюда приходят из него
+        # же, и его собственный засов («раунд уже считается») не дал бы
+        # пройти второй раз — ход завис бы именно там, где его некому
+        # толкнуть
+        if session.everyone_ready:
+            await self._play_round(session)
+            return
+
         session.timer = asyncio.create_task(
             self._round_timer(session, session.round_number)
         )
@@ -713,8 +749,15 @@ class BattleService:
             await self._start_round(session)
 
     def _action_of(self, session: BattleSession, user_id: int) -> Action:
-        weapons = session.fighters[user_id].attacks_per_round
-        return session.choices.get(user_id, Choice()).to_action(weapons)
+        fighter = session.fighters[user_id]
+        # Боец из отряда бьёт и закрывается сам — тем же наугад, каким
+        # дерётся охрана точки. Своего ума ему не пишем: отряд должен
+        # помогать хозяину, а не играть за него
+        if user_id < 0:
+            return random_action(fighter, self.rng)
+        return session.choices.get(user_id, Choice()).to_action(
+            fighter.attacks_per_round
+        )
 
     async def _close_panel(self, session: BattleSession, text: str) -> None:
         """Погасить панель раунда, оставив на её месте итог.
@@ -818,6 +861,9 @@ class BattleService:
         on_ring = len(session.fighters)
         rows: list[tuple[Player, ProgressReport, Fighter, bool]] = []
         broken: list[tuple[Player, list]] = []
+        # Кому из отряда и сколько заплатили: об этом дописывают строку
+        # к итогу, иначе опыт бойца виден только в его карточке
+        squad_paid: list[tuple[Player, int]] = []
         # Миг фиксации итога — один на весь бой, а не по бойцу: иначе
         # бой, кончившийся на границе недели, разошёлся бы по двум
         stamped = now_ts()
@@ -827,6 +873,21 @@ class BattleService:
             rivals = [other for other in levels if other != user_id]
             rival_level = round(sum(levels[o] for o in rivals) / max(1, len(rivals)))
             won = user_id in outcome.winners
+
+            # Боец отряда идёт своей дорогой: опыт ему считают по той же
+            # формуле, но с потолком хозяина, а рейтинг не считают вовсе.
+            # ELO — это место среди живых игроков, и приводить на ринг
+            # собственного бойца, чтобы поднять себе место, нельзя
+            if user_id < 0:
+                player.set_hp(fighter.hp)
+                await self.db.save_player(player)
+                exp = await self._pay_the_squad(
+                    session, player, fighter, won, levels, top_level,
+                    hp_total, on_ring,
+                )
+                if exp:
+                    squad_paid.append((player, exp))
+                continue
 
             if won:
                 player.wins += 1
@@ -882,7 +943,57 @@ class BattleService:
             )
             rows.append((player, report, fighter, won))
 
-        return battle_rewards_report(rows, broken=broken)
+        report = battle_rewards_report(rows, broken=broken)
+        if squad_paid:
+            said = ", ".join(
+                f"{esc(npc.nickname)} +{exp}" for npc, exp in squad_paid
+            )
+            report += f"\n\n🫱 Бойцы отряда получили опыт: {said}."
+        return report
+
+    async def _pay_the_squad(
+        self,
+        session: BattleSession,
+        npc: Player,
+        fighter: Fighter,
+        won: bool,
+        levels: dict[int, int],
+        top_level: int,
+        hp_total: int,
+        on_ring: int,
+    ) -> int:
+        """Опыт бойцу отряда за групповой бой. Проигравшему — ничего.
+
+        Возвращаем начисленное: по этому числу итог боя говорит, что
+        отряд дрался не зря.
+
+        Платит не бой, а служба отряда: она одна знает про потолок
+        хозяина и про то, что опыт сверх него не сгорает, а лежит.
+
+        Хозяина поднимаем из базы заново: его только что сохранил этот
+        же обход, и взятый раньше снимок перезаписал бы и его опыт, и
+        его рейтинг.
+        """
+        from bot.squad_service import add_exp
+
+        if not won:
+            return 0
+        row = await self.db.squad_row(npc.user_id)
+        if row is None:  # pragma: no cover - бойца уволили по ходу боя
+            return 0
+        owner = await self.db.get_player(int(row["owner_id"]))
+        if owner is None:  # pragma: no cover - хозяина удалили
+            return 0
+        exp = win_exp(
+            fighter.damage_dealt,
+            levels[npc.user_id],
+            top_level,
+            hp_total,
+            on_ring,
+            group=True,
+        )
+        await add_exp(self.db, npc, int(row["stars"]), owner, exp)
+        return exp
 
     def _cancel_timer(self, session: BattleSession) -> None:
         timer = session.timer

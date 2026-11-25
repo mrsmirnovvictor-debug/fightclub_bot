@@ -205,3 +205,35 @@ async def test_wal_survives_a_restart(tmp_path):
     async with opened(path) as second:
         assert str(await pragma(second, "journal_mode")).lower() == "wal"
         assert (await second.get_player(1)) is not None
+
+
+def test_no_two_methods_of_the_database_share_a_name():
+    """В `Database` не бывает двух методов с одним именем.
+
+    Второй такой метод не ошибка для питона: он молча заменяет первый, и
+    падает не он, а чужая ручка на другом конце города. Так и вышло:
+    трансферный рынок принёс `bids_for(npc_id)` и `drop_bid(bid_id)`,
+    а под теми же именами уже жили заявки на кресло начальника — и
+    город перестал сажать начальников, не сказав ни слова.
+
+    Проверка читает файл, а не класс: у класса остаётся только
+    победивший метод, и спрашивать его бесполезно.
+    """
+    import ast
+    import collections
+    import pathlib
+
+    source = pathlib.Path("bot/database.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    klass = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "Database"
+    )
+    seen = collections.Counter(
+        node.name
+        for node in klass.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+    twice = sorted(name for name, count in seen.items() if count > 1)
+    assert not twice, f"одно имя на два метода: {', '.join(twice)}"

@@ -3707,8 +3707,19 @@ async def api_squad(request: web.Request) -> web.Response:
 
 
 async def api_squad_action(request: web.Request) -> web.Response:
-    """Дела отряда: открыть карточку, забрать из больницы, уволить."""
-    from bot.squad_service import SquadError, discharge, dismiss
+    """Дела отряда: открыть карточку, забрать из больницы, уволить.
+
+    Здесь же решают, кого хозяин берёт с собой в групповой бой и в
+    рейд: состав там собирают кнопками в чате, и выбирать бойца на
+    ходу уже поздно.
+    """
+    from bot.squad_service import (
+        SquadError,
+        discharge,
+        dismiss,
+        leave_behind,
+        take_along,
+    )
     from bot.webapp.squad import build_fighter
 
     data = await _payload(request)
@@ -3735,6 +3746,12 @@ async def api_squad_action(request: web.Request) -> web.Response:
         elif action == "dismiss":
             npc = await dismiss(db, player, npc_id)
             said = f"{npc.nickname} больше не в отряде. Его вещи в рюкзаке."
+        elif action == "take_along":
+            npc = await take_along(db, player, npc_id)
+            said = f"{npc.nickname} идёт с тобой в бой."
+        elif action == "leave_behind":
+            npc = await leave_behind(db, player, npc_id)
+            said = f"{npc.nickname} остаётся дома."
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
     except SquadError as error:

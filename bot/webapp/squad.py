@@ -71,6 +71,8 @@ def fighter_row(row: dict, npc: Player, now: int | None = None) -> dict[str, Any
         "state": state,
         "state_text": said,
         "spot": row["spot"],
+        # Идёт ли с хозяином в групповой бой и в рейд
+        "in_party": bool(row["in_party"]),
     }
 
 
@@ -121,6 +123,7 @@ async def build_fighter(
             "state": state,
             "state_text": said,
             "spot": row["spot"],
+            "in_party": bool(row["in_party"]),
             # Выставлен ли на трансферном рынке и почём
             "listed": bool(lot),
             "price": int(lot["price"]) if lot else 0,
@@ -236,7 +239,7 @@ async def build_market(
                     else None,
                     "extra": int(bid["extra"]),
                 }
-                for bid in await db.bids_for(int(lot["npc_id"]))
+                for bid in await db.transfer_bids(int(lot["npc_id"]))
             ]
             mine.append(card)
             continue
@@ -255,7 +258,7 @@ async def build_market(
 
     offers: list[dict[str, Any]] = []
     for lot in await db.list_transfers():
-        for bid in await db.bids_for(int(lot["npc_id"])):
+        for bid in await db.transfer_bids(int(lot["npc_id"])):
             if int(bid["buyer_id"]) != player.user_id:
                 continue
             card = await _lot_face(db, int(lot["npc_id"]))

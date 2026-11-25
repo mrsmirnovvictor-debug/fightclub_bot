@@ -10998,8 +10998,15 @@ function squadRow(one) {
   name.textContent = one.name + " [" + one.level + "]";
   const said = document.createElement("span");
   said.className = "squad-said";
+  // Кто идёт в бой — видно из списка, а не только из карточки: выбор
+  // один на отряд, и искать его по шести карточкам пришлось бы каждый
+  // раз перед боем
   said.textContent =
-    one.class_emoji + " " + one.class_title + " · " + one.state_text;
+    one.class_emoji
+    + " "
+    + one.class_title
+    + " · "
+    + (one.in_party ? "Идёт в бой" : one.state_text);
   body.append(name, said);
   row.appendChild(body);
 
@@ -11039,6 +11046,25 @@ function fighterActions(card) {
         onClick: () => {
           el("sheet").classList.add("hidden");
           squadAction({ action: "discharge", npc: card.user_id });
+        },
+      })
+    );
+  }
+  // В бой за хозяином идёт один боец, и выбирают его здесь: в клубе и
+  // в подвале выбирать уже поздно — состав собирают кнопками в чате.
+  // Занятому этой кнопки не показываем: он на точке или в больнице, и
+  // отказ после нажатия сказал бы то же самое, но позже
+  if (card.state === "free") {
+    row.appendChild(
+      button(card.in_party ? "Оставить дома" : "Взять в бой", {
+        neon: !card.in_party,
+        secondary: !!card.in_party,
+        onClick: () => {
+          el("sheet").classList.add("hidden");
+          squadAction({
+            action: card.in_party ? "leave_behind" : "take_along",
+            npc: card.user_id,
+          });
         },
       })
     );

@@ -107,7 +107,7 @@ async def _hand_over(
         await db.hand_over_gear(item.id, npc_id, giver.user_id)
     await db.hand_over_squad(npc_id, taker.user_id)
     await db.drop_transfer(npc_id)
-    await db.drop_bids_of(npc_id)
+    await db.drop_transfer_bids(npc_id)
     return npc
 
 
@@ -181,7 +181,7 @@ async def offer(
     elif not extra:
         raise TransferError("Пустое предложение: положи бойца или деньги.")
 
-    bid = await db.add_bid(npc_id, buyer.user_id, give_id, extra, moment)
+    bid = await db.add_transfer_bid(npc_id, buyer.user_id, give_id, extra, moment)
     logger.info(
         "Боец %s предложил за %s: свой %s и %s 💰",
         buyer.user_id, npc_id, give_id or "никого", extra,
@@ -199,7 +199,7 @@ async def accept(
     и кошелёк, и место в отряде.
     """
     moment = now_ts() if now is None else now
-    bid = await db.bid_row(bid_id)
+    bid = await db.transfer_bid(bid_id)
     if bid is None:
         raise TransferError("Этого предложения больше нет.")
     npc_id = int(bid["npc_id"])
@@ -208,7 +208,7 @@ async def accept(
         raise TransferError("Этот лот не твой.")
     buyer = await db.get_player(int(bid["buyer_id"]))
     if buyer is None:
-        await db.drop_bid(bid_id)
+        await db.drop_transfer_bid(bid_id)
         raise TransferError("Покупателя больше нет в городе.")
 
     extra = int(bid["extra"])
@@ -235,7 +235,7 @@ async def accept(
     seller.credits += extra
     await db.save_player(buyer)
     await db.save_player(seller)
-    await db.drop_bid(bid_id)
+    await db.drop_transfer_bid(bid_id)
     logger.info(
         "Размен: %s отдал %s, получил %s и %s 💰",
         seller.user_id, npc_id, give_id or "деньги", extra,
@@ -245,23 +245,23 @@ async def accept(
 
 async def decline(db: Database, seller: Player, bid_id: int) -> None:
     """Отклонить предложение по своему лоту."""
-    bid = await db.bid_row(bid_id)
+    bid = await db.transfer_bid(bid_id)
     if bid is None:
         raise TransferError("Этого предложения больше нет.")
     lot = await db.transfer_of(int(bid["npc_id"]))
     if lot is None or lot["owner_id"] != seller.user_id:
         raise TransferError("Этот лот не твой.")
-    await db.drop_bid(bid_id)
+    await db.drop_transfer_bid(bid_id)
 
 
 async def withdraw(db: Database, buyer: Player, bid_id: int) -> None:
     """Забрать своё предложение обратно."""
-    bid = await db.bid_row(bid_id)
+    bid = await db.transfer_bid(bid_id)
     if bid is None:
         raise TransferError("Этого предложения больше нет.")
     if int(bid["buyer_id"]) != buyer.user_id:
         raise TransferError("Это не твоё предложение.")
-    await db.drop_bid(bid_id)
+    await db.drop_transfer_bid(bid_id)
 
 
 __all__ = [

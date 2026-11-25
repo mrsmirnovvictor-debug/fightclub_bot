@@ -36,10 +36,12 @@ from bot.game.combat import (
     Fighter,
     group_aftermath,
     heal_line,
+    random_action,
     resolve_round,
     spread_heal,
 )
 from bot.game.fightlog import turn_payload
+from bot.game.squad import raid_exp
 from bot.game.narrator import (
     echo_lines,
     plural,
@@ -346,6 +348,16 @@ class RaidSession:
     @property
     def alive_ids(self) -> list[int]:
         return [uid for uid, fighter in self.fighters.items() if fighter.alive]
+
+    @property
+    def people(self) -> list[int]:
+        """Люди в отряде. Бойцы отряда — не люди: у них нет аккаунта.
+
+        По этому счёту говорят «ушли своими ногами N из M»: выживших
+        судья считает по людям, и знаменатель должен считаться так же,
+        иначе целый отряд читался бы как «двое из трёх».
+        """
+        return [uid for uid in self.fighters if uid > 0]
 
     @property
     def wave_over(self) -> bool:
@@ -712,6 +724,16 @@ class RaidService:
             )
             return None
 
+        # Бойцы отряда идут с хозяевами, но состав собирают не они:
+        # проверка минимального отряда прошла выше, по живым игрокам.
+        # Иначе один человек с бойцом открывал бы рейд на троих
+        from bot.squad_service import companion
+
+        for user_id in list(players):
+            mate = await companion(self.db, user_id)
+            if mate is not None:
+                players[mate[1].user_id] = mate[1]
+
         fighters = {
             user_id: Fighter.from_player(player, armed=True)
             for user_id, player in players.items()
@@ -735,7 +757,10 @@ class RaidService:
         if session.key is not None:
             self._by_chat[session.key] = session.id
         for user_id in fighters:
-            self._busy[user_id] = "raid"
+            # Занятость — про людей: боец занят ровно потому, что занят
+            # его хозяин, и своей записи ему не нужно
+            if user_id > 0:
+                self._busy[user_id] = "raid"
 
         await self.voice.edit(
             lobby.chat_id, lobby.message_id, "🔔 Отряд собран — начинаем."
@@ -765,7 +790,36 @@ class RaidService:
             raid_panel(session, session.kind.turn_seconds),
         )
         session.prompt_message_id = message.message_id if message else None
+
+        # Бойцы отряда отрабатывают волну сразу: кнопок у них нет, и
+        # ждать их значило бы держать волну до конца таймера. Их размены
+        # уходят в тот же журнал и в ту же панель, что и людские
+        await self._squad_acts(session)
+        if session.finished:
+            return
+        if self._judge(session) is not None or session.wave_over:
+            await self._close_wave(session)
+            return
+
         session.timer = asyncio.create_task(self._wave_timer(session, session.wave))
+
+    async def _squad_acts(self, session: RaidSession) -> None:
+        """Ход бойцов отряда: бьют и закрываются наугад, все сразу.
+
+        Наугад — тем же броском, каким дерётся охрана точки: отряд
+        помогает хозяину, а не играет за него.
+        """
+        mine = [uid for uid in session.alive_ids if uid < 0 and uid not in session.acted]
+        if not mine:
+            return
+        for user_id in mine:
+            self._exchange(
+                session, user_id, random_action(session.fighters[user_id], self.rng)
+            )
+            if self._judge(session) is not None:
+                break
+        await count_deeds(self.db, session.fighters)
+        await self._repaint(session)
 
     async def _wave_timer(self, session: RaidSession, wave: int) -> None:
         try:
@@ -936,7 +990,17 @@ class RaidService:
         return heal_line(ability, gained, len(healed))
 
     def _judge(self, session: RaidSession) -> RaidOutcome | None:
-        return judge_raid(session.enemies.values(), session.fighters)
+        """Рейд кончается, когда лёг последний живой игрок.
+
+        Бойцы отряда одни банду не добивают: рейд — дело людей, отряд в
+        нём помогает. Поэтому судье отдают только людей, и добыча с
+        «лучшим по урону» считается по ним же: приз из подвала уходит
+        тому, кто пришёл его забирать.
+        """
+        return judge_raid(
+            session.enemies.values(),
+            {uid: one for uid, one in session.fighters.items() if uid > 0},
+        )
 
     def _hint(self, choice: Choice, fighter: Fighter) -> str:
         icons = fighter.weapon_icons
@@ -1105,7 +1169,10 @@ class RaidService:
         spoils = session.kind.spoils
         # Один бросок на весь отряд: пьют все или никто
         shared = spoils.potion_for(self.rng) if outcome.won else None
-        party = list(session.fighters)
+        # Делят добычу люди: боец отряда получает опыт, а не долю.
+        # Иначе хозяин, пришедший с бойцом, забирал бы из общего котла
+        # две доли вместо одной
+        party = [user_id for user_id in session.fighters if user_id > 0]
         # Платим всем, кто вышел, а не только выжившим: упавший тоже
         # дрался, и его урон валил банду
         shares = session.kind.shares(len(party)) if outcome.won else []
@@ -1115,6 +1182,9 @@ class RaidService:
         for user_id, fighter in session.fighters.items():
             player = await self.db.get_player(user_id)
             if player is None:  # pragma: no cover - персонажа удалили по ходу
+                continue
+            if user_id < 0:
+                await self._pay_the_squad(session, player, fighter, outcome)
                 continue
             # Рейд идёт по своему счёту: гопники и босс — не люди, и
             # валят их толпой. В победах и поражениях бойца остаются
@@ -1164,6 +1234,46 @@ class RaidService:
                     user_id, window.start, session.kind.code
                 )
         return prizes
+
+    async def _pay_the_squad(
+        self,
+        session: RaidSession,
+        npc: Player,
+        fighter: Fighter,
+        outcome: RaidOutcome,
+    ) -> None:
+        """Бойцу отряда за рейд: опыт по ставке его уровня, и только.
+
+        Ни долей, ни склянок, ни вещей: добычу делят люди, а бойцу от
+        подвала — рост. Зато травмы и износ — по общим правилам: вещи на
+        нём настоящие, и чинит их хозяин.
+
+        Здоровье записываем в любом случае: рейд не разбирает, победил
+        ты или нет.
+        """
+        from bot.squad_service import add_exp
+
+        injury = session.hurt.get(npc.user_id)
+        if injury is not None:
+            await hurt_player(self.db, npc, injury)
+        ruined = await wear_after_fight(
+            self.db, npc, None if outcome.draw else outcome.won, self.rng
+        )
+        if ruined:  # pragma: no cover - износ считается своим тестом
+            logger.info("Рейд износил вещи бойца %s: %s", npc.user_id, len(ruined))
+        npc.set_hp(fighter.hp)
+        await self.db.save_player(npc)
+        if not outcome.won:
+            return
+        row = await self.db.squad_row(npc.user_id)
+        if row is None:  # pragma: no cover - бойца уволили по ходу рейда
+            return
+        owner = await self.db.get_player(int(row["owner_id"]))
+        if owner is None:  # pragma: no cover - хозяина удалили
+            return
+        await add_exp(
+            self.db, npc, int(row["stars"]), owner, raid_exp(npc.level)
+        )
 
     def _cancel_timer(self, session: RaidSession) -> None:
         timer = session.timer

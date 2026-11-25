@@ -9305,6 +9305,7 @@ def squad_state(rows: int = 2) -> dict:
             "state": "hospital" if number == 1 else "free",
             "state_text": "В больнице" if number == 1 else "Свободен",
             "spot": "",
+            "in_party": False,
         }
         for number in range(rows)
     ]
@@ -9385,6 +9386,60 @@ async def test_a_fighter_without_a_face_keeps_his_class_mark(server):
         # Адреса из стенда не отвечают: картинка упадёт сама
         await page.wait_for_selector(".squad-face.emoji")
         assert await page.locator(".squad-face.emoji").inner_text() == "⚔️"
+        await browser.close()
+
+
+async def test_the_fighter_card_offers_to_take_him_to_a_fight(server):
+    """Кнопка выбора спутника стоит в карточке бойца, пока он свободен."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        async def labels(state: str, in_party: bool) -> list[str]:
+            return await page.evaluate(
+                """([state, inParty]) => {
+                    const row = fighterActions({
+                        user_id: -100, name: "Громила",
+                        state: state, in_party: inParty,
+                    });
+                    return [...row.querySelectorAll("button")]
+                        .map((one) => one.textContent.trim());
+                }""",
+                [state, in_party],
+            )
+
+        assert await labels("free", False) == ["Взять в бой", "Уволить"]
+        # Взятого предлагают оставить дома — той же кнопкой
+        assert await labels("free", True) == ["Оставить дома", "Уволить"]
+        # Занятому выбирать нечего: он на точке или в больнице
+        assert await labels("hospital", False) == [
+            "Забрать из больницы", "Уволить"
+        ]
+        assert await labels("spot", False) == ["Уволить"]
+        await browser.close()
+
+
+async def test_the_squad_list_marks_who_goes_to_a_fight(server):
+    """Кто идёт в бой — видно из списка, а не только из карточки."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    state = squad_state(rows=2)
+    state["rows"][0]["in_party"] = True
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), squad=state
+        )
+        await page.wait_for_selector("#hero-tabs .hero-act")
+        await page.locator("#hero-tabs .hero-act", has_text="Отряды").click()
+        await page.wait_for_selector(".squad-row")
+
+        said = await page.locator(".squad-said").all_inner_texts()
+        assert "Идёт в бой" in said[0], said
+        assert "Свободен" in said[1] or "В больнице" in said[1], said
         await browser.close()
 
 

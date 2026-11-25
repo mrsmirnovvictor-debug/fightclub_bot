@@ -867,3 +867,238 @@ async def test_the_feed_of_a_group_fight_names_everyone_who_won(bot, db):
     assert said[0].count(",") == len(standing) - 1, said[0]
     assert "<b>" not in said[0], said[0]
     await service.shutdown()
+
+
+# ---------- бойцы отряда в групповом бою ----------
+#
+# Боец выходит на ринг вместе с хозяином и за его сторону. Кнопок у
+# него нет: он бьёт и закрывается сам, как охрана точки. Платят ему
+# опытом с потолком хозяина, а рейтинг не платят вовсе — ELO это место
+# среди живых игроков, и приводить на ринг собственного бойца, чтобы
+# поднять себе место, нельзя.
+
+
+async def a_companion(
+    db, owner: Player, level: int = 4, name: str = "Громила", take: bool = True
+) -> Player:
+    """Боец в отряде этого игрока, взятый с собой в бой."""
+    from bot.game.classes import get_class
+    from bot.game.squad import npc_stats
+
+    npc_id = await db.next_npc_id()
+    stats = npc_stats(get_class("tank"), 1, level)
+    npc = Player(
+        user_id=npc_id, nickname=name, class_code="tank", level=level,
+        **stats.as_dict(),
+    )
+    await db.save_player(npc)
+    await db.add_squad(npc_id, owner.user_id, 1, 1, 1_800_000_000)
+    if take:
+        await db.set_squad_party(npc_id, True)
+    return npc
+
+
+async def choose_humans(service: BattleService, session) -> None:
+    """Жмут кнопки только люди: боец отряда отрабатывает сам."""
+    round_number = session.round_number
+    for index, (first, second) in enumerate(list(session.pairs)):
+        if session.round_number != round_number:
+            return
+        for offset, user_id in enumerate((first, second)):
+            if user_id < 0 or not session.fighters[user_id].alive:
+                continue
+            zone = ZONES[(index + offset) % len(ZONES)]
+            await service.handle_choice(session.id, user_id, "attack", zone)
+            await service.handle_choice(
+                session.id, user_id, "block", ZONES[(index + offset + 1) % len(ZONES)]
+            )
+
+
+async def a_team_fight(bot, db, companions: tuple[int, ...] = (0,)):
+    """Бой два на два, где у названных игроков есть боец в отряде."""
+    service = make_service(bot, db)
+    players = await fill(db, 4)
+    mine = {}
+    for number in companions:
+        mine[number] = await a_companion(
+            db, players[number], name=f"Громила{number}"
+        )
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2
+    )
+    for player, team in ((players[1], RED), (players[2], BLUE), (players[3], BLUE)):
+        await service.join(lobby.id, player, team)
+    return service, players, mine
+
+
+async def test_a_squad_fighter_comes_out_with_his_owner(bot, db):
+    """Взятый боец выходит на ринг и дерётся за сторону хозяина."""
+    service, players, mine = await a_team_fight(bot, db)
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+
+    npc = mine[0]
+    assert npc.user_id in session.fighters
+    assert session.teams[npc.user_id] == session.teams[players[0].user_id]
+    await service.shutdown()
+
+
+async def test_a_fighter_left_at_home_stays_at_home(bot, db):
+    """Невзятый боец на ринг не выходит: его не звали."""
+    service = make_service(bot, db)
+    players = await fill(db, 4)
+    await a_companion(db, players[0], take=False)
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2
+    )
+    for player, team in ((players[1], RED), (players[2], BLUE), (players[3], BLUE)):
+        await service.join(lobby.id, player, team)
+
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    assert len(session.fighters) == 4
+    await service.shutdown()
+
+
+async def test_a_fighter_holding_a_spot_is_not_taken_to_the_ring(bot, db):
+    """Боец на точке остаётся на точке: там он и нужен."""
+    service = make_service(bot, db)
+    players = await fill(db, 4)
+    npc = await a_companion(db, players[0])
+    await db.set_squad_spot(npc.user_id, "bar")
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2
+    )
+    for player, team in ((players[1], RED), (players[2], BLUE), (players[3], BLUE)):
+        await service.join(lobby.id, player, team)
+
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    assert npc.user_id not in session.fighters
+    await service.shutdown()
+
+
+async def test_a_squad_fighter_is_not_taken_to_the_royale(bot, db):
+    """В мясорубке бойца не берут: он вышел бы против хозяина."""
+    service = make_service(bot, db)
+    players = await fill(db, 2)
+    npc = await a_companion(db, players[0])
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.ROYALE, size=2
+    )
+    await service.join(lobby.id, players[1])
+
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    assert npc.user_id not in session.fighters
+    await service.shutdown()
+
+
+async def test_a_squad_fighter_fights_without_pressing_a_button(bot, db):
+    """Кнопок у бойца нет: раунд не ждёт его и бой доходит до конца."""
+    service, players, mine = await a_team_fight(bot, db)
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    npc = mine[0]
+
+    for _ in range(PATIENCE):
+        if service.battle_in_chat(CHAT_ID, THREAD_ID) is None:
+            break
+        # Боец считается готовым и без нажатия — иначе раунд стоял бы
+        assert session.is_ready(npc.user_id)
+        await choose_humans(service, session)
+    else:  # pragma: no cover - бой должен кончиться
+        raise AssertionError("бой не закончился")
+
+    # И он бил, а не просто стоял под ударами: без своего хода у него
+    # не было бы ни одного попадания за весь бой
+    assert session.fighters[npc.user_id].damage_dealt > 0
+    await service.shutdown()
+
+
+async def test_a_won_group_fight_grows_the_squad_fighter(bot, db):
+    """Победа в групповом бою даёт бойцу опыт — и об этом сказано в итоге."""
+    service, players, mine = await a_team_fight(bot, db, companions=(0, 2))
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    sides = dict(session.teams)
+
+    for _ in range(PATIENCE):
+        if service.battle_in_chat(CHAT_ID, THREAD_ID) is None:
+            break
+        await choose_humans(service, session)
+    else:  # pragma: no cover - бой должен кончиться
+        raise AssertionError("бой не закончился")
+
+    # Победила та сторона, у которой кто-то остался на ногах
+    standing = {
+        sides[uid] for uid, one in session.fighters.items() if one.alive
+    }
+    assert standing, "бой кончился ничьей — проверять нечего"
+    paid = 0
+    for npc in mine.values():
+        saved = await db.get_player(npc.user_id)
+        # Платят тому, кто дожил до победы, — то же правило, что у
+        # людей: упавшему на победившей стороне опыта не идёт
+        earns = (
+            sides[npc.user_id] in standing
+            and session.fighters[npc.user_id].alive
+        )
+        assert bool(saved.total_exp) is earns, saved.nickname
+        paid += 1 if earns else 0
+    assert paid, "ни один боец не дожил до итога — проверять нечего"
+    assert any("Бойцы отряда получили опыт" in text for text in bot.texts)
+    await service.shutdown()
+
+
+async def test_a_squad_fighter_does_not_grow_past_his_owner(bot, db):
+    """Потолок хозяина держит и здесь: опыт лежит, уровень не растёт."""
+    service = make_service(bot, db)
+    players = await fill(db, 4, level=1)
+    npc = await a_companion(db, players[0], level=1)
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2, levels=(1, 3)
+    )
+    for player, team in ((players[1], RED), (players[2], BLUE), (players[3], BLUE)):
+        await service.join(lobby.id, player, team)
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+
+    for _ in range(PATIENCE):
+        if service.battle_in_chat(CHAT_ID, THREAD_ID) is None:
+            break
+        await choose_humans(service, session)
+
+    saved = await db.get_player(npc.user_id)
+    assert saved.level == 1, "боец не бывает старше хозяина"
+    await service.shutdown()
+
+
+async def test_the_squad_fighter_stays_out_of_the_ladder(bot, db):
+    """Рейтинга бойцу не платят: ELO — место среди живых игроков."""
+    service, players, mine = await a_team_fight(bot, db)
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    npc = mine[0]
+    was = (await db.get_player(npc.user_id)).rating
+
+    for _ in range(PATIENCE):
+        if service.battle_in_chat(CHAT_ID, THREAD_ID) is None:
+            break
+        await choose_humans(service, session)
+
+    saved = await db.get_player(npc.user_id)
+    assert saved.rating == was
+    assert saved.wins == 0 and saved.losses == 0 and saved.draws == 0
+    await service.shutdown()
+
+
+async def test_a_round_with_nobody_to_press_counts_itself(bot, db):
+    """Раунд, где в парах только бойцы отряда, не висит до таймера.
+
+    Так кончается бой, в котором людей уже вынесли, а бойцы ещё стоят:
+    кнопок у них нет, и ждать от них нажатия некого. Раньше такой ход
+    стоял полный таймер и бой доигрывался минутами.
+    """
+    service, players, mine = await a_team_fight(bot, db, companions=(0, 2))
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    for player in players:
+        session.fighters[player.user_id].hp = 0
+
+    await service._start_round(session)
+
+    assert service.battle_in_chat(CHAT_ID, THREAD_ID) is None, "бой доигран сам"
+    assert any("Победа" in text or "Ничья" in text for text in bot.texts)
+    await service.shutdown()

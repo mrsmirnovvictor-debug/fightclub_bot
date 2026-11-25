@@ -31,12 +31,15 @@ from bot.models import Player
 from bot.squad_service import (
     SquadError,
     add_exp,
+    companion,
     discharge,
     dismiss,
     fighters,
     hire,
+    leave_behind,
     reroll,
     showcase,
+    take_along,
     to_hospital,
 )
 
@@ -421,3 +424,147 @@ def test_the_week_of_the_showcase_is_the_city_week():
     """Витрина обновляется тем же понедельником, что и жалованье."""
     assert week_of(WEEK) == week_of(WEEK + 3_600)
     assert week_of(WEEK) != week_of(WEEK + 8 * 24 * 3_600)
+
+
+# ---------- кого берут с собой ----------
+#
+# В групповой бой клуба и в рейд за хозяином идёт один боец, и выбирает
+# его хозяин. Занятого не берут: спор двух режимов за одного бойца
+# решается здесь, до боя, а не в середине волны.
+
+
+async def two_fighters(db, player: Player) -> list[Player]:
+    """Двое в отряде: на них и проверяют, что идёт только один."""
+    shop = await showcase(db, player, WEEK, random.Random(1))
+    first = await hire(db, player, shop["cards"][0]["slot"], WEEK)
+    second = await hire(db, player, shop["cards"][1]["slot"], WEEK)
+    return [first, second]
+
+
+async def test_the_owner_picks_who_goes_with_him(db):
+    """Взятый боец — тот, кого выбрали: до выбора хозяин идёт один."""
+    player = await enlist(db)
+    first, _ = await two_fighters(db, player)
+
+    assert await companion(db, player.user_id) is None
+    await take_along(db, player, first.user_id)
+    mate = await companion(db, player.user_id)
+    assert mate is not None and mate[1].user_id == first.user_id
+
+
+async def test_only_one_fighter_goes_at_a_time(db):
+    """Второй выбор сам снимает первого: за хозяином идёт один."""
+    player = await enlist(db)
+    first, second = await two_fighters(db, player)
+
+    await take_along(db, player, first.user_id)
+    await take_along(db, player, second.user_id)
+
+    mate = await companion(db, player.user_id)
+    assert mate is not None and mate[1].user_id == second.user_id
+    rows = {row["npc_id"]: row["in_party"] for row in await db.squad_of(player.user_id)}
+    assert rows[first.user_id] == 0 and rows[second.user_id] == 1
+
+
+async def test_a_fighter_left_behind_stays_home(db):
+    """Оставленный дома в бой не идёт."""
+    player = await enlist(db)
+    first, _ = await two_fighters(db, player)
+
+    await take_along(db, player, first.user_id)
+    await leave_behind(db, player, first.user_id)
+    assert await companion(db, player.user_id) is None
+
+
+async def test_a_busy_fighter_is_not_taken_along(db):
+    """На точке и в больнице бойца не берут: он занят."""
+    player = await enlist(db)
+    first, second = await two_fighters(db, player)
+    await db.set_squad_spot(first.user_id, "bar")
+    await to_hospital(db, second.user_id, WEEK)
+
+    with pytest.raises(SquadError):
+        await take_along(db, player, first.user_id)
+    with pytest.raises(SquadError):
+        await take_along(db, player, second.user_id)
+
+
+async def test_a_fighter_sent_to_a_spot_stops_going_to_fights(db):
+    """Поставленный на точку перестаёт быть спутником, а не спорит с ней."""
+    player = await enlist(db)
+    first, _ = await two_fighters(db, player)
+    await take_along(db, player, first.user_id)
+
+    await db.set_squad_spot(first.user_id, "bar")
+    assert await companion(db, player.user_id) is None
+
+    # Снятый с точки снова идёт в бой: выбор хозяина никуда не делся
+    await db.set_squad_spot(first.user_id, "")
+    mate = await companion(db, player.user_id)
+    assert mate is not None and mate[1].user_id == first.user_id
+
+
+async def test_a_beaten_fighter_is_left_at_home(db):
+    """Битого в бой не берут: он лёг бы в первом размене."""
+    player = await enlist(db)
+    first, _ = await two_fighters(db, player)
+    await take_along(db, player, first.user_id)
+
+    # Час побоев — тот же, с которого смотрим: иначе здоровье успеет
+    # затянуться само, и проверять будет нечего
+    first.set_hp(1, WEEK)
+    await db.save_player(first)
+    assert not first.can_fight(WEEK)
+    assert await companion(db, player.user_id, WEEK) is None
+
+
+async def test_another_mans_fighter_cannot_be_taken_along(db):
+    """Чужого бойца с собой не возьмёшь."""
+    owner = await enlist(db)
+    stranger = await enlist(db, a_player(user_id=43))
+    first, _ = await two_fighters(db, owner)
+
+    with pytest.raises(SquadError):
+        await take_along(db, stranger, first.user_id)
+    with pytest.raises(SquadError):
+        await leave_behind(db, stranger, first.user_id)
+
+
+# ---------- отряд через http ----------
+
+
+async def test_the_squad_window_takes_a_fighter_along(db):
+    """Выбор спутника доходит до службы и виден в строке отряда."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from bot.config import Config
+    from bot.webapp.server import create_app
+    from tests.test_inventory import FakeBot
+    from tests.test_webapp import TOKEN, make_init_data
+
+    player = await enlist(db)
+    first, _ = await two_fighters(db, player)
+    app = create_app(FakeBot(), db, Config(bot_token=TOKEN))
+    headers = {"X-Telegram-Init-Data": make_init_data(player.user_id)}
+    async with TestClient(TestServer(app)) as client:
+        body = await (await client.get("/api/squad", headers=headers)).json()
+        assert all(not row["in_party"] for row in body["rows"])
+
+        answer = await client.post(
+            "/api/squad",
+            json={"action": "take_along", "npc": first.user_id},
+            headers=headers,
+        )
+        assert answer.status == 200
+        body = await answer.json()
+        assert "идёт с тобой" in body["said"]
+        taken = [row for row in body["rows"] if row["in_party"]]
+        assert [row["id"] for row in taken] == [first.user_id]
+
+        back = await client.post(
+            "/api/squad",
+            json={"action": "leave_behind", "npc": first.user_id},
+            headers=headers,
+        )
+        body = await back.json()
+        assert all(not row["in_party"] for row in body["rows"])

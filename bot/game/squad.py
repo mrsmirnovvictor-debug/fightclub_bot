@@ -36,7 +36,7 @@ from __future__ import annotations
 import random
 
 from bot.game.classes import START_POINTS, FighterClass, Stat, Stats
-from bot.game.economy import MICRO_UPS_PER_LEVEL
+from bot.game.economy import MICRO_UPS_PER_LEVEL, base_exp
 from bot.game.reference import FOCUS, developed_stats
 
 # Сколько бойцов держит один хозяин. Шесть — это две полные тройки на
@@ -96,6 +96,23 @@ def spar_exp(full: int, done_today: int) -> int:
     if share <= 0:
         return 0
     return max(1, int(round(full * share)))
+
+
+# Сколько бойцов идёт за хозяином в групповой бой клуба и в рейд.
+# Один — то же правило, что на точке: отряд усиливает игрока, но не
+# заменяет собой семью. Шесть бойцов в лобби из десяти мест означали бы
+# рейд одного человека с собственной массовкой
+PARTY_SIZE = 1
+
+
+def raid_exp(level: int) -> int:
+    """Опыт бойца за победу в рейде — ставка его уровня.
+
+    Рейд не считает урон и не делит опыт: в подвале бьют толпой, и
+    разобрать, чей удар свалил банду, нельзя. Поэтому плата простая и
+    одинаковая для всех, кто вышел и победил.
+    """
+    return base_exp(max(1, level))
 
 
 def bonus_points(stars: int, level: int) -> int:
@@ -183,6 +200,8 @@ def capped_level(npc_level: int, owner_level: int) -> int:
 
 __all__ = [
     "HIRE_PRICE",
+    "PARTY_SIZE",
+    "raid_exp",
     "REROLL_LIMIT",
     "REROLL_PRICES",
     "SHOWCASE_SIZE",

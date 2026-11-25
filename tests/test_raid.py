@@ -1215,3 +1215,175 @@ async def test_a_broken_ending_still_ends_the_raid(bot, db, monkeypatch):
         assert service.is_busy(player.user_id) is False
         assert service.result_of_user(player.user_id) is session
     await service.shutdown()
+
+
+# ---------- бойцы отряда в рейде ----------
+#
+# Боец идёт в подвал за хозяином и отрабатывает волну сам — кнопок у
+# него нет. Платят ему ростом: доля из кошеля и вещь с полки остаются
+# людям, иначе хозяин, пришедший с бойцом, забирал бы из общего котла
+# две доли вместо одной.
+
+
+async def a_companion(
+    db, owner, level: int = 4, name: str = "Громила", take: bool = True
+):
+    """Боец в отряде этого игрока, взятый с собой."""
+    from bot.game.classes import get_class
+    from bot.game.squad import npc_stats
+    from bot.models import Player
+
+    npc_id = await db.next_npc_id()
+    stats = npc_stats(get_class("tank"), 1, level)
+    npc = Player(
+        user_id=npc_id, nickname=name, class_code="tank", level=level,
+        **stats.as_dict(),
+    )
+    await db.save_player(npc)
+    await db.add_squad(npc_id, owner.user_id, 1, 1, 1_800_000_000)
+    if take:
+        await db.set_squad_party(npc_id, True)
+    return npc
+
+
+async def raid_with_a_companion(service, db, count: int = 2):
+    """Отряд, в котором у первого игрока есть свой боец."""
+    players = await fill(db, count)
+    npc = await a_companion(db, players[0])
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0], chat_title="Клуб")
+    for player in players[1:]:
+        await service.join(lobby.id, player)
+    if service.raid_of_user(players[0].user_id) is None:
+        await service.start_now(lobby.id, players[0].user_id)
+    return players, npc, service.raid_of_user(players[0].user_id)
+
+
+async def test_a_squad_fighter_goes_down_to_the_cellar_with_his_owner(bot, db):
+    """Взятый боец выходит в рейд вместе с хозяином."""
+    service = make_service(bot, db)
+    players, npc, session = await raid_with_a_companion(service, db)
+
+    assert npc.user_id in session.fighters
+    await service.shutdown()
+
+
+async def test_a_squad_fighter_does_not_make_up_the_party(bot, db):
+    """Состав собирают люди: боец отряда не добивает его до нормы.
+
+    Гопники выходят на троих, и двое людей с бойцом — всё ещё двое.
+    Иначе один человек с полным отрядом открывал бы любой рейд.
+    """
+    from dataclasses import replace
+
+    from bot.game.raid import CELLAR_RAID
+
+    service = make_service(bot, db)
+    players = await fill(db, 1)
+    await a_companion(db, players[0])
+    # Подвал пускают и одного, поэтому норму поднимаем до двоих: вопрос
+    # не в числе, а в том, кого считают составом
+    lobby = await service.open_raid(
+        CHAT_ID, THREAD_ID, players[0],
+        kind=replace(CELLAR_RAID, min_party=2), chat_title="Клуб",
+    )
+    assert set(lobby.members) == {players[0].user_id}
+
+    with pytest.raises(RaidError):
+        await service.start_now(lobby.id, players[0].user_id)
+    await service.shutdown()
+
+
+async def test_a_squad_fighter_works_the_wave_without_pressing(bot, db):
+    """Боец отрабатывает волну сам: его размен уже в журнале волны."""
+    service = make_service(bot, db)
+    players, npc, session = await raid_with_a_companion(service, db)
+
+    # Волна только началась, люди ещё не нажимали — а боец уже отработал
+    assert npc.user_id in session.acted
+    assert npc.user_id not in session.waiting_for()
+    assert session.fighters[npc.user_id].damage_dealt > 0
+    await service.shutdown()
+
+
+async def test_a_won_raid_grows_the_squad_fighter_by_his_level(bot, db):
+    """За победу боец получает ставку своего уровня — и ни доли, ни вещи."""
+    from bot.game.squad import raid_exp
+
+    service = make_service(bot, db)
+    players, npc, session = await raid_with_a_companion(service, db)
+    weaken(session)
+    await storm(service, session, players)
+
+    assert service.raid_of_user(players[0].user_id) is None, "рейд должен был кончиться"
+    saved = await db.get_player(npc.user_id)
+    assert saved.total_exp == raid_exp(npc.level)
+    # Денег бойцу не платят: кошель делят люди
+    assert saved.credits == 0
+    assert not await db.list_gear(npc.user_id)
+    await service.shutdown()
+
+
+async def test_the_purse_is_split_between_people_only(bot, db):
+    """Боец в отряде не размывает доли: кошель делится на людей."""
+    service = make_service(bot, db)
+    players, npc, session = await raid_with_a_companion(service, db)
+    weaken(session)
+    await storm(service, session, players)
+
+    # Доли раздают по людям: боец отряда в делёжке не участвует
+    assert set(session.shares) == {player.user_id for player in players}
+    for player in players:
+        saved = await db.get_player(player.user_id)
+        assert saved.credits - 500 == session.kind.purse
+    assert (await db.get_player(npc.user_id)).credits == 0
+    await service.shutdown()
+
+
+async def test_a_lost_raid_pays_the_squad_fighter_nothing(bot, db):
+    """Проигранный рейд бойцу не платит, но здоровье ему запишут."""
+    service = make_service(bot, db)
+    players, npc, session = await raid_with_a_companion(service, db)
+    toughen(session, hp=5_000)
+    # Отряд ложится: людям по нулю здоровья, бойца оставляем на ногах
+    for player in players:
+        session.fighters[player.user_id].hp = 0
+    await service.skip_the_rest(session)
+
+    assert service.raid_of_user(players[0].user_id) is None
+    saved = await db.get_player(npc.user_id)
+    assert saved.total_exp == 0
+    await service.shutdown()
+
+
+async def test_the_raid_ends_when_the_last_person_falls(bot, db):
+    """Бойцы отряда одни банду не добивают: рейд — дело людей."""
+    service = make_service(bot, db)
+    players, npc, session = await raid_with_a_companion(service, db)
+    toughen(session, hp=5_000)
+    for player in players:
+        session.fighters[player.user_id].hp = 0
+    assert session.fighters[npc.user_id].alive
+
+    await service.skip_the_rest(session)
+
+    assert service.raid_of_user(players[0].user_id) is None
+    # Рейд кончился проигрышем, и кончился сразу: боец остался на ногах
+    # и банду не добивал. Опыта ему за это не идёт
+    assert session.fighters[npc.user_id].alive
+    assert (await db.get_player(npc.user_id)).total_exp == 0
+    said = bot.texts[-1]
+    assert "Отряд кончился" in said, said
+    assert "легла" not in said, "это не победа"
+    await service.shutdown()
+
+
+async def test_the_result_counts_people_not_the_squad(bot, db):
+    """«Ушли своими ногами N из M» считает людей: боец в счёт не идёт."""
+    service = make_service(bot, db)
+    players, npc, session = await raid_with_a_companion(service, db)
+    weaken(session)
+    await storm(service, session, players)
+
+    said = bot.texts[-1]
+    assert f"из {len(players)}." in said, said
+    await service.shutdown()
