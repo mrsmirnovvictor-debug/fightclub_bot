@@ -431,11 +431,16 @@ async def test_a_spar_pays_both_the_fighter_and_his_owner(duels, db):
     npc = await a_fighter(db, owner.user_id, level=3)
 
     grown = await _spar(duels, db, owner, npc.user_id)
-    assert grown.total_exp == base_exp(3), "ставка своего уровня целиком"
+    # Ставка — по старшему из двоих: боец третьего уровня дрался с
+    # десятым, и бой стоит столько, сколько стоит соперник
+    assert grown.total_exp == base_exp(10), "ставка по старшему целиком"
+    # Бой идёт в счёт бойцу: это его бой, и в карточке он виден
+    assert grown.losses == 1 and grown.wins == 0
 
     after = await db.get_player(owner.user_id)
     assert after.total_exp > 0, "за победу хозяину платят"
-    assert after.wins == 0 and after.losses == 0, "в победы спарринг не идёт"
+    assert after.wins == 0 and after.losses == 0, "в статистику не идёт"
+    assert after.draws == 0
     assert after.rating == owner.rating, "и рейтинг не двигает"
 
 
@@ -490,7 +495,7 @@ async def test_the_third_spar_of_the_day_gives_nothing(duels, db):
     owner.location = "bar"
     await db.save_player(owner)
     npc = await a_fighter(db, owner.user_id, level=3)
-    full = base_exp(3)
+    full = base_exp(10)  # ставка по старшему из двоих
 
     first = await _spar(duels, db, owner, npc.user_id)
     assert first.total_exp == full
@@ -512,7 +517,10 @@ async def test_a_spar_pays_the_loser_too(duels, db):
     npc = await a_fighter(db, owner.user_id, level=3)
 
     beaten = await _spar(duels, db, owner, npc.user_id, won=True)
-    assert beaten.total_exp == base_exp(3)
+    assert beaten.total_exp == base_exp(10)
+    # Проигранный бой у бойца тоже записан: счёт считает бои, а не
+    # награды
+    assert beaten.losses == 1
 
 
 async def test_a_busy_or_beaten_fighter_does_not_spar(duels, db):
@@ -549,3 +557,36 @@ async def test_another_mans_fighter_is_not_yours_to_spar(duels, db):
 
     with pytest.raises(DuelError, match="не твой"):
         await duels.start_spar(stranger, npc.user_id)
+
+
+async def test_a_won_spar_goes_into_the_fighters_wins(duels, db):
+    """Выиграл спарринг — победа записана ему, а хозяину ничего."""
+    owner = a_learner(level=10)
+    owner.location = "bar"
+    await db.save_player(owner)
+    npc = await a_fighter(db, owner.user_id, level=3)
+
+    winner = await _spar(duels, db, owner, npc.user_id, won=False)
+    assert (winner.wins, winner.losses, winner.draws) == (1, 0, 0)
+
+    after = await db.get_player(owner.user_id)
+    assert (after.wins, after.losses, after.draws) == (0, 0, 0)
+
+
+async def test_the_lesson_goes_into_the_trainers_record(duels, db):
+    """Урок идёт Тренеру в счёт боёв — и только в счёт.
+
+    Опыт ему не нужен: уровней он не берёт и в лестнице не стоит. А вот
+    побитый Тренер должен быть виден по его карточке.
+    """
+    learner = a_learner()
+    await db.save_player(learner)
+
+    await _lesson(duels, db, learner, won=True)
+
+    trainer = await db.get_player(TRAINER_ID)
+    assert trainer.losses == 1, "ученик его побил — это записано"
+    assert trainer.wins == 0 and trainer.draws == 0
+    # Опыта и уровней у Тренера нет и не появляется
+    assert trainer.total_exp == 0 and trainer.exp == 0
+    assert trainer.rating == 0

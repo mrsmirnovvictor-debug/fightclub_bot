@@ -1177,7 +1177,10 @@ class DuelService:
         done = await self.db.count_duels_with(
             owner_id, npc_id, day_opens(now_ts())
         )
-        full = base_exp(npc.level)
+        # Ставка — по старшему из двоих: хозяин приводит на спарринг
+        # себя, и бой с ним стоит столько, сколько стоит он. По уровню
+        # бойца выходило бы, что десятый уровень учит первого даром
+        full = base_exp(max(npc.level, owner.level))
         got = spar_exp(full, done)
         from bot.squad_service import add_exp
 
@@ -1206,6 +1209,16 @@ class DuelService:
             else 0
         )
         await record_injuries(self.db, result.injuries, {owner_id: owner})
+
+        # Спарринг идёт в счёт только бойцу: для него это бой, и в его
+        # карточке он виден. Хозяину — нет: своя тренировка в
+        # статистику не идёт, как не идёт туда и урок у Тренера
+        if result.winner_id == npc_id:
+            npc.wins += 1
+        elif result.winner_id is None:
+            npc.draws += 1
+        else:
+            npc.losses += 1
 
         # Здоровье обоих — то, с чем вышли из боя
         npc.set_hp(his.hp)
@@ -1297,6 +1310,16 @@ class DuelService:
         if teacher_row is not None:
             left = teacher.hp / teacher.max_hp if teacher.max_hp else 0.0
             teacher_row.set_hp(round(teacher_row.max_hp * left))
+            # Урок идёт Тренеру в счёт боёв — и только в счёт: опыт ему
+            # не нужен, уровней он не берёт и в лестнице не стоит.
+            # Побитый Тренер — это видно по его карточке, и видно
+            # должно быть
+            if result.winner_id == session.npc:
+                teacher_row.wins += 1
+            elif result.winner_id is None:
+                teacher_row.draws += 1
+            else:
+                teacher_row.losses += 1
             await self.db.save_player(teacher_row)
 
         # Первый бой у бармена этот урок закрывает: задание про то, чтобы
