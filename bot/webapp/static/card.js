@@ -10964,7 +10964,15 @@ function renderSquad(data) {
   (data.rows || []).forEach((one) => list.appendChild(squadRow(one)));
   const count = el("squad-count");
   if (count) {
-    count.textContent = (data.rows || []).length + " из " + (data.limit || 6);
+    const rows = data.rows || [];
+    const going = rows.filter((one) => one.in_party).length;
+    // Сколько идёт в бой — рядом с размером отряда: взятых бывает до
+    // шести, и считать их по строкам перед каждым боем незачем
+    count.textContent =
+      rows.length
+      + " из "
+      + (data.limit || 6)
+      + (going ? " · в бой идут " + going : "");
   }
 }
 

@@ -9440,6 +9440,9 @@ async def test_the_squad_list_marks_who_goes_to_a_fight(server):
         said = await page.locator(".squad-said").all_inner_texts()
         assert "Идёт в бой" in said[0], said
         assert "Свободен" in said[1] or "В больнице" in said[1], said
+        # И сколько их всего — в счётчике отряда, чтобы не считать строки
+        count = await page.locator("#squad-count").inner_text()
+        assert "в бой идут 1" in count, count
         await browser.close()
 
 

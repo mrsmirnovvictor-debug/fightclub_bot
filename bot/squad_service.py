@@ -514,12 +514,19 @@ async def pay_the_party(
     выбили с точки: это цена охраны, а не цена штурма.
 
     Опыт — за взятую точку и только тем, кто дошёл до конца на ногах:
-    та же мерка, что в обороне, где уложенным не платят.
+    та же мерка, что в обороне, где уложенным не платят. Считается он
+    каждому свой, по уровню и набитому урону: шестеро за одним
+    хозяином зарабатывают по-разному.
     """
-    from bot.game.economy import base_exp
+    from bot.game.squad import fight_exp
 
     moment = now_ts() if now is None else now
     paid: list[tuple[Player, int]] = []
+    # Ставка — по старшему на поле, прибавка за урон — по среднему
+    # запасу всех, кто вышел: та же мерка, что в групповом бою клуба
+    top_level = max((one.level for one in party.values()), default=1)
+    hp_total = sum(one.max_hp for one in party.values())
+    on_spot = max(1, len(party))
     for number, npc_id in squad.items():
         fighter = party.get(number)
         npc = await db.get_player(npc_id)
@@ -529,12 +536,14 @@ async def pay_the_party(
         if fighter is not None:
             npc.set_hp(fighter.hp, moment)
             await db.save_player(npc)
-        if not won or (fighter is not None and not fighter.alive):
+        if not won or fighter is None or not fighter.alive:
             continue
         owner = await db.get_player(int(row["owner_id"]))
         if owner is None:  # pragma: no cover - хозяина удалили
             continue
-        got = base_exp(npc.level)
+        got = fight_exp(
+            fighter.damage_dealt, npc.level, top_level, hp_total, on_spot
+        )
         await add_exp(db, npc, int(row["stars"]), owner, got)
         paid.append((npc, got))
     if paid:
@@ -543,10 +552,11 @@ async def pay_the_party(
 
 
 async def take_along(db: Database, owner: Player, npc_id: int) -> Player:
-    """Взять бойца с собой в бой — в клуб и в рейд.
+    """Взять бойца с собой в бой — в клуб, в рейд и на точку.
 
-    Берут одного: прежний выбранный снимается сам. Занятого не берут —
-    он держит точку или лежит в больнице, и спор двух режимов за одного
+    Взять можно и одного, и весь отряд: состав собирает хозяин, и
+    прежних выбранных этот выбор не трогает. Занятого не берут — он
+    держит точку или лежит в больнице, и спор двух режимов за одного
     бойца решается здесь, до боя, а не в середине волны.
     """
     row = await db.squad_row(npc_id)
@@ -576,25 +586,25 @@ async def leave_behind(db: Database, owner: Player, npc_id: int) -> Player:
     return npc
 
 
-async def companion(
+async def companions(
     db: Database, owner_id: int, now: int | None = None
-) -> tuple[dict, Player] | None:
+) -> list[tuple[dict, Player]]:
     """Кто идёт в бой за этим игроком. Пусто — он идёт один.
 
-    Битого не берём: в бой он вышел бы с остатком здоровья и лёг бы в
-    первом размене, а лечить его хозяин может только до боя. Так же
-    решает и живой игрок — `can_fight` у них общий.
+    Битых не берём: в бой такой боец вышел бы с остатком здоровья и
+    лёг бы в первом размене, а лечить его хозяин может только до боя.
+    Так же решает и живой игрок — `can_fight` у них общий.
     """
     moment = now_ts() if now is None else now
-    row = await db.squad_party(owner_id)
-    if row is None:
-        return None
-    npc = await db.get_player(int(row["npc_id"]))
-    if npc is None:  # pragma: no cover - сломанная база
-        return None
-    if not npc.can_fight(moment):
-        return None
-    return row, npc
+    out: list[tuple[dict, Player]] = []
+    for row in await db.squad_party(owner_id):
+        npc = await db.get_player(int(row["npc_id"]))
+        if npc is None:  # pragma: no cover - сломанная база
+            continue
+        if not npc.can_fight(moment):
+            continue
+        out.append((row, npc))
+    return out
 
 
 async def add_exp(
@@ -636,7 +646,7 @@ async def add_exp(
 __all__ = [
     "SquadError",
     "add_exp",
-    "companion",
+    "companions",
     "leave_behind",
     "take_along",
     "all_to_hospital",

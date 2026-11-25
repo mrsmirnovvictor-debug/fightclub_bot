@@ -1170,7 +1170,7 @@ def raid_result(
         lines.append(
             f"{whom} {verb} на {session.wave}-й волне. "
             f"Ушли своими ногами: {len(outcome.survivors)} из "
-            f"{len(session.people)}."
+            f"{len(session.fighters)}."
         )
     elif outcome.draw:
         verb = "легла" if session.gang else "рухнул"

@@ -914,15 +914,21 @@ async def choose_humans(service: BattleService, session) -> None:
             )
 
 
-async def a_team_fight(bot, db, companions: tuple[int, ...] = (0,)):
-    """Бой два на два, где у названных игроков есть боец в отряде."""
+async def a_team_fight(bot, db, companions: tuple[int, ...] = (0,), each: int = 1):
+    """Бой два на два, где у названных игроков есть бойцы в отряде.
+
+    `each` — сколько бойцов берёт с собой каждый из названных: за
+    хозяином идёт от одного до всего отряда.
+    """
     service = make_service(bot, db)
     players = await fill(db, 4)
     mine = {}
     for number in companions:
-        mine[number] = await a_companion(
-            db, players[number], name=f"Громила{number}"
-        )
+        taken = [
+            await a_companion(db, players[number], name=f"Громила{number}-{mate}")
+            for mate in range(each)
+        ]
+        mine[number] = taken[0] if each == 1 else taken
     lobby = await service.open_lobby(
         CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2
     )
@@ -1101,4 +1107,59 @@ async def test_a_round_with_nobody_to_press_counts_itself(bot, db):
 
     assert service.battle_in_chat(CHAT_ID, THREAD_ID) is None, "бой доигран сам"
     assert any("Победа" in text or "Ничья" in text for text in bot.texts)
+    await service.shutdown()
+
+
+async def test_a_whole_squad_comes_out_with_its_owner(bot, db):
+    """За хозяином выходят все взятые бойцы, и все за его сторону."""
+    service, players, mine = await a_team_fight(bot, db, companions=(0,), each=3)
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    side = session.teams[players[0].user_id]
+
+    taken = mine[0]
+    assert len(taken) == 3
+    for npc in taken:
+        assert npc.user_id in session.fighters
+        assert session.teams[npc.user_id] == side
+    await service.shutdown()
+
+
+async def test_each_fighter_earns_his_own_in_the_club(bot, db):
+    """Платят каждому своё: по его уровню и его урону.
+
+    Сравнивать двух бойцов между собой тут нечестно: урон у них
+    случайный и ниже целой ставки плата не падает — оба могут выйти с
+    одинаковой. Поэтому проверяем саму формулу: по ней видно и то, что
+    урон учтён, и то, что считают каждому отдельно. Что больший урон
+    платит больше, проверяет `fight_exp` своим тестом.
+    """
+    from bot.game.squad import fight_exp
+
+    service, players, mine = await a_team_fight(bot, db, companions=(0,), each=2)
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    sides = dict(session.teams)
+    top_level = max(one.level for one in session.fighters.values())
+    hp_total = sum(one.max_hp for one in session.fighters.values())
+    on_ring = len(session.fighters)
+
+    for _ in range(PATIENCE):
+        if service.battle_in_chat(CHAT_ID, THREAD_ID) is None:
+            break
+        await choose_humans(service, session)
+    else:  # pragma: no cover - бой должен кончиться
+        raise AssertionError("бой не закончился")
+
+    standing = {sides[uid] for uid, one in session.fighters.items() if one.alive}
+    checked = 0
+    for npc in mine[0]:
+        fighter = session.fighters[npc.user_id]
+        saved = await db.get_player(npc.user_id)
+        if sides[npc.user_id] not in standing or not fighter.alive:
+            assert saved.total_exp == 0, "упавшему не платят"
+            continue
+        assert saved.total_exp == fight_exp(
+            fighter.damage_dealt, npc.level, top_level, hp_total, on_ring
+        )
+        checked += 1
+    assert checked, "хоть один боец должен был дожить до итога"
     await service.shutdown()

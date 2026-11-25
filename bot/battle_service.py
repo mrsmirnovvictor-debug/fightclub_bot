@@ -433,7 +433,7 @@ class BattleService:
     # ---------- бой ----------
 
     async def _start_from_lobby(self, lobby: Lobby) -> BattleSession | None:
-        from bot.squad_service import companion
+        from bot.squad_service import companions
 
         members = dict(lobby.members)
         self._forget_lobby(lobby)
@@ -445,17 +445,15 @@ class BattleService:
                 players[user_id] = player
         teams = {user_id: members[user_id] for user_id in players}
 
-        # Бойцы отряда выходят вместе с хозяевами и за их сторону. В
+        # Бойцы отряда выходят вместе с хозяевами и за их сторону —
+        # все, кого хозяин взял, от одного до полного отряда. В
         # мясорубке их не берут вовсе: там каждый сам за себя, и боец
         # вышел бы против собственного хозяина
         if lobby.kind is BattleKind.TEAM:
             for user_id in list(players):
-                mate = await companion(self.db, user_id)
-                if mate is None:
-                    continue
-                _, npc = mate
-                players[npc.user_id] = npc
-                teams[npc.user_id] = teams[user_id]
+                for _, npc in await companions(self.db, user_id):
+                    players[npc.user_id] = npc
+                    teams[npc.user_id] = teams[user_id]
 
         if not self._enough(lobby.kind, teams):
             await self.voice.edit(
@@ -963,6 +961,10 @@ class BattleService:
         on_ring: int,
     ) -> int:
         """Опыт бойцу отряда за групповой бой. Проигравшему — ничего.
+
+        Считается по той же формуле, что человеку: ставка старшего на
+        ринге и доля за набитый урон. Поэтому шестеро за одним хозяином
+        зарабатывают по-разному, и больше получает тот, кто больше бил.
 
         Возвращаем начисленное: по этому числу итог боя говорит, что
         отряд дрался не зря.

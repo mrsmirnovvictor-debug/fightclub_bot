@@ -499,7 +499,7 @@ async def test_a_bought_fighter_does_not_follow_his_new_owner_uninvited(db):
     Иначе покупатель обнаружил бы в своём первом рейде бойца, которого
     не звал, — и состав оказался бы не тот, что он собирал.
     """
-    from bot.squad_service import companion, take_along
+    from bot.squad_service import companions, take_along
 
     seller, buyer = await two_sides(db)
     npc = await a_fighter(db, seller.user_id)
@@ -508,5 +508,5 @@ async def test_a_bought_fighter_does_not_follow_his_new_owner_uninvited(db):
 
     await buy(db, buyer, npc.user_id, NOW)
 
-    assert await companion(db, buyer.user_id) is None
+    assert await companions(db, buyer.user_id) == []
     assert (await db.squad_row(npc.user_id))["in_party"] == 0

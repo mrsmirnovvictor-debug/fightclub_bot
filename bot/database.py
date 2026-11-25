@@ -4819,39 +4819,31 @@ class Database:
     async def set_squad_party(self, npc_id: int, on: bool) -> None:
         """Взять бойца с собой в бой или оставить дома.
 
-        Взятый сменяет прежнего: за хозяином идёт один, и выбор нового
-        сам снимает старого. Иначе отряд уходил бы в бой вчетвером —
-        молча и не тем составом, который игрок себе представлял.
+        Выбор у каждого бойца свой: взять можно и одного, и весь отряд.
+        Прежних выбранных это не трогает — хозяин собирает состав сам,
+        и снимать за него кого-то было бы правкой его решения.
         """
-        if not on:
-            await self.conn.execute(
-                "UPDATE squad SET in_party = 0 WHERE npc_id = ?", (npc_id,)
-            )
-            await self.conn.commit()
-            return
         await self.conn.execute(
-            "UPDATE squad SET in_party = 0 WHERE owner_id = ("
-            "SELECT owner_id FROM squad WHERE npc_id = ?)",
-            (npc_id,),
-        )
-        await self.conn.execute(
-            "UPDATE squad SET in_party = 1 WHERE npc_id = ?", (npc_id,)
+            "UPDATE squad SET in_party = ? WHERE npc_id = ?",
+            (1 if on else 0, npc_id),
         )
         await self.conn.commit()
 
-    async def squad_party(self, owner_id: int) -> dict | None:
-        """Боец, которого хозяин берёт с собой. Пусто — идёт один.
+    async def squad_party(self, owner_id: int) -> list[dict]:
+        """Бойцы, которых хозяин берёт с собой. Пусто — идёт один.
 
-        Занятый не идёт: он держит точку или лежит в больнице, и спор
-        между двумя режимами за одного бойца решается здесь, а не в бою.
+        Занятых не отдаём: они держат точку или лежат в больнице, и
+        спор режимов за одного бойца решается здесь, а не в бою.
+        Порядок — найма, как и во всём отряде: состав читается так же,
+        как вкладка, и номера в бою раздаются в том же порядке.
         """
         async with self.conn.execute(
             "SELECT * FROM squad WHERE owner_id = ? AND in_party = 1 "
-            "AND spot = '' AND hospital_at = 0 LIMIT 1",
+            "AND spot = '' AND hospital_at = 0 ORDER BY hired_at, npc_id DESC",
             (owner_id,),
         ) as cursor:
-            row = await cursor.fetchone()
-        return dict(row) if row else None
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
     # ---------- витрина найма ----------
 

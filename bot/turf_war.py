@@ -155,16 +155,6 @@ class Siege:
         return [one for one, who in self.party.items() if who.alive]
 
     @property
-    def people(self) -> list[int]:
-        """Люди в отряде. Бойцы отряда стоят под отрицательными номерами."""
-        return [one for one in self.party if one > 0]
-
-    @property
-    def standing_people(self) -> list[int]:
-        """Люди, которые ещё на ногах. По ним судья и считает штурм."""
-        return [one for one in self.people if self.party[one].alive]
-
-    @property
     def standing(self) -> list[int]:
         return [one for one, who in self.wall.items() if who.alive]
 
@@ -452,20 +442,17 @@ class TurfWar:
         # выставленных на точке — от −100, и столкнуться с ними нельзя,
         # иначе судья в разборе боя найдёт не того бойца
         from bot.game.art import recruit_face
-        from bot.squad_service import companion
+        from bot.squad_service import companions
 
         number = -1_000
         for user_id in list(party):
-            mate = await companion(self.db, user_id, moment)
-            if mate is None:
-                continue
-            row, npc = mate
-            fighter = Fighter.from_player(npc, armed=True)
-            fighter.user_id = number
-            fighter.picture = recruit_face(int(row["face"]))
-            party[number] = fighter
-            siege_squad[number] = npc.user_id
-            number -= 1
+            for row, npc in await companions(self.db, user_id, moment):
+                fighter = Fighter.from_player(npc, armed=True)
+                fighter.user_id = number
+                fighter.picture = recruit_face(int(row["face"]))
+                party[number] = fighter
+                siege_squad[number] = npc.user_id
+                number -= 1
 
         rows = await survey(self.db, moment)
         here = next(one for one in rows if one.spot.code == muster.spot.code)
@@ -502,11 +489,17 @@ class TurfWar:
             await self._finish(siege, won=True)
             return siege
         self._open_wave(siege)
-        await self._squad_acts(siege)
+        if await self._squad_acts(siege):
+            await self._close_wave(siege)
         return siege
 
-    async def _squad_acts(self, siege: Siege) -> None:
+    async def _squad_acts(self, siege: Siege) -> bool:
         """Ход бойцов отряда: бьют и закрываются наугад, все сразу.
+
+        Истина в ответе — волну пора сводить: либо штурм решён, либо
+        жать кнопки больше некому. Сводит её тот, кто волну открыл:
+        закрывать её отсюда значило бы войти в развязку из её же
+        середины.
 
         Кнопок у них нет, и ждать от них нажатия некого: без этого
         волна стояла бы до конца таймера, а бойцы простояли бы весь
@@ -519,19 +512,17 @@ class TurfWar:
         кроме нас, не видел.
         """
         if siege.finished:
-            return
+            return False
         mine = [
             one for one in siege.alive_ids if one < 0 and one not in siege.acted
         ]
-        if not mine:
-            return
-        for one in mine:
-            self._exchange(siege, one, random_action(siege.party[one], self.rng))
-            if self._judge(siege) is not None:
-                break
-        await count_deeds(self.db, siege.party)
-        if self._judge(siege) is not None or siege.wave_over:
-            await self._close_wave(siege)
+        if mine:
+            for one in mine:
+                self._exchange(siege, one, random_action(siege.party[one], self.rng))
+                if self._judge(siege) is not None:
+                    break
+            await count_deeds(self.db, siege.party)
+        return self._judge(siege) is not None or siege.wave_over
 
     def _open_wave(self, siege: Siege) -> None:
         """Начать волну: навести прицелы и дать всем право хода."""
@@ -685,31 +676,38 @@ class TurfWar:
     def _judge(self, siege: Siege) -> bool | None:
         """Кончился ли штурм. None — дерёмся дальше.
 
-        Штурм кончается, когда лёг последний живой человек: бойцы
-        отряда одни точку не берут. Это и правило («точку берут
-        ногами», а у бойца своих ног в городе нет), и защита от
-        бесконечной волны — нажимать за бойцов некому.
+        Бойцы отряда — такая же сторона, как люди: хозяина вынесли, а
+        его бойцы доигрывают штурм до взятой точки или до своей смерти.
+        Волны при этом идут сами — закрывать их некому, и об этом
+        знает сам цикл волн.
         """
         if not siege.standing:
             return True
-        if not siege.standing_people:
+        if not siege.alive_ids:
             return False
         return None
 
     async def _close_wave(self, siege: Siege) -> None:
-        """Свести волну: либо исход, либо следующая.
+        """Свести волну и, пока закрывать её некому, открыть следующую.
+
+        Цикл, а не вызов изнутри вызова: волна, в которой жать кнопки
+        некому, закрывается сама, и такие волны идут одна за другой —
+        когда людей вынесли, а бойцы отряда доламывают гарнизон.
 
         Сорвалось что угодно — штурм всё равно закрываем: отряд,
         оставленный внутри сломанного штурма, не выйдет из него никогда.
         """
         try:
-            await self._wave_done(siege)
+            while await self._wave_done(siege):
+                self._open_wave(siege)
+                if not await self._squad_acts(siege):
+                    return
         except Exception:
             logger.exception("Волна штурма %s сорвалась", siege.id)
             await self._finish(siege, won=False)
 
-    async def _wave_done(self, siege: Siege) -> None:
-        """Сама развязка волны: либо исход, либо следующая."""
+    async def _wave_done(self, siege: Siege) -> bool:
+        """Сама развязка волны. Истина — пора открывать следующую."""
         done = self._judge(siege)
         if done is None and siege.wave >= MAX_WAVES:
             # Сорок волн — и судья разводит стороны: точка остаётся за
@@ -717,10 +715,9 @@ class TurfWar:
             # усталость замедлена впятеро и сама его не кончит
             done = False
         if done is None:
-            self._open_wave(siege)
-            await self._squad_acts(siege)
-            return
+            return True
         await self._finish(siege, won=done)
+        return False
 
     async def _bury_the_fallen(self, siege: Siege) -> int:
         """Увезти в больницу тех из гарнизона, кого вынесли в драке.

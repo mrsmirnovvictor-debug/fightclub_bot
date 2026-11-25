@@ -41,7 +41,7 @@ from bot.game.combat import (
     spread_heal,
 )
 from bot.game.fightlog import turn_payload
-from bot.game.squad import raid_exp
+from bot.game.squad import fight_exp
 from bot.game.narrator import (
     echo_lines,
     plural,
@@ -348,16 +348,6 @@ class RaidSession:
     @property
     def alive_ids(self) -> list[int]:
         return [uid for uid, fighter in self.fighters.items() if fighter.alive]
-
-    @property
-    def people(self) -> list[int]:
-        """Люди в отряде. Бойцы отряда — не люди: у них нет аккаунта.
-
-        По этому счёту говорят «ушли своими ногами N из M»: выживших
-        судья считает по людям, и знаменатель должен считаться так же,
-        иначе целый отряд читался бы как «двое из трёх».
-        """
-        return [uid for uid in self.fighters if uid > 0]
 
     @property
     def wave_over(self) -> bool:
@@ -724,15 +714,15 @@ class RaidService:
             )
             return None
 
-        # Бойцы отряда идут с хозяевами, но состав собирают не они:
-        # проверка минимального отряда прошла выше, по живым игрокам.
-        # Иначе один человек с бойцом открывал бы рейд на троих
-        from bot.squad_service import companion
+        # Бойцы отряда идут с хозяевами — все, кого взяли, — но состав
+        # собирают не они: проверка минимального отряда прошла выше, по
+        # живым игрокам. Иначе один человек с отрядом открывал бы любой
+        # рейд в одиночку
+        from bot.squad_service import companions
 
         for user_id in list(players):
-            mate = await companion(self.db, user_id)
-            if mate is not None:
-                players[mate[1].user_id] = mate[1]
+            for _, npc in await companions(self.db, user_id):
+                players[npc.user_id] = npc
 
         fighters = {
             user_id: Fighter.from_player(player, armed=True)
@@ -770,6 +760,21 @@ class RaidService:
         return session
 
     async def _start_wave(self, session: RaidSession) -> None:
+        """Открыть волну, а пока закрывать её некому — свести и открыть снова.
+
+        Цикл, а не вызов изнутри вызова: волна, в которой жать кнопки
+        некому, закрывается сама, и такие волны идут одна за другой —
+        когда людей вынесли, а бойцы отряда доигрывают бой. Вызовами
+        друг из друга это выросло бы в стопку на всю длину рейда.
+        """
+        while True:
+            if await self._open_wave(session) or session.finished:
+                return
+            if not await self._wrap_wave(session):
+                return
+
+    async def _open_wave(self, session: RaidSession) -> bool:
+        """Начать волну. Истина — ждём людей, ложь — закрывать её пора."""
         session.wave += 1
         # Новая волна — новая стойка, и у каждого противника своя: между
         # волнами они перекладывают щит и меняют замах
@@ -796,12 +801,12 @@ class RaidService:
         # уходят в тот же журнал и в ту же панель, что и людские
         await self._squad_acts(session)
         if session.finished:
-            return
+            return False
         if self._judge(session) is not None or session.wave_over:
-            await self._close_wave(session)
-            return
+            return False
 
         session.timer = asyncio.create_task(self._wave_timer(session, session.wave))
+        return True
 
     async def _squad_acts(self, session: RaidSession) -> None:
         """Ход бойцов отряда: бьют и закрываются наугад, все сразу.
@@ -996,17 +1001,13 @@ class RaidService:
         return heal_line(ability, gained, len(healed))
 
     def _judge(self, session: RaidSession) -> RaidOutcome | None:
-        """Рейд кончается, когда лёг последний живой игрок.
+        """Рейд идёт, пока стоит хоть кто-то с одной из сторон.
 
-        Бойцы отряда одни банду не добивают: рейд — дело людей, отряд в
-        нём помогает. Поэтому судье отдают только людей, и добыча с
-        «лучшим по урону» считается по ним же: приз из подвала уходит
-        тому, кто пришёл его забирать.
+        Бойцы отряда — такая же сторона, как люди: хозяина вынесли, а
+        его отряд доигрывает бой до победы или до своей смерти. Поэтому
+        судье отдают всех, кто вышел.
         """
-        return judge_raid(
-            session.enemies.values(),
-            {uid: one for uid, one in session.fighters.items() if uid > 0},
-        )
+        return judge_raid(session.enemies.values(), session.fighters)
 
     def _hint(self, choice: Choice, fighter: Fighter) -> str:
         icons = fighter.weapon_icons
@@ -1031,6 +1032,18 @@ class RaidService:
 
     async def _close_wave(self, session: RaidSession) -> None:
         """Волна отработана: рассказать, что вышло, и позвать следующую."""
+        while True:
+            if not await self._wrap_wave(session):
+                return
+            if await self._open_wave(session) or session.finished:
+                return
+
+    async def _wrap_wave(self, session: RaidSession) -> bool:
+        """Свести волну. Истина — пора открывать следующую.
+
+        Ложь — рейд кончился или ушёл в передышку: там своё время, и
+        волну откроет её таймер.
+        """
         self._cancel_timer(session)
         await self._close_panel(session, self._wave_report(session))
 
@@ -1042,10 +1055,11 @@ class RaidService:
         outcome = self._judge(session)
         if outcome is not None:
             await self._finish(session, outcome)
-        elif session.strikes >= self.config.raid_strikes_per_break:
+            return False
+        if session.strikes >= self.config.raid_strikes_per_break:
             await self._take_a_break(session)
-        else:
-            await self._start_wave(session)
+            return False
+        return True
 
     def _wave_report(self, session: RaidSession) -> str:
         lines = [f"<b>⚔️ Волна {session.wave}</b>", ""]
@@ -1183,7 +1197,19 @@ class RaidService:
         # дрался, и его урон валил банду
         shares = session.kind.shares(len(party)) if outcome.won else []
         session.shares = dict(zip(party, shares))
-        top = set(outcome.top) if outcome.won else set()
+        # Лучший по урону может оказаться бойцом отряда — тогда вещь с
+        # полки забирает его хозяин: он за бойца платил, он его и
+        # растил. В ведомости урона боец при этом остаётся собой, и
+        # видно, кто банду валил на самом деле
+        top: set[int] = set()
+        if outcome.won:
+            for best in outcome.top:
+                if best > 0:
+                    top.add(best)
+                    continue
+                row = await self.db.squad_row(best)
+                if row is not None:
+                    top.add(int(row["owner_id"]))
         window = self.window_now(kind=session.kind)
         for user_id, fighter in session.fighters.items():
             player = await self.db.get_player(user_id)
@@ -1248,11 +1274,13 @@ class RaidService:
         fighter: Fighter,
         outcome: RaidOutcome,
     ) -> None:
-        """Бойцу отряда за рейд: опыт по ставке его уровня, и только.
+        """Бойцу отряда за рейд: опыт по уровню и набитому урону.
 
         Ни долей, ни склянок, ни вещей: добычу делят люди, а бойцу от
-        подвала — рост. Зато травмы и износ — по общим правилам: вещи на
-        нём настоящие, и чинит их хозяин.
+        подвала — рост. Платят каждому своё: шестеро за одним хозяином
+        зарабатывают по-разному, и больше получает тот, кто больше
+        набил. Зато травмы и износ — по общим правилам: вещи на нём
+        настоящие, и чинит их хозяин.
 
         Здоровье записываем в любом случае: рейд не разбирает, победил
         ты или нет.
@@ -1277,9 +1305,15 @@ class RaidService:
         owner = await self.db.get_player(int(row["owner_id"]))
         if owner is None:  # pragma: no cover - хозяина удалили
             return
-        await add_exp(
-            self.db, npc, int(row["stars"]), owner, raid_exp(npc.level)
+        party = session.fighters
+        got = fight_exp(
+            fighter.damage_dealt,
+            npc.level,
+            max((one.level for one in session.enemies.values()), default=1),
+            sum(one.max_hp for one in party.values()),
+            max(1, len(party)),
         )
+        await add_exp(self.db, npc, int(row["stars"]), owner, got)
 
     def _cancel_timer(self, session: RaidSession) -> None:
         timer = session.timer

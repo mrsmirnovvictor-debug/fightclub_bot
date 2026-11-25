@@ -1305,9 +1305,9 @@ async def test_a_squad_fighter_works_the_wave_without_pressing(bot, db):
     await service.shutdown()
 
 
-async def test_a_won_raid_grows_the_squad_fighter_by_his_level(bot, db):
-    """За победу боец получает ставку своего уровня — и ни доли, ни вещи."""
-    from bot.game.squad import raid_exp
+async def test_a_won_raid_grows_the_squad_fighter_by_level_and_damage(bot, db):
+    """За победу боец получает своё: ставку уровня и долю за урон."""
+    from bot.game.squad import fight_exp
 
     service = make_service(bot, db)
     players, npc, session = await raid_with_a_companion(service, db)
@@ -1316,7 +1316,14 @@ async def test_a_won_raid_grows_the_squad_fighter_by_his_level(bot, db):
 
     assert service.raid_of_user(players[0].user_id) is None, "рейд должен был кончиться"
     saved = await db.get_player(npc.user_id)
-    assert saved.total_exp == raid_exp(npc.level)
+    fighter = session.fighters[npc.user_id]
+    assert saved.total_exp == fight_exp(
+        fighter.damage_dealt,
+        npc.level,
+        max(one.level for one in session.enemies.values()),
+        sum(one.max_hp for one in session.fighters.values()),
+        len(session.fighters),
+    )
     # Денег бойцу не платят: кошель делят люди
     assert saved.credits == 0
     assert not await db.list_gear(npc.user_id)
@@ -1355,11 +1362,17 @@ async def test_a_lost_raid_pays_the_squad_fighter_nothing(bot, db):
     await service.shutdown()
 
 
-async def test_the_raid_ends_when_the_last_person_falls(bot, db):
-    """Бойцы отряда одни банду не добивают: рейд — дело людей."""
+async def test_the_squad_finishes_the_raid_without_its_owner(bot, db):
+    """Хозяина вынесли — отряд доигрывает бой до победы.
+
+    Волны при этом идут сами: кнопок у бойцов нет, и закрывать волну
+    некому. Проверяем, что рейд не встаёт и доходит до итога, а боец
+    получает своё — он эту банду и добил.
+    """
     service = make_service(bot, db)
     players, npc, session = await raid_with_a_companion(service, db)
-    toughen(session, hp=5_000)
+    # Банда на один удар, люди лежат — остаётся один боец отряда
+    weaken(session)
     for player in players:
         session.fighters[player.user_id].hp = 0
     assert session.fighters[npc.user_id].alive
@@ -1367,23 +1380,87 @@ async def test_the_raid_ends_when_the_last_person_falls(bot, db):
     await service.skip_the_rest(session)
 
     assert service.raid_of_user(players[0].user_id) is None
-    # Рейд кончился проигрышем, и кончился сразу: боец остался на ногах
-    # и банду не добивал. Опыта ему за это не идёт
-    assert session.fighters[npc.user_id].alive
-    assert (await db.get_player(npc.user_id)).total_exp == 0
-    said = bot.texts[-1]
-    assert "Отряд кончился" in said, said
-    assert "легла" not in said, "это не победа"
+    assert (await db.get_player(npc.user_id)).total_exp > 0
+    assert any("Противник повержен" in text for text in bot.texts)
     await service.shutdown()
 
 
-async def test_the_result_counts_people_not_the_squad(bot, db):
-    """«Ушли своими ногами N из M» считает людей: боец в счёт не идёт."""
+async def test_a_squad_wiped_out_loses_the_raid(bot, db):
+    """Лёг и отряд — рейд проигран: доигрывать больше некем."""
+    service = make_service(bot, db)
+    players, npc, session = await raid_with_a_companion(service, db)
+    toughen(session, hp=5_000)
+    for one in session.fighters.values():
+        one.hp = 0
+
+    await service.skip_the_rest(session)
+
+    assert service.raid_of_user(players[0].user_id) is None
+    assert (await db.get_player(npc.user_id)).total_exp == 0
+    assert any("Отряд кончился" in text for text in bot.texts)
+    await service.shutdown()
+
+
+async def test_the_result_counts_everyone_who_went_down(bot, db):
+    """«Ушли своими ногами N из M» считает всех, кто вышел.
+
+    Боец отряда — такая же сторона, как люди: он дерётся, его уносят,
+    и в счёт он идёт наравне.
+    """
     service = make_service(bot, db)
     players, npc, session = await raid_with_a_companion(service, db)
     weaken(session)
     await storm(service, session, players)
 
     said = bot.texts[-1]
-    assert f"из {len(players)}." in said, said
+    assert f"из {len(players) + 1}." in said, said
+    await service.shutdown()
+
+
+async def test_a_whole_squad_goes_down_to_the_cellar(bot, db):
+    """В подвал идут все взятые бойцы — до шести за одним хозяином."""
+    service = make_service(bot, db)
+    players = await fill(db, 2)
+    mine = [
+        await a_companion(db, players[0], name=f"Громила{number}")
+        for number in range(3)
+    ]
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0], chat_title="Клуб")
+    await service.join(lobby.id, players[1])
+    if service.raid_of_user(players[0].user_id) is None:
+        await service.start_now(lobby.id, players[0].user_id)
+    session = service.raid_of_user(players[0].user_id)
+
+    assert all(npc.user_id in session.fighters for npc in mine)
+    assert len(session.fighters) == len(players) + len(mine)
+    # И все отработали первую волну, не дожидаясь нажатий
+    assert all(npc.user_id in session.acted for npc in mine)
+    await service.shutdown()
+
+
+async def test_each_fighter_earns_his_own_in_the_cellar(bot, db):
+    """Опыт у каждого свой: кто больше набил, тот больше и получил."""
+    service = make_service(bot, db)
+    players = await fill(db, 2)
+    mine = [
+        await a_companion(db, players[0], name=f"Громила{number}")
+        for number in range(2)
+    ]
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0], chat_title="Клуб")
+    await service.join(lobby.id, players[1])
+    if service.raid_of_user(players[0].user_id) is None:
+        await service.start_now(lobby.id, players[0].user_id)
+    session = service.raid_of_user(players[0].user_id)
+
+    # Разводим урон руками: броски тут честные, а правило проверяем одно
+    first, second = (session.fighters[npc.user_id] for npc in mine)
+    first.damage_dealt = 400
+    second.damage_dealt = 0
+    weaken(session)
+    await storm(service, session, players)
+
+    paid = [await db.get_player(npc.user_id) for npc in mine]
+    assert paid[0].total_exp > paid[1].total_exp
+    # И младшему всё равно платят: вышел и выиграл — заработал
+    assert paid[1].total_exp > 0
     await service.shutdown()

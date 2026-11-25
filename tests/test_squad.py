@@ -31,7 +31,7 @@ from bot.models import Player
 from bot.squad_service import (
     SquadError,
     add_exp,
-    companion,
+    companions,
     discharge,
     dismiss,
     fighters,
@@ -446,34 +446,43 @@ async def test_the_owner_picks_who_goes_with_him(db):
     player = await enlist(db)
     first, _ = await two_fighters(db, player)
 
-    assert await companion(db, player.user_id) is None
+    assert await companions(db, player.user_id) == []
     await take_along(db, player, first.user_id)
-    mate = await companion(db, player.user_id)
-    assert mate is not None and mate[1].user_id == first.user_id
+    mine = await companions(db, player.user_id)
+    assert [npc.user_id for _, npc in mine] == [first.user_id]
 
 
-async def test_only_one_fighter_goes_at_a_time(db):
-    """Второй выбор сам снимает первого: за хозяином идёт один."""
+async def test_the_whole_squad_can_go_at_once(db):
+    """Взять можно и одного, и весь отряд: выбор у каждого свой.
+
+    Прежде второй выбор снимал первого — за хозяином шёл один боец.
+    Теперь идут все взятые, и снимает их только сам хозяин.
+    """
     player = await enlist(db)
     first, second = await two_fighters(db, player)
 
     await take_along(db, player, first.user_id)
     await take_along(db, player, second.user_id)
 
-    mate = await companion(db, player.user_id)
-    assert mate is not None and mate[1].user_id == second.user_id
+    mine = await companions(db, player.user_id)
+    assert sorted(npc.user_id for _, npc in mine) == sorted(
+        [first.user_id, second.user_id]
+    )
     rows = {row["npc_id"]: row["in_party"] for row in await db.squad_of(player.user_id)}
-    assert rows[first.user_id] == 0 and rows[second.user_id] == 1
+    assert rows[first.user_id] == 1 and rows[second.user_id] == 1
 
 
 async def test_a_fighter_left_behind_stays_home(db):
-    """Оставленный дома в бой не идёт."""
+    """Оставленный дома в бой не идёт, а остальные идут."""
     player = await enlist(db)
-    first, _ = await two_fighters(db, player)
+    first, second = await two_fighters(db, player)
 
     await take_along(db, player, first.user_id)
+    await take_along(db, player, second.user_id)
     await leave_behind(db, player, first.user_id)
-    assert await companion(db, player.user_id) is None
+
+    mine = await companions(db, player.user_id)
+    assert [npc.user_id for _, npc in mine] == [second.user_id]
 
 
 async def test_a_busy_fighter_is_not_taken_along(db):
@@ -496,12 +505,12 @@ async def test_a_fighter_sent_to_a_spot_stops_going_to_fights(db):
     await take_along(db, player, first.user_id)
 
     await db.set_squad_spot(first.user_id, "bar")
-    assert await companion(db, player.user_id) is None
+    assert await companions(db, player.user_id) == []
 
     # Снятый с точки снова идёт в бой: выбор хозяина никуда не делся
     await db.set_squad_spot(first.user_id, "")
-    mate = await companion(db, player.user_id)
-    assert mate is not None and mate[1].user_id == first.user_id
+    mine = await companions(db, player.user_id)
+    assert [npc.user_id for _, npc in mine] == [first.user_id]
 
 
 async def test_a_beaten_fighter_is_left_at_home(db):
@@ -515,7 +524,7 @@ async def test_a_beaten_fighter_is_left_at_home(db):
     first.set_hp(1, WEEK)
     await db.save_player(first)
     assert not first.can_fight(WEEK)
-    assert await companion(db, player.user_id, WEEK) is None
+    assert await companions(db, player.user_id, WEEK) == []
 
 
 async def test_another_mans_fighter_cannot_be_taken_along(db):
@@ -568,3 +577,21 @@ async def test_the_squad_window_takes_a_fighter_along(db):
         )
         body = await back.json()
         assert all(not row["in_party"] for row in body["rows"])
+
+
+# ---------- плата бойцу за бой ----------
+
+
+def test_a_fighter_is_paid_by_his_level_and_his_damage():
+    """Больше набил — больше получил, но ниже ставки плата не падает."""
+    from bot.game.squad import fight_exp
+
+    quiet = fight_exp(0, 5, 5, 600, 3)
+    busy = fight_exp(400, 5, 5, 600, 3)
+    assert busy > quiet, "урон должен платить"
+    # Ставка — от уровня: пятый зарабатывает больше второго
+    assert fight_exp(0, 5, 5, 600, 3) > fight_exp(0, 2, 2, 600, 3)
+    # И старший соперник поднимает ставку, как у людей
+    assert fight_exp(0, 5, 9, 600, 3) > quiet
+    # Ничего не набил — всё равно платят: вышел и выиграл
+    assert quiet > 0
