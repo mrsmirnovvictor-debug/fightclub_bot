@@ -4281,10 +4281,16 @@ function fightCall(challenge, data) {
   const said = document.createElement("span");
   said.textContent =
     challenge.mode.emoji + " " + challenge.challenger.emoji + " " +
-    challenge.challenger.name + " [" + challenge.challenger.level + "] — " +
-    challenge.mode.title + (challenge.personal ? ", лично тебе" : "");
-  line.appendChild(said);
-  line.appendChild(rivalInfo(challenge.challenger));
+    challenge.challenger.name + " [" + challenge.challenger.level + "]";
+  // Значок — сразу за уровнем, как в списке клуба и в доме: имя,
+  // уровень, карточка. Режим боя идёт за ним: это про бой, а не про
+  // того, кто зовёт, и между ником и его карточкой ему не место
+  line.append(said, rivalInfo(challenge.challenger));
+  const mode = document.createElement("span");
+  mode.className = "fight-mode";
+  mode.textContent = "— " + challenge.mode.title
+    + (challenge.personal ? ", лично тебе" : "");
+  line.appendChild(mode);
   card.appendChild(line);
   // У заявки Тренера есть подпись: свободен — про отражение, занято —
   // почему сейчас нельзя. Без неё совпадение класса с твоим читалось
@@ -18385,7 +18391,9 @@ function inmatesBox(data) {
     line.className = "neighbour-head";
     const name = document.createElement("span");
     name.className = "neighbour-name";
-    name.textContent = one.name + (one.mine ? " · ты" : "");
+    name.textContent =
+      one.name + (one.level ? " [" + one.level + "]" : "")
+      + (one.mine ? " · ты" : "");
     // Часы у каждого свои: час выхода приезжает с сервера, секунды
     // отсчитывает страница — как у сбора в рейд
     const left = document.createElement("span");

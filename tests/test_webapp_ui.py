@@ -14412,7 +14412,10 @@ async def test_the_prison_counts_the_term_and_lists_the_inmates(server, db):
         rows = page.locator("#prison .neighbour")
         assert await rows.count() == 2
         names = await rows.locator(".neighbour-name").all_inner_texts()
-        assert "Марла · ты" in names and "Тайлер" in names
+        # Уровень стоит в строке, а за ним значок карточки: сидящий —
+        # такой же боец, и смотрят его так же, как в клубе и в доме
+        assert "Марла [10] · ты" in names and "Тайлер [10]" in names
+        assert await rows.locator(".fighter-info").count() == 2
         # Своя строка обведена: себя в списке ищут первым делом
         assert await page.locator("#prison .neighbour.me").count() == 1
         said = await page.locator("#prison-body").inner_text()
@@ -22580,6 +22583,61 @@ async def test_the_standoff_lets_you_read_the_rival_before_the_gong(server):
         await page.locator(".fight-side:not(.you) .fighter-info").click()
         await page.wait_for_selector(".sheet-doll")
         assert "Марла" in await page.locator("#sheet-title").inner_text()
+        await browser.close()
+
+
+async def test_the_info_sign_stands_right_after_the_level(server):
+    """Значок ℹ️ стоит сразу за уровнем, а не в конце строки.
+
+    Строка читается одной мыслью: кто, какого уровня, вот его карточка.
+    Режим боя — про бой, а не про того, кто зовёт, и между ником и его
+    карточкой ему не место.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_training(pw, server, trainer_call())
+
+        line = await page.locator(".fight-card .fight-line").inner_text()
+
+        assert "Тренер [5]" in line, line
+        assert line.index("[5]") < line.index("ℹ️") < line.index("кулачный"), line
+        await browser.close()
+
+
+async def test_the_sign_in_the_house_holds_on_to_the_name(server, db):
+    """В доме значок держится имени, а служба уходит к правому краю.
+
+    Строка дома шире имени, и значок, поставленный в середину, читался
+    бы как отдельный орган управления, а не как продолжение имени.
+    """
+    from bot.robbery_service import RobberyService
+    from bot.webapp.crowd import build_crowd
+    from tests.test_robbery import NOW, make_player as a_man
+
+    me = a_man(42, "Тайлер", where="bar")
+    me.seen_at = NOW
+    await db.save_player(me)
+    one = a_man(50, "Прохожий", where="bar")
+    one.seen_at = NOW
+    await db.save_player(one)
+
+    service = RobberyService(db)
+    try:
+        board = await build_crowd(db, me, service, NOW)
+    finally:
+        await service.close()
+
+    async with async_playwright() as pw:
+        browser, page = await open_crowd(pw, server, me, board)
+
+        row = page.locator("#crowd .neighbour").first
+        name = await row.locator(".neighbour-name").bounding_box()
+        sign = await row.locator(".fighter-info").bounding_box()
+        head = await row.locator(".neighbour-head").bounding_box()
+
+        gap = sign["x"] - (name["x"] + name["width"])
+        assert 0 <= gap <= 12, gap
+        # И до правого края строки значку далеко: он не уехал в конец
+        assert head["x"] + head["width"] - (sign["x"] + sign["width"]) > 40
         await browser.close()
 
 
