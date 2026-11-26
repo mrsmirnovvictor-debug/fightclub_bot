@@ -917,13 +917,19 @@ async def choose_humans(service: BattleService, session) -> None:
 
 
 async def a_team_fight(bot, db, companions: tuple[int, ...] = (0,), each: int = 1):
-    """Бой два на два, где у названных игроков есть бойцы в отряде.
+    """Бой, в котором у названных игроков есть бойцы в отряде.
 
     `each` — сколько бойцов берёт с собой каждый из названных: за
     хозяином идёт от одного до всего отряда.
+
+    Сторона считается вместе с бойцами, поэтому размер стороны берём с
+    запасом — два человека плюс взятые бойцы, — а сторону без бойцов
+    добираем людьми до того же числа мест: пока места свободны, состав
+    не полон и гонга нет.
     """
     service = make_service(bot, db)
-    players = await fill(db, 4)
+    size = 2 + each
+    players = await fill(db, 2 * size)
     mine = {}
     for number in companions:
         taken = [
@@ -932,10 +938,16 @@ async def a_team_fight(bot, db, companions: tuple[int, ...] = (0,), each: int = 
         ]
         mine[number] = taken[0] if each == 1 else taken
     lobby = await service.open_lobby(
-        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=size
     )
     for player, team in ((players[1], RED), (players[2], BLUE), (players[3], BLUE)):
         await service.join(lobby.id, player, team)
+    spare = list(players[4:])
+    while spare and service.lobby_of_user(players[0].user_id) is not None:
+        team = RED if lobby.free_in(RED) else BLUE
+        if not lobby.free_in(team):
+            break
+        await service.join(lobby.id, spare.pop(0), team)
     return service, players, mine
 
 
@@ -1056,12 +1068,17 @@ async def test_a_won_group_fight_grows_the_squad_fighter(bot, db):
 async def test_a_squad_fighter_does_not_grow_past_his_owner(bot, db):
     """Потолок хозяина держит и здесь: опыт лежит, уровень не растёт."""
     service = make_service(bot, db)
-    players = await fill(db, 4, level=1)
+    players = await fill(db, 5, level=1)
     npc = await a_companion(db, players[0], level=1)
+    # Сторона на троих: хозяин, его боец и ещё один человек. Вторую
+    # добираем до тех же трёх мест, иначе состав не полон и гонга нет
     lobby = await service.open_lobby(
-        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2, levels=(1, 3)
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=3, levels=(1, 3)
     )
-    for player, team in ((players[1], RED), (players[2], BLUE), (players[3], BLUE)):
+    for player, team in (
+        (players[1], RED), (players[2], BLUE), (players[3], BLUE),
+        (players[4], BLUE),
+    ):
         await service.join(lobby.id, player, team)
     session = service.battle_in_chat(CHAT_ID, THREAD_ID)
 
@@ -1109,8 +1126,10 @@ async def test_a_round_with_nobody_to_press_counts_itself(bot, db):
     """
     service, players, mine = await a_team_fight(bot, db, companions=(0, 2))
     session = service.battle_in_chat(CHAT_ID, THREAD_ID)
-    for player in players:
-        session.fighters[player.user_id].hp = 0
+    # Людей вынесли, бойцы отряда стоят: отрицательные номера — это они
+    for user_id in session.fighters:
+        if user_id > 0:
+            session.fighters[user_id].hp = 0
 
     await service._start_round(session)
 

@@ -1242,6 +1242,13 @@ def _raid_spoils_line(session, outcome, prizes: dict[int, list[str]]) -> str:
     return "🎁 Набившему больше всех кое-что досталось."
 
 
+def _with_party(lobby, user_id: int) -> str:
+    """Ник записавшегося и сколько бойцов он привёл: «Тайлер (+2)»."""
+    held = len(lobby.parties.get(user_id, ()))
+    name = esc(lobby.names[user_id])
+    return f"{name} (+{held})" if held else name
+
+
 def lobby_card(lobby, timeout: int) -> str:
     """Объявление о сборе: кто уже записался, кого ждём и до каких пор."""
     from bot.game.battle import BLUE, RED, BattleKind, team_name
@@ -1257,8 +1264,13 @@ def lobby_card(lobby, timeout: int) -> str:
     if lobby.kind is BattleKind.TEAM:
         for team in (RED, BLUE):
             side = lobby.side(team)
-            names = ", ".join(esc(lobby.names[user_id]) for user_id in side) or "—"
-            lines.append(f"{team_name(team)} ({len(side)}/{lobby.size}): {names}")
+            # Бойцы отряда места занимают, но имён у них тут нет: к
+            # нику хозяина дописываем, сколько он привёл. Иначе счёт
+            # «3/3» при двух именах читался бы как ошибка
+            names = ", ".join(_with_party(lobby, user_id) for user_id in side) or "—"
+            lines.append(
+                f"{team_name(team)} ({lobby.side_total(team)}/{lobby.size}): {names}"
+            )
     else:
         names = ", ".join(esc(name) for name in lobby.names.values()) or "—"
         lines.append(f"Записались ({lobby.total}/{lobby.size}): {names}")

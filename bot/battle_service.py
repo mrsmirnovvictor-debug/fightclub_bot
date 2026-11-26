@@ -137,6 +137,11 @@ class Lobby:
     chat_title: str = ""
     members: dict[int, int] = field(default_factory=dict)  # боец → сторона
     names: dict[int, str] = field(default_factory=dict)
+    # Бойцы отряда, с которыми человек записался: хозяин → номера его
+    # бойцов. Это снимок на миг записи, а не взгляд в отряд: место на
+    # стороне занято с этой секунды, и переиграть состав отряда после
+    # записи нельзя — с кем записался, с тем и выйдешь
+    parties: dict[int, tuple[int, ...]] = field(default_factory=dict)
     message_id: int | None = None
     task: asyncio.Task | None = None
     # Когда объявили сбор: по этой метке считается обратный отсчёт до
@@ -150,6 +155,17 @@ class Lobby:
 
     @property
     def total(self) -> int:
+        """Сколько мест занято: люди и бойцы, которых они привели.
+
+        Боец отряда выходит в бой наравне с человеком и место в составе
+        занимает своё: сторона из двоих с четырьмя бойцами против
+        стороны из двоих — это не бой, а избиение.
+        """
+        return sum(1 + len(self.parties.get(one, ())) for one in self.members)
+
+    @property
+    def people(self) -> int:
+        """Сколько живых людей записалось. Кнопки считают по ним."""
         return len(self.members)
 
     def seconds_left(self) -> int:
@@ -168,10 +184,20 @@ class Lobby:
     def side(self, team: int) -> list[int]:
         return [user_id for user_id, value in self.members.items() if value == team]
 
+    def side_total(self, team: int) -> int:
+        """Сколько мест занято на этой стороне: люди и их бойцы."""
+        return sum(
+            1 + len(self.parties.get(user_id, ())) for user_id in self.side(team)
+        )
+
+    def free_in(self, team: int) -> int:
+        """Сколько мест на стороне ещё свободно."""
+        return max(0, self.size - self.side_total(team))
+
     @property
     def is_full(self) -> bool:
         if self.kind is BattleKind.TEAM:
-            return len(self.side(RED)) == self.size and len(self.side(BLUE)) == self.size
+            return not self.free_in(RED) and not self.free_in(BLUE)
         return self.total >= self.size
 
     @property
@@ -335,6 +361,7 @@ class BattleService:
         )
         lobby.members[opener.user_id] = RED
         lobby.names[opener.user_id] = opener.nickname
+        lobby.parties[opener.user_id] = await self._party_for(lobby, opener, RED)
         self._lobbies[lobby.id] = lobby
         if lobby.key is not None:
             self._by_chat[lobby.key] = lobby.id
@@ -349,6 +376,30 @@ class BattleService:
         lobby.message_id = message.message_id if message else None
         lobby.task = asyncio.create_task(self._lobby_timer(lobby))
         return lobby
+
+    async def _party_for(
+        self, lobby: Lobby, player: Player, team: int
+    ) -> tuple[int, ...]:
+        """Кого человек берёт с собой — столько, сколько влезло на сторону.
+
+        Места на стороне считаются вместе с бойцами, поэтому шесть
+        бойцов в бой трое на трое не поместятся: берём сколько влезло,
+        остальные остаются дома. Снимок делается один раз, на записи:
+        отряд можно переиграть, а занятое место — уже занято.
+
+        В королевской битве не берём никого: там каждый сам за себя, и
+        боец вышел бы против собственного хозяина.
+        """
+        if lobby.kind is not BattleKind.TEAM:
+            return ()
+        from bot.squad_service import companions
+
+        # Сам человек в составе уже стоит, и его место посчитано
+        room = lobby.free_in(team)
+        if room <= 0:
+            return ()
+        held = await companions(self.db, player.user_id)
+        return tuple(npc.user_id for _, npc in held[:room])
 
     def _check_size(self, kind: BattleKind, size: int) -> int:
         if kind is BattleKind.TEAM:
@@ -380,13 +431,15 @@ class BattleService:
                 f"у тебя {player.level}."
             )
         if lobby.kind is BattleKind.TEAM:
-            if len(lobby.side(team)) >= lobby.size:
+            if not lobby.free_in(team):
                 raise BattleError(f"{team_name(team)} уже в полном составе.")
         elif lobby.total >= lobby.size:
             raise BattleError("Мест больше нет.")
 
-        lobby.members[player.user_id] = team if lobby.kind is BattleKind.TEAM else RED
+        side = team if lobby.kind is BattleKind.TEAM else RED
+        lobby.members[player.user_id] = side
         lobby.names[player.user_id] = player.nickname
+        lobby.parties[player.user_id] = await self._party_for(lobby, player, side)
         self._busy[player.user_id] = "lobby"
 
         if lobby.is_full:
@@ -402,6 +455,9 @@ class BattleService:
         if user_id not in lobby.members:
             raise BattleError("Тебя и так нет в составе.")
         lobby.members.pop(user_id, None)
+        # Ушёл сам — уходят и его бойцы: место на стороне освобождается
+        # целиком, иначе оно так и держалось бы за ушедшим
+        lobby.parties.pop(user_id, None)
         self._busy.pop(user_id, None)
         if not lobby.members:
             await self._cancel_lobby(lobby, "Все разошлись — сбор закрыт.")
@@ -447,9 +503,8 @@ class BattleService:
     # ---------- бой ----------
 
     async def _start_from_lobby(self, lobby: Lobby) -> BattleSession | None:
-        from bot.squad_service import companions
-
         members = dict(lobby.members)
+        parties = dict(lobby.parties)
         self._forget_lobby(lobby)
 
         players: dict[int, Player] = {}
@@ -459,22 +514,27 @@ class BattleService:
                 players[user_id] = player
         teams = {user_id: members[user_id] for user_id in players}
 
-        # Бойцы отряда выходят вместе с хозяевами и за их сторону —
-        # все, кого хозяин взял, от одного до полного отряда. В
-        # мясорубке их не берут вовсе: там каждый сам за себя, и боец
-        # вышел бы против собственного хозяина
+        # Бойцы отряда выходят вместе с хозяевами и за их сторону — те
+        # самые, с которыми хозяин записался: место на стороне они
+        # заняли ещё тогда, и подменять их теми, кого он пометил позже,
+        # значило бы менять состав после гонга
         faces: dict[int, str] = {}
-        if lobby.kind is BattleKind.TEAM:
-            from bot.game.art import recruit_face
+        from bot.game.art import recruit_face
 
-            for user_id in list(players):
-                for row, npc in await companions(self.db, user_id):
-                    players[npc.user_id] = npc
-                    teams[npc.user_id] = teams[user_id]
-                    # Лицо — то, которое стояло на витрине при найме:
-                    # у бойца нет образа, и классовый аватар показал бы
-                    # в бою не того, кого хозяин покупал
-                    faces[npc.user_id] = recruit_face(int(row["face"]))
+        for user_id in list(players):
+            for npc_id in parties.get(user_id, ()):
+                npc = await self.db.get_player(npc_id)
+                row = await self.db.squad_row(npc_id)
+                if npc is None or row is None or not npc.can_fight():
+                    # Слёг после записи — выходят без него: лечить
+                    # бойца хозяин может только до боя
+                    continue
+                players[npc_id] = npc
+                teams[npc_id] = teams[user_id]
+                # Лицо — то, которое стояло на витрине при найме:
+                # у бойца нет образа, и классовый аватар показал бы
+                # в бою не того, кого хозяин покупал
+                faces[npc_id] = recruit_face(int(row["face"]))
 
         if not self._enough(lobby.kind, teams):
             await self.voice.edit(

@@ -1359,11 +1359,12 @@ body.dark .bar-tab.active .bar-icon {
   border: 1px solid var(--accent);
 }
 
-/* Кнопка, которая выводит на ринг. Голубой с фиолетовым — та же пара,
-   что на шкале опыта и на выбранном приёме: в клубе это цвет самого
-   дела, а не украшение. Ровная заливка акцентом осталась у служебных
-   кнопок — «Отозвать», «Завершить бой», — и разница между ними теперь
-   видна до чтения надписи */
+/* Кнопка боевого пути. Голубой с фиолетовым — та же пара, что на шкале
+   опыта и на выбранном приёме: в клубе это цвет самого дела, а не
+   украшение. Так выглядит весь путь до боя и обратно — «Вызвать»,
+   «Принять вызов», «В команду», «Выйти на ринг», «Вперёд!»,
+   «Завершить бой», — чтобы кнопка читалась до надписи. Отказы
+   остаются обведёнными: «Отозвать», «Выйти из состава» */
 .btn.neon {
   border: 1px solid rgba(120, 200, 255, 0.45);
   background: linear-gradient(135deg, var(--cyan), var(--violet));
@@ -1384,6 +1385,72 @@ body.dark .bar-tab.active .bar-icon {
   border-color: transparent;
   cursor: not-allowed;
   transform: none;
+}
+
+/* ---------- состав группового боя ---------- */
+/* Две стороны — два столбца: так видно, куда тебя зовут и кого там уже
+   набрали. Сплошной строкой стороны читались одна за другой, и
+   выбирать приходилось по надписи кнопки. На узком экране столбцы
+   остаются столбцами: сторон всего две, и в 320 пикселей они влезают */
+.lineup {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 8px 0;
+}
+.lineup.single { grid-template-columns: 1fr; }
+/* Цвет стороны приглушённый: он подсказывает, где чьё, а не кричит.
+   Яркая заливка спорила бы с кнопкой, которая под ней и стоит */
+.lineup-side {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.lineup-side.red {
+  border-color: rgba(255, 110, 110, 0.35);
+  background: rgba(255, 90, 90, 0.07);
+}
+.lineup-side.blue {
+  border-color: rgba(110, 170, 255, 0.35);
+  background: rgba(90, 150, 255, 0.07);
+}
+.lineup-head { margin: 0; font-weight: 700; font-size: 13px; }
+.lineup-rows { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; }
+/* Каждый с новой строки: имя слева, значок карточки сразу за уровнем */
+.lineup-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+}
+.lineup-name { overflow-wrap: anywhere; }
+/* Боец отряда — та же строка, только приглушённая: он дерётся наравне
+   с человеком, но кнопок не жмёт и в бой его привели */
+.lineup-row.npc { color: var(--muted); }
+.lineup-empty { margin: 0; color: var(--muted); font-size: 13px; }
+/* Значок карточки в составе меньше: строк в столбце до десяти, и
+   кружок в 26 пикселей занимал бы половину ширины */
+.lineup-row .fighter-info { width: 22px; height: 22px; font-size: 12px; }
+
+/* Часы сбора и полоса под ними: сколько осталось, видно не читая */
+.lobby-wait { margin: 8px 0; }
+.lobby-bar {
+  height: 4px;
+  margin-top: 4px;
+  border-radius: 2px;
+  background: var(--hp-track);
+  overflow: hidden;
+}
+.lobby-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--cyan), var(--violet));
+  transition: width 0.25s linear;
 }
 
 /* ---------- больница ---------- */

@@ -6239,46 +6239,114 @@ def a_lineup(**over) -> dict:
         "mine": True, "joined": True, "in_app": True,
         "teams": [
             {
-                "team": 0, "title": "Красные", "free": 1,
+                "team": 0, "title": "🔴 Красные", "free": 0,
                 "members": [
                     {
-                        "user_id": 42, "name": "Тайлер",
+                        "user_id": 42, "name": "Тайлер", "level": 5,
+                        "emoji": "⚔️", "fclass": "Воин",
                         "squad": [
                             {"user_id": -101, "name": "Громила", "level": 4,
-                             "stars": 2, "owner_id": 42},
+                             "emoji": "🛡", "fclass": "Танк", "owner_id": 42},
                         ],
                     }
                 ],
             },
             {
-                "team": 1, "title": "Синие", "free": 1,
-                "members": [{"user_id": 43, "name": "Марла", "squad": []}],
+                "team": 1, "title": "🔵 Синие", "free": 1,
+                "members": [
+                    {"user_id": 43, "name": "Марла", "level": 4,
+                     "emoji": "🗡", "fclass": "Ассасин", "squad": []},
+                ],
             },
         ],
     }
     lobby.update(over)
-    return {**EMPTY_BATTLE, "lobby": lobby}
+    # Свой сбор приезжает полем `lobby`, чужие — списком `lobbies`:
+    # кнопки «В команду» стоят только под чужим, в своём их нет
+    if lobby["mine"] or lobby["joined"]:
+        return {**EMPTY_BATTLE, "lobby": lobby}
+    return {**EMPTY_BATTLE, "lobbies": [lobby]}
 
 
-async def test_the_lineup_counts_down_and_shows_the_fighters(server):
-    """В сборе тикают часы до начала, а рядом с хозяином стоит его боец.
+async def test_the_lineup_counts_down_to_the_gong(server):
+    """Часы до гонга тикают сами и тянут за собой полосу.
 
     Ждать вслепую нечестно: срок назначает созвавший, и по часам
-    решают, успеешь ли. А боец отряда выйдет за ту же сторону — сторона
-    из двоих с бойцом не равна стороне из двоих.
+    решают, успеешь ли. Считает их сама страница — от того мига, когда
+    сбор впервые увидели, — поэтому секунда на экране это секунда, а не
+    «раз в два опроса».
     """
     async with async_playwright() as pw:
         browser, page = await open_squad(pw, server, a_lineup())
 
         clock = page.locator("#battle-body .lobby-clock")
-        assert await clock.count() == 1
         said = await clock.inner_text()
-        assert "До начала" in said and "2:05" in said, said
+        assert "До начала" in said and "2:0" in said, said
+        # Полоса под часами показывает тот же остаток
+        width = await page.locator("#battle-body .lobby-fill").evaluate(
+            "one => one.style.width"
+        )
+        assert width.endswith("%") and 35 < float(width[:-1]) < 50, width
 
-        rows = await page.locator("#battle-body .fight-row-note").all_inner_texts()
-        joined = "\n".join(rows)
-        assert "Красные: Тайлер (Громила [4])" in joined, joined
-        assert "Синие: Марла" in joined, joined
+        # Секунда прошла — на экране это видно без нового ответа сервера
+        await page.wait_for_function(
+            "() => document.querySelector('#battle-body .lobby-clock')"
+            ".textContent !== " + json.dumps(said)
+        )
+        await browser.close()
+
+
+async def test_the_lineup_stands_in_two_coloured_columns(server):
+    """Стороны — два столбца, и в каждом свои строки и своя кнопка.
+
+    Сплошной строкой стороны читались одна за другой, и выбирать
+    приходилось по надписи кнопки. Боец отряда стоит строкой под
+    хозяином: в бою он дерётся наравне с человеком и место на стороне
+    занимает своё.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_squad(
+            pw, server, a_lineup(mine=False, joined=False)
+        )
+
+        sides = page.locator("#battle-body .lineup-side")
+        assert await sides.count() == 2
+        assert await page.locator(".lineup-side.red").count() == 1
+        assert await page.locator(".lineup-side.blue").count() == 1
+
+        red = page.locator(".lineup-side.red")
+        rows = await red.locator(".lineup-row .lineup-name").all_inner_texts()
+        assert rows == ["⚔️ Тайлер [5]", "🛡 Громила [4]"], rows
+        # Карточка открывается у каждого — и у человека, и у бойца
+        assert await red.locator(".lineup-row .fighter-info").count() == 2
+        assert "Красные · 2/2" in await red.locator(".lineup-head").inner_text()
+
+        # Кнопка под списком, и на полной стороне она погашена
+        assert await red.get_by_role("button", name="В команду").is_disabled()
+        blue = page.locator(".lineup-side.blue")
+        assert await blue.get_by_role("button", name="В команду").is_enabled()
+        await browser.close()
+
+
+async def test_the_fight_buttons_wear_the_club_colours(server):
+    """Кнопки боевого пути — в одном виде, включая выход на ринг.
+
+    Голубой с фиолетовым — цвет самого дела: по нему кнопка читается до
+    надписи. Прежде половина пути была ровной заливкой акцентом, и
+    «В команду» выглядела служебной кнопкой.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_squad(
+            pw, server, a_lineup(mine=False, joined=False)
+        )
+
+        join = page.locator(".lineup-side.blue .btn").first
+        assert "neon" in (await join.get_attribute("class"))
+
+        # И на идущем бою: «Вперёд!» того же вида
+        await page.evaluate("(data) => renderBattle(data)", battle_with_round())
+        go = page.get_by_role("button", name="Вперёд!")
+        assert "neon" in (await go.get_attribute("class"))
         await browser.close()
 
 

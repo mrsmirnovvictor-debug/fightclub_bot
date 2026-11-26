@@ -4644,7 +4644,7 @@ function turnForm(data) {
   const go = document.createElement("button");
   go.type = "button";
   go.id = "turn-go";
-  go.className = "btn wide";
+  go.className = "btn neon wide";
   go.textContent = "Вперёд!";
   go.disabled = !draftReady(hands);
   go.addEventListener("click", () => {
@@ -5028,7 +5028,7 @@ function standoff(duel) {
   if (duel.yours_to_start) {
     const go = document.createElement("button");
     go.type = "button";
-    go.className = "btn wide";
+    go.className = "btn neon wide";
     go.textContent = "🥊 Выйти на ринг";
     go.addEventListener("click", () => fightAction({ action: "go" }));
     box.appendChild(go);
@@ -5057,7 +5057,7 @@ function finishCard(duel) {
   });
   const close = document.createElement("button");
   close.type = "button";
-  close.className = "btn wide";
+  close.className = "btn neon wide";
   close.textContent = "Завершить бой";
   close.addEventListener("click", () => fightAction({ action: "done" }));
   box.appendChild(close);
@@ -5159,7 +5159,7 @@ function startWatchingRaid() {
   loadRaid();
   armRaidPoll(RAID_POLL_LIVE);
   // Часы тикают чаще, чем ходит опрос: секунда на экране должна быть секундой
-  if (!raidClock) raidClock = setInterval(paintClocks, 1000);
+  if (!raidClock) raidClock = setInterval(paintClocks, 250);
 }
 
 function armRaidPoll(rate) {
@@ -5211,8 +5211,13 @@ function paintClocks() {
   // одно и то же, а разнятся одним словом, и слово лежит в самой строке
   document.querySelectorAll(".lobby-clock").forEach((node) => {
     const until = Number(node.dataset.until || 0);
-    const left = Math.max(0, Math.round((until - Date.now()) / 1000));
+    const left = leftBy(until);
     node.textContent = (node.dataset.word || "⏳ Через ") + clockText(left);
+    // Полоса под часами, если она есть: тот же остаток, но видно его
+    // не читая — сколько прошло и сколько ещё стоять
+    const bar = node.parentNode
+      && node.parentNode.querySelector(".lobby-fill");
+    if (bar) bar.style.width = barWidth(left, Number(node.dataset.whole || 0));
   });
 }
 
@@ -5539,7 +5544,7 @@ function raidOpenForm(data) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.id = "raid-open";
-  btn.className = "btn wide";
+  btn.className = "btn neon wide";
   btn.textContent = "🩸 Собрать отряд";
   btn.disabled = !data.can_fight || !gate.open || gate.won;
   btn.addEventListener("click", () =>
@@ -5584,7 +5589,7 @@ function raidLobby(lobby, mine) {
 
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.className = mine ? "btn secondary wide" : "btn wide";
+  btn.className = mine ? "btn secondary wide" : "btn neon wide";
   btn.textContent = mine ? "Выйти из отряда" : "🩸 В отряд";
   btn.addEventListener("click", () => {
     if (mine) {
@@ -5929,7 +5934,7 @@ function raidTurnForm(data) {
   const go = document.createElement("button");
   go.type = "button";
   go.id = "raid-go";
-  go.className = "btn wide";
+  go.className = "btn neon wide";
   go.textContent = "Вперёд!";
   go.disabled = !raidReady(hands);
   go.addEventListener("click", () => {
@@ -5968,7 +5973,7 @@ function raidFinish(raid) {
   });
   const close = document.createElement("button");
   close.type = "button";
-  close.className = "btn wide";
+  close.className = "btn neon wide";
   close.textContent = "Завершить рейд";
   close.addEventListener("click", () => raidAction({ action: "done" }));
   box.appendChild(close);
@@ -6009,7 +6014,7 @@ function startWatchingBattle() {
   battleTimer = setInterval(loadBattle, 2000);
   // Часы тикают чаще, чем ходит опрос: секунда на экране должна быть
   // секундой. Часы те же, что у сбора в подвал
-  if (!raidClock) raidClock = setInterval(paintClocks, 1000);
+  if (!raidClock) raidClock = setInterval(paintClocks, 250);
 }
 
 function stopWatchingBattle() {
@@ -6072,6 +6077,12 @@ function renderBattle(data) {
   if (data.battle && data.battle.finished && !battleWasOver) catchUp();
   battleWasOver = Boolean(data.battle && data.battle.finished);
   battleData = data;
+  // Часы сбора помним по его номеру: сбор ушёл — и память о нём не нужна
+  const live = [data.lobby].concat(data.lobbies || []).filter(Boolean);
+  const ids = live.map((one) => String(one.id));
+  Object.keys(battleClocks).forEach((id) => {
+    if (!ids.includes(id)) delete battleClocks[id];
+  });
   const body = el("battle-body");
   body.textContent = "";
   if (data.battle) {
@@ -6157,7 +6168,7 @@ function battleOpenForm(data) {
 
   const go = document.createElement("button");
   go.type = "button";
-  go.className = "btn wide";
+  go.className = "btn neon wide";
   go.textContent = "⚔️ Собрать состав";
   go.disabled = !data.can_fight;
   go.addEventListener("click", () => battleAction({
@@ -6202,52 +6213,139 @@ function battleLobby(lobby, mine) {
   head.textContent =
     lobby.emoji + " " + lobby.kind_title + " " + lobby.mode.emoji + " — " +
     lobby.total + "/" + lobby.capacity +
-    " · уровни " + lobby.min_level + "–" + lobby.max_level +
-    " · сбор " + lobby.wait_text;
+    " · уровни " + lobby.min_level + "–" + lobby.max_level;
   box.appendChild(head);
 
-  // Часы до начала: сбор ждёт ровно столько, сколько назначил
+  // Часы до гонга с полосой: сбор ждёт ровно столько, сколько назначил
   // созвавший, и ждать вслепую нечестно — по ним и решают, успеешь ли
-  box.appendChild(lobbyClock(lobby, "⏳ До начала: "));
+  box.appendChild(lobbyCountdown(lobby));
 
+  // Командный бой — два столбца, по стороне в каждом: так видно, куда
+  // тебя зовут и кого там уже набрали. Сплошной строкой стороны
+  // читались одна за другой, и выбирать приходилось по надписи кнопки
+  const sides = document.createElement("div");
+  sides.className = "lineup" + (lobby.kind === "team" ? "" : " single");
   lobby.teams.forEach((team) => {
-    const row = document.createElement("p");
-    row.className = "fight-row-note";
-    // Боец отряда стоит рядом с хозяином: в бой он выйдет за ту же
-    // сторону, и сторона из двоих с четырьмя бойцами — это не сторона
-    // из двоих. В составе он не занимает места: места тут для людей
-    const names = team.members
-      .map((one) => {
-        const held = (one.squad || [])
-          .map((npc) => npc.name + " [" + npc.level + "]")
-          .join(", ");
-        return held ? one.name + " (" + held + ")" : one.name;
-      })
-      .join(", ");
-    row.textContent =
-      (lobby.kind === "team" ? team.title + ": " : "") + (names || "пусто");
-    box.appendChild(row);
-    if (mine || lobby.joined) return;
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btn wide";
-    btn.textContent = lobby.kind === "team" ? "В " + team.title : "⚔️ В бой";
-    btn.disabled = team.free <= 0;
-    btn.addEventListener("click", () =>
-      battleAction({ action: "join", lobby_id: lobby.id, team: team.team })
-    );
-    box.appendChild(btn);
+    sides.appendChild(lineupSide(lobby, team, mine));
   });
+  box.appendChild(sides);
 
   if (mine || lobby.joined) {
-    const out = document.createElement("button");
-    out.type = "button";
-    out.className = "btn secondary wide";
-    out.textContent = "Выйти из состава";
-    out.addEventListener("click", () => battleAction({ action: "leave" }));
-    box.appendChild(out);
+    box.appendChild(
+      button("Выйти из состава", {
+        secondary: true,
+        onClick: () => battleAction({ action: "leave" }),
+      })
+    );
   }
   return box;
+}
+
+/** Столбец стороны: кто в ней стоит и кнопка «В команду» под списком. */
+function lineupSide(lobby, team, mine) {
+  const col = document.createElement("section");
+  // Цвет стороны приглушённый: он подсказывает, где чьё, а не кричит
+  col.className = "lineup-side " + (team.team ? "blue" : "red");
+
+  const head = document.createElement("p");
+  head.className = "lineup-head";
+  head.textContent = lobby.kind === "team"
+    ? team.title + " · " + (lobby.size - team.free) + "/" + lobby.size
+    : "Записались · " + lobby.total + "/" + lobby.size;
+  col.appendChild(head);
+
+  const rows = document.createElement("div");
+  rows.className = "lineup-rows";
+  team.members.forEach((one) => {
+    rows.appendChild(lineupRow(one, false));
+    // Боец отряда стоит строкой под хозяином: в бою он дерётся
+    // наравне с человеком и место на стороне занимает своё
+    (one.squad || []).forEach((npc) => rows.appendChild(lineupRow(npc, true)));
+  });
+  if (!team.members.length) {
+    const empty = document.createElement("p");
+    empty.className = "lineup-empty";
+    empty.textContent = "пусто";
+    rows.appendChild(empty);
+  }
+  col.appendChild(rows);
+
+  if (!(mine || lobby.joined)) {
+    col.appendChild(
+      button(lobby.kind === "team" ? "В команду" : "⚔️ В бой", {
+        neon: true,
+        disabled: team.free <= 0,
+        hint: "На этой стороне мест больше нет.",
+        onClick: () =>
+          battleAction({ action: "join", lobby_id: lobby.id, team: team.team }),
+      })
+    );
+  }
+  return col;
+}
+
+/** Строка состава: кто это, какого уровня и его карточка под значком. */
+function lineupRow(one, npc) {
+  const row = document.createElement("p");
+  row.className = "lineup-row" + (npc ? " npc" : "");
+  const said = document.createElement("span");
+  said.className = "lineup-name";
+  said.textContent =
+    (one.emoji ? one.emoji + " " : "") + one.name
+    + (one.level ? " [" + one.level + "]" : "");
+  row.appendChild(said);
+  row.appendChild(rivalInfo(one));
+  return row;
+}
+
+/** Обратный отсчёт до гонга: часы и полоса под ними.
+ *
+ * Часы тикают сами, от своего мига: сервер говорит, сколько осталось,
+ * когда сбор впервые увидели, — дальше страница считает по часам
+ * телефона и не ждёт ответа. Поэтому секунда на экране — это секунда, а
+ * не «раз в два опроса».
+ */
+function lobbyCountdown(lobby) {
+  const box = document.createElement("div");
+  box.className = "lobby-wait";
+  const line = document.createElement("p");
+  line.className = "fight-row-note lobby-clock";
+  const until = battleDeadline(lobby);
+  line.dataset.until = String(until);
+  line.dataset.word = "⏳ До начала: ";
+  line.dataset.whole = String(Math.max(1, lobby.wait || 1));
+  line.textContent = "⏳ До начала: " + clockText(leftBy(until));
+  const bar = document.createElement("div");
+  bar.className = "lobby-bar";
+  const fill = document.createElement("div");
+  fill.className = "lobby-fill";
+  fill.style.width = barWidth(leftBy(until), lobby.wait);
+  bar.appendChild(fill);
+  box.append(line, bar);
+  return box;
+}
+
+// Когда этому сбору выходить. Считается один раз — в тот миг, когда
+// сбор впервые попался на глаза, — и дальше не трогается: иначе часы
+// дёргались бы на каждом ответе сервера
+const battleClocks = {};
+
+function battleDeadline(lobby) {
+  const known = battleClocks[lobby.id];
+  if (known) return known;
+  const left = lobby.seconds_left === undefined ? lobby.wait : lobby.seconds_left;
+  const until = Date.now() + Math.max(0, left) * 1000;
+  battleClocks[lobby.id] = until;
+  return until;
+}
+
+function leftBy(until) {
+  return Math.max(0, Math.round((until - Date.now()) / 1000));
+}
+
+function barWidth(left, whole) {
+  const full = Math.max(1, whole || 1);
+  return (Math.max(0, Math.min(1, left / full)) * 100).toFixed(1) + "%";
 }
 
 function battlePanel(data) {
@@ -6397,7 +6495,7 @@ function battleTurnForm(data) {
   const go = document.createElement("button");
   go.type = "button";
   go.id = "battle-go";
-  go.className = "btn wide";
+  go.className = "btn neon wide";
   go.textContent = "Вперёд!";
   go.disabled = !battleReady(hands);
   go.addEventListener("click", () => {
@@ -6434,7 +6532,7 @@ function battleFinish(battle) {
   });
   const close = document.createElement("button");
   close.type = "button";
-  close.className = "btn wide";
+  close.className = "btn neon wide";
   close.textContent = "Завершить бой";
   close.addEventListener("click", () => battleAction({ action: "done" }));
   box.appendChild(close);
@@ -15485,7 +15583,7 @@ function blackoutFinish(data) {
   });
   const close = document.createElement("button");
   close.type = "button";
-  close.className = "btn wide";
+  close.className = "btn neon wide";
   close.textContent = "Завершить бой";
   close.addEventListener("click", () => blackoutAction({ action: "done" }));
   box.appendChild(close);
@@ -16009,7 +16107,7 @@ function blackoutTurnBox(data) {
   const go = document.createElement("button");
   go.type = "button";
   go.id = "blackout-go";
-  go.className = "btn wide";
+  go.className = "btn neon wide";
   go.textContent = fight.acted ? "Ждём остальных" : "Вперёд!";
   go.disabled = Boolean(fight.acted) || !blackoutReady(hands);
   go.addEventListener("click", () => {
@@ -18895,7 +18993,7 @@ function robberyTurnForm(fight) {
   const go = document.createElement("button");
   go.type = "button";
   go.id = "crowd-go";
-  go.className = "btn wide";
+  go.className = "btn neon wide";
   go.textContent = "Вперёд!";
   go.disabled = !crowdReady(hands);
   go.addEventListener("click", () => {
@@ -19836,7 +19934,7 @@ function siegeTurnForm(siege) {
   const go = document.createElement("button");
   go.type = "button";
   go.id = "turf-go";
-  go.className = "btn wide";
+  go.className = "btn neon wide";
   go.textContent = "Вперёд!";
   go.disabled = !turfReady(hands);
   go.addEventListener("click", () => {

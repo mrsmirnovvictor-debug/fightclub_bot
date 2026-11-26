@@ -47,16 +47,16 @@ KIND_EMOJI = {BattleKind.TEAM: "🤝", BattleKind.ROYALE: "🌪"}
 def lobby_payload(
     lobby: Lobby,
     viewer_id: int,
-    squads: dict[int, list[dict[str, Any]]] | None = None,
+    roster: dict[int, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Сбор состава: кто уже записан, с кем он придёт и сколько ждать.
 
-    `squads` — бойцы отряда, которых записавшиеся берут с собой: номер
-    хозяина → его бойцы. В бою они выйдут за ту же сторону, значит и в
-    составе им место рядом с хозяином: иначе сторона из двоих с
-    четырьмя бойцами читалась бы как сторона из двоих.
+    `roster` — сами записавшиеся и бойцы, которых они привели: номер
+    человека → его строка. Боец выходит в бой наравне с человеком и
+    место на стороне занимает своё, поэтому в составе он стоит строкой,
+    как все, и карточка у него открывается так же.
     """
-    held = squads or {}
+    held = roster or {}
     return {
         "id": lobby.id,
         "kind": lobby.kind.value,
@@ -65,7 +65,10 @@ def lobby_payload(
         "mode": mode_payload(lobby.mode),
         "size": lobby.size,
         "capacity": lobby.capacity,
+        # Мест занято и людей записалось — числа разные: боец отряда
+        # место занимает, но кнопку не нажимает
         "total": lobby.total,
+        "people": lobby.people,
         "min_level": lobby.min_level,
         "max_level": lobby.max_level,
         # Сколько ждут состав и до какого часа: срок у каждого сбора
@@ -82,20 +85,19 @@ def lobby_payload(
             {
                 "team": team,
                 "title": team_name(team),
-                "free": lobby.size - len(lobby.side(team)),
+                "free": lobby.free_in(team),
                 "members": [
-                    {
-                        "user_id": user_id,
-                        "name": lobby.names.get(user_id, "боец"),
-                        # Кого он ведёт с собой: в мясорубке никого —
-                        # там каждый сам за себя, и боец вышел бы
-                        # против собственного хозяина
-                        "squad": (
-                            held.get(user_id, [])
-                            if lobby.kind is BattleKind.TEAM
-                            else []
-                        ),
-                    }
+                    dict(
+                        held.get(user_id)
+                        or {
+                            "user_id": user_id,
+                            "name": lobby.names.get(user_id, "боец"),
+                            "level": 0,
+                            "emoji": "",
+                            "fclass": "",
+                            "squad": [],
+                        }
+                    )
                     for user_id in lobby.side(team)
                 ],
             }
@@ -169,30 +171,49 @@ def battle_payload(session: BattleSession, viewer_id: int) -> dict[str, Any]:
     }
 
 
-async def party_of(db, user_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
-    """Бойцы отряда, которых эти игроки берут с собой: хозяин → бойцы.
+def fighter_line(one: Player, owner_id: int = 0) -> dict[str, Any]:
+    """Строка состава: имя, уровень и класс — всё, что нужно значку ℹ️.
 
-    Спрашивается ровно о тех, кто стоит в показываемых составах:
-    сбор держит до десяти человек, и тянуть отряды всего города ради
-    одной строки незачем.
+    Поля зовутся так же, как в строке вызова на ринге: значок один на
+    весь город, и второго переклада у него быть не должно.
     """
-    from bot.squad_service import companions
+    from bot.game.classes import get_class
 
-    out: dict[int, list[dict[str, Any]]] = {}
-    for user_id in user_ids:
-        held = [
-            {
-                "user_id": npc.user_id,
-                "name": npc.nickname,
-                "level": npc.level,
-                "stars": int(row["stars"]),
-                "owner_id": user_id,
-            }
-            for row, npc in await companions(db, user_id)
-        ]
-        if held:
-            out[user_id] = held
-    return out
+    fclass = get_class(one.class_code)
+    return {
+        "user_id": one.user_id,
+        "name": one.nickname,
+        "level": one.level,
+        "emoji": fclass.emoji,
+        "fclass": fclass.title,
+        "pro": one.is_pro(),
+        "badge": one.badge,
+        "owner_id": owner_id,
+    }
+
+
+async def roster_of(db, lobbies: list[Lobby]) -> dict[int, dict[str, Any]]:
+    """Состав показываемых сборов: сам человек и бойцы, с которыми он вошёл.
+
+    Бойцы берутся из снимка сбора, а не из отряда: место на стороне
+    занято с записи, и пометить дома кого-то другого — не значит
+    поменять состав. Спрашивается ровно о показываемых сборах: тянуть
+    отряды всего города ради одной строки незачем.
+    """
+    rows: dict[int, dict[str, Any]] = {}
+    for lobby in lobbies:
+        for user_id in lobby.members:
+            one = await db.get_player(user_id)
+            if one is None:  # pragma: no cover - записавшегося стёрли
+                continue
+            held = []
+            for npc_id in lobby.parties.get(user_id, ()):
+                npc = await db.get_player(npc_id)
+                if npc is None:  # pragma: no cover - сломанная база
+                    continue
+                held.append(fighter_line(npc, owner_id=user_id))
+            rows[user_id] = dict(fighter_line(one), squad=held)
+    return rows
 
 
 async def build_battle(
@@ -260,15 +281,19 @@ async def build_battle(
         if player.user_id not in lobby.members
     ]
     shown = ([own] if own is not None else []) + others
-    squads = await party_of(
-        db, [user_id for lobby in shown for user_id in lobby.members]
-    )
+    roster = await roster_of(db, shown)
     if own is not None:
-        body["lobby"] = lobby_payload(own, player.user_id, squads)
+        body["lobby"] = lobby_payload(own, player.user_id, roster)
     body["lobbies"] = [
-        lobby_payload(lobby, player.user_id, squads) for lobby in others
+        lobby_payload(lobby, player.user_id, roster) for lobby in others
     ]
     return body
 
 
-__all__ = ["battle_payload", "build_battle", "lobby_payload", "party_of"]
+__all__ = [
+    "battle_payload",
+    "build_battle",
+    "fighter_line",
+    "lobby_payload",
+    "roster_of",
+]

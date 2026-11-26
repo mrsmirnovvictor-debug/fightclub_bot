@@ -161,11 +161,12 @@ async def test_the_lineup_counts_down_to_the_gong(club):
 
 
 async def test_the_lineup_shows_the_fighters_a_man_brings_along(club):
-    """Боец отряда стоит в составе рядом с хозяином.
+    """Боец отряда стоит в составе рядом с хозяином и занимает место.
 
-    В бой он выйдет за ту же сторону, и сторона из двоих с четырьмя
-    бойцами — это не сторона из двоих. Места в составе он при этом не
-    занимает: места тут для людей.
+    В бой он выходит наравне с человеком: сторона из двоих с четырьмя
+    бойцами против стороны из двоих — это не бой, а избиение. Поэтому
+    место на стороне он занимает своё, и свободных мест после его
+    записи меньше.
     """
     client, battles, db = club
     owner = await db.get_player(42)
@@ -178,8 +179,9 @@ async def test_the_lineup_shows_the_fighters_a_man_brings_along(club):
     assert [one["name"] for one in side[0]["squad"]] == ["Громила"]
     assert side[0]["squad"][0]["user_id"] == npc.user_id
     assert side[0]["squad"][0]["level"] == npc.level
-    # Мест в составе он не занимает: счёт идёт по людям
-    assert mine["lobby"]["total"] == 1
+    # Место он занимает своё: в составе двое из четырёх, а людей один
+    assert mine["lobby"]["total"] == 2
+    assert mine["lobby"]["teams"][0]["free"] == 0, "сторона на двоих занята"
     # И чужому глазу он виден так же: в бою он выйдет и против него
     theirs = await state(client, 43)
     held = theirs["lobbies"][0]["teams"][0]["members"][0]["squad"]
