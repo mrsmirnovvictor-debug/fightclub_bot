@@ -101,6 +101,27 @@ def default_slot(player: Player, item: Item) -> Slot:
     return free
 
 
+def _hands_allow(player: Player, item: Item, target: Slot) -> str:
+    """Почему эта рука сейчас занята не тем. Пусто — надевать можно.
+
+    Две руки связаны, и связь у них односторонняя: вторая рука живёт
+    при основной. Поэтому проверок две — нож без оружия в основной руке
+    и щит рядом с двуручным, — и обе отвечают словами, а не молчанием:
+    пустая вторая рука, в которую ничего не кладётся, выглядит поломкой.
+    """
+    if target is not Slot.OFFHAND:
+        return ""
+    weapon = player.gear_in_slot(Slot.WEAPON)
+    if weapon is not None and weapon.item.two_handed:
+        return (
+            f"«{weapon.title}» занимает обе руки. Сними его, "
+            "если нужна вторая рука."
+        )
+    if item.is_weapon and weapon is None:
+        return "Второе оружие берут в пару к первому: основная рука пуста."
+    return ""
+
+
 async def equip(
     db: Database, player: Player, item_id: int, slot: Slot | None = None
 ) -> OwnedItem:
@@ -115,6 +136,10 @@ async def equip(
     if target not in owned.item.slots:
         raise InventoryError(f"«{owned.title}» в этот слот не надевается.")
 
+    hands = _hands_allow(player, owned.item, target)
+    if hands:
+        raise InventoryError(hands)
+
     busy = player.gear_in_slot(target)
     # Уходящая из слота вещь в зачёт не идёт: иначе она поддерживала бы
     # сама себя — сняли меч, а требования считаются так, будто он на бойце.
@@ -126,6 +151,15 @@ async def equip(
     if busy is not None:
         busy.slot = None
         await db.save_gear(busy)
+
+    # Двуручное занимает и вторую руку: что там стояло, уезжает в
+    # рюкзак. Молча отказать было бы хуже — боец выбрал оружие, и
+    # выбор надо исполнить, а не объяснять, почему он невозможен
+    if owned.item.two_handed and target is Slot.WEAPON:
+        second = player.gear_in_slot(Slot.OFFHAND)
+        if second is not None:
+            second.slot = None
+            await db.save_gear(second)
 
     owned.slot = target
     await db.save_gear(owned)
@@ -145,6 +179,14 @@ async def unequip(db: Database, player: Player, slot: Slot) -> OwnedItem:
         raise InventoryError("Слот и так пуст.")
     owned.slot = None
     await db.save_gear(owned)
+    # Сняли основную руку — второе оружие остаётся без пары: оно живёт
+    # при первом, а не само по себе. Уводим его в рюкзак, а не
+    # запрещаем снятие: запрет держал бы бойца в чужой сборке
+    if slot is Slot.WEAPON:
+        second = player.gear_in_slot(Slot.OFFHAND)
+        if second is not None and second.item.is_weapon:
+            second.slot = None
+            await db.save_gear(second)
     player.dropped_gear = await settle_gear(db, player)
     return owned
 

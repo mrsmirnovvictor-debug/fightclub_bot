@@ -491,8 +491,9 @@ def test_inventory_rows_carry_everything_the_screen_draws():
     assert gain["Урон"]["text"] == CATALOGUE["knuckles"].describe_damage()
     # уровень и сила не дотягивают — обе строки требований помечены красным
     assert [need["ok"] for need in row["requirements"]] == [False, False]
-    # у оружия одно место на карточке: рука одна
-    # оружие берут и во вторую руку — на карточке два места
+    # Места у оружия решает хват: кастет лёгкий, и его берут любой
+    # рукой. Прежде карточка показывала обе руки у всякого оружия, и
+    # кувалда уживалась со щитом
     assert [slot["slot"] for slot in row["slots"]] == ["weapon", "offhand"]
 
 

@@ -71,10 +71,13 @@ from bot.game.gear import (
     OwnedItem,
     RepairResult,
     Slot,
+    WeaponHand,
     apply_fight_wear,
     can_equip,
     describe_requirements,
     gear_share_cap,
+    hold_required,
+    missing_mastery,
     missing_requirements,
     repair,
     repair_points,
@@ -203,8 +206,22 @@ class Equipment:
 
     @property
     def second_weapon(self) -> OwnedItem | None:
+        """Оружие во второй руке. Щит оружием не считается.
+
+        Что лежит в этой руке, решают правила надевания: по ним туда
+        попадает только оружие со своим хватом. У бойцов, одетых до
+        этого правила, там может стоять и обычное оружие — такую
+        экипировку никто не снимает, и вторым ударом она работает
+        по-прежнему.
+        """
         offhand = self.offhand
         return offhand if offhand and offhand.item.is_weapon else None
+
+    @property
+    def two_handed(self) -> bool:
+        """Боец взял оружие обеими руками: вторая рука занята им же."""
+        weapon = self.weapon
+        return bool(weapon and weapon.item.two_handed)
 
     @property
     def weapons(self) -> tuple[OwnedItem | None, ...]:

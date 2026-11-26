@@ -314,6 +314,39 @@ class ItemKind(str, Enum):
     FIREARM = "firearm"
 
 
+class WeaponHand(str, Enum):
+    """Каким хватом вещь берут: одной рукой, любой из двух или обеими.
+
+    Хват — это про вещь, а не про бойца: кувалду двумя руками берут
+    потому, что она кувалда. Что боец умеет держать, решают очки
+    владения (`bot.game.mastery`).
+
+    `OFFHAND` — не «только вторая рука», а «годится и во вторую»: нож
+    остаётся ножом в любой руке, и запретить держать его одного значило
+    бы оставить целое семейство без основного оружия. Второй рукой его
+    берут за очки хвата «Второе оружие»; первой — как всякое оружие
+    своего вида.
+
+    Прежде хвата не было вовсе: `slots` разрешал каждому оружию обе
+    руки, и двуручная кувалда уживалась со щитом.
+    """
+
+    MAIN = "main"
+    OFFHAND = "offhand"
+    TWO_HANDED = "two_handed"
+
+    @property
+    def title(self) -> str:
+        return HAND_TITLES[self]
+
+
+HAND_TITLES: dict[WeaponHand, str] = {
+    WeaponHand.MAIN: "основная рука",
+    WeaponHand.OFFHAND: "любая рука",
+    WeaponHand.TWO_HANDED: "обе руки",
+}
+
+
 @dataclass(frozen=True)
 class Item:
     """Предмет экипировки: то, что одинаково у всех его экземпляров."""
@@ -363,6 +396,16 @@ class Item:
     # выносливостью, как всякий удар. Единица — выстрел в упор: броня
     # его не держит, и потому он смертелен
     crit_pierce: float = 0.0
+    # ---------- владение оружием ----------
+    #
+    # Вид оружия: код семейства из `bot.game.mastery` — ножи и кастеты,
+    # дубины и булавы, молоты и топоры, мечи. Пусто — вещь вида не
+    # имеет: щиту он не положен, огнестрелу пока не требуется, а
+    # одежде не нужен вовсе
+    family: str = ""
+    # Какую руку вещь занимает. У щита хват не спрашивают: он и так
+    # только во второй руке
+    hand: WeaponHand = WeaponHand.MAIN
     level_required: int = 1
     requires: Stats = field(default_factory=Stats)  # характеристики под надевание
     price: int = 0
@@ -479,17 +522,44 @@ class Item:
 
     @property
     def slots(self) -> tuple[Slot, ...]:
-        """Куда вещь можно надеть. Оружие берут и во вторую руку.
+        """Куда вещь можно надеть. У оружия это решает хват.
+
+        Прежде любое оружие шло в обе руки, и кувалда уживалась со
+        щитом. Теперь рука у вещи своя: основное — в основную, второе —
+        во вторую, двуручное — в основную, но со второй оно снимает всё.
+        Надетое по старым правилам никто не трогает: правило спрашивают,
+        когда надевают.
 
         У кольца таких клеток три, и записано оно в первую из них —
         правую. Клетки равноправны: кольцо ложится в любую, а в какую
         именно, решает `equip`, когда надевают.
         """
         if self.is_weapon:
-            return (Slot.WEAPON, Slot.OFFHAND)
+            if self.hand is WeaponHand.OFFHAND:
+                return (Slot.WEAPON, Slot.OFFHAND)
+            return (Slot.WEAPON,)
         if self.slot in RING_SLOTS:
             return RING_SLOTS
         return (self.slot,)
+
+    @property
+    def two_handed(self) -> bool:
+        """Занимает обе руки: ни щита, ни второго оружия рядом."""
+        return self.is_weapon and self.hand is WeaponHand.TWO_HANDED
+
+    @property
+    def mastery_required(self) -> int:
+        """Сколько очков владения требует вещь. Ноль — не требует ничего.
+
+        Порог равен уровню вещи и считается, а не хранится: второе число
+        рядом с уровнем разошлось бы с ним на первой же правке лестницы.
+        Огнестрелу владение пока не требуется — он вне четырёх семейств.
+        """
+        from bot.game.mastery import required_for
+
+        if not (self.family or self.is_shield):
+            return 0
+        return required_for(self.level_required)
 
     @property
     def is_ring(self) -> bool:
@@ -751,6 +821,63 @@ def missing_requirements(item: Item, level: int, stats: Stats) -> list[str]:
 def can_equip(item: Item, level: int, stats: Stats) -> bool:
     """Требования считаем по своим характеристикам, без учёта надетого."""
     return not missing_requirements(item, level, stats)
+
+
+def hold_required(item: Item, slot: Slot | None = None) -> str:
+    """Какой тип владения нужен, чтобы держать вещь в этой клетке.
+
+    Пусто — ничего не требует: оружие в основной руке держит всякий, кто
+    дорос до его вида. Щит и двуручное требуют своего в любой клетке —
+    у них хват один и тот же, куда их ни клади, — а лёгкое оружие
+    требует «Второго оружия» только во второй руке: в первой это
+    обычное оружие своего вида.
+    """
+    from bot.game.mastery import HoldType
+
+    if item.is_shield:
+        return HoldType.SHIELD.value
+    if not item.is_weapon:
+        return ""
+    if item.hand is WeaponHand.TWO_HANDED:
+        return HoldType.TWO_HANDED.value
+    if slot is Slot.OFFHAND:
+        return HoldType.OFFHAND.value
+    return ""
+
+
+def missing_mastery(
+    item: Item,
+    mastery: dict[str, int],
+    holds: dict[str, int],
+    slot: Slot | None = None,
+) -> list[str]:
+    """Чего не хватает во владении, чтобы взять вещь. Пусто — хватает.
+
+    Возвращает коды нехваток: `family` — мало очков вида оружия,
+    `hold` — мало очков хвата. Словами их называет тот, кто показывает
+    отказ: экран разбирает причины порознь, и у каждой свой текст.
+
+    `slot` — куда вещь кладут. От клетки зависит хват: нож в первой руке
+    требует только вида, во второй — ещё и «Второго оружия».
+
+    Надетое этой проверкой не трогают. Она спрашивается, когда вещь
+    надевают: боец, у которого после смены правил не сходится
+    раскладка, доигрывает в том, что на нём, и перераспределяет очки к
+    следующей смене оружия.
+    """
+    from bot.game.mastery import enough
+
+    gaps: list[str] = []
+    if not item.mastery_required:
+        return gaps
+    if item.family and not enough(
+        max(0, mastery.get(item.family, 0)), item.level_required
+    ):
+        gaps.append("family")
+    hold = hold_required(item, slot)
+    if hold and not enough(max(0, holds.get(hold, 0)), item.level_required):
+        gaps.append("hold")
+    return gaps
 
 
 def describe_requirements(item: Item) -> str:

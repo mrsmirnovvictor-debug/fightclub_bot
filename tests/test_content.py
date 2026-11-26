@@ -26,6 +26,7 @@ from bot.game.equipment import (
     SHOWCASE,
     Item,
     Slot,
+    WeaponHand,
     gear_share_cap,
     items_unlocked_at,
     weapon_share_cap,
@@ -45,17 +46,25 @@ def test_catalogue_items_know_their_slot_and_price():
         assert not (item.reward and (item.price or item.stars)), (
             f"{item.title}: награда с ценником"
         )
-        assert item.slot in item.slots
         assert isinstance(item, Item)
-        # Мест у вещи больше одного ровно в двух случаях: оружие берут во
-        # вторую руку, а кольцо ложится в любую из трёх клеток под кольца
+        # Место у вещи одно, и у оружия его решает хват: основное и
+        # двуручное — основная рука, второе — вторая. Два места
+        # остались только у кольца: оно ложится в любую из трёх клеток
         if item.is_weapon:
-            places = (Slot.WEAPON, Slot.OFFHAND)
+            # Лёгкое оружие годится в обе руки: нож остаётся ножом в
+            # любой. Тяжёлое и двуручное — только основная рука
+            places = (
+                (Slot.WEAPON, Slot.OFFHAND)
+                if item.hand is WeaponHand.OFFHAND
+                else (Slot.WEAPON,)
+            )
         elif item.is_ring:
             places = RING_SLOTS
         else:
             places = (item.slot,)
         assert item.slots == places, item.code
+        # Записан предмет в ту же клетку, в какую и надевается
+        assert item.slot in item.slots, item.code
 
 
 def test_no_two_items_share_a_code():

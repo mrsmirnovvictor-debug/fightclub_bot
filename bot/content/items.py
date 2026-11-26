@@ -34,6 +34,7 @@ from dataclasses import replace
 
 from bot.game import art
 from bot.game.classes import Stats
+from bot.content.arming import family_of, hand_of
 from bot.game.gear import ALL_SLOTS, RING_SLOTS, Item, ItemKind, Slot
 
 # Папки картинок в R2: у старых файлов адрес задан явно
@@ -1707,8 +1708,22 @@ CYBER_WEAPONS: tuple[Item, ...] = (
 )
 
 
+def _armed(item: Item) -> Item:
+    """Дописать вещи её вид оружия и хват.
+
+    Разметка лежит таблицей в `bot.content.arming`, а не полем у каждой
+    вещи: размечать пришлось весь каталог разом, и таблицу видно
+    целиком — в ней сразу заметно, чего в линейке не хватает. Вещи, у
+    которой рук нет вовсе, разметка не нужна: одежда, щиты и огнестрел
+    обходятся без вида оружия.
+    """
+    if not item.is_weapon:
+        return item
+    return replace(item, family=family_of(item.code), hand=hand_of(item.code))
+
+
 ITEMS: tuple[Item, ...] = tuple(
-    replace(item, retired=True) if item.code in RETIRED_GEAR else item
+    _armed(replace(item, retired=True) if item.code in RETIRED_GEAR else item)
     for item in (
     # ---------- с чего начинают: уровни 1–3 ----------
     Item(
