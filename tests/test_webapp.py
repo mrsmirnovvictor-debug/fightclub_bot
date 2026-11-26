@@ -1083,8 +1083,18 @@ async def test_the_casino_changes_money_over_http(client, db):
     assert (await db.get_player(42)).credits == 100
 
 
-async def test_the_casino_seats_and_bets_over_http(client, db):
-    """Сесть, поставить и встать — всё теми же двумя ручками."""
+async def test_the_casino_seats_and_bets_over_http(client, db, monkeypatch):
+    """Сесть, поставить и встать — всё теми же двумя ручками.
+
+    Часы заведения на время проверки открыты. Через ручку время не
+    передать — его берёт сервер, — и без этого проверка падала каждую
+    ночь между двумя и восьмью по Москве: казино в эти часы закрыто, и
+    речь шла бы не о ручках, а о расписании. Само расписание проверяют
+    отдельно, в `test_casino`.
+    """
+    import bot.casino_service as casino_service
+
+    monkeypatch.setattr(casino_service, "open_now", lambda moment: True)
     player = make_player(location="casino", credits=300)
     await db.save_player(player)
     headers = {"X-Telegram-Init-Data": make_init_data()}

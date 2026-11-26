@@ -891,6 +891,12 @@ async def test_a_worn_item_does_not_count_until_it_is_taken_off(db):
     await take(db, player, "knuckles")
     owned = await db.add_gear(player.user_id, "knuckles")
     player.gear = await db.list_gear(player.user_id)
+    # Кастет третьего уровня требует трёх очков вида: без них его не
+    # надеть, а речь здесь о том, что надетое бармену не показывают
+    from bot.game.mastery import WeaponFamily
+
+    player.mastery = {WeaponFamily.KNIVES.value: 3}
+    await db.save_player(player)
     await equip(db, player, owned.id)
     with pytest.raises(QuestError) as oops:
         await hand(db, player, "knuckles")

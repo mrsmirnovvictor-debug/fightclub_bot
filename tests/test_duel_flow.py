@@ -1095,12 +1095,19 @@ async def armed_pair(db):
     from bot.game.classes import Stats
     from bot.inventory_service import buy, equip
 
+    from bot.game.equipment import get_item
+    from bot.game.mastery import required_for
+
     players = []
     for user_id, nickname, code in ((1, "Тайлер", "pipe"), (2, "Марла", "switchblade")):
         player = make_player(user_id, nickname)
         player.level = 6
         player.credits = 800
         player.apply_stats(Stats(strength=16, agility=14, intuition=12, endurance=14))
+        # Владение под своё оружие: без очков вещь не наденется вовсе, а
+        # проверки ниже про бой с оружием, а не про раздачу очков
+        item = get_item(code)
+        player.mastery = {item.family: required_for(item.level_required)}
         await db.save_player(player)
         owned = await buy(db, player, code)
         await equip(db, player, owned.id)

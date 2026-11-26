@@ -213,7 +213,13 @@ async def test_a_saber_that_is_gone_cannot_be_refunded(store, db):
 
 async def test_a_worn_saber_still_goes_back(store, db):
     """Надетый меч тоже возвращается — он цел, значит его есть чем вернуть."""
-    await db.save_player(make_player())
+    from bot.game.mastery import WeaponFamily
+
+    # Меч второго уровня требует двух очков владения: без них боец его
+    # просто не наденет, а проверка здесь про возврат, а не про владение
+    owner = make_player()
+    owner.mastery = {WeaponFamily.SWORDS.value: 2}
+    await db.save_player(owner)
     await store.grant(42, paid())
     player = await db.get_player(42)
     await equip(db, player, player.gear[0].id)
