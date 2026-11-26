@@ -64,6 +64,13 @@ QUEST_CHAPTERS = "2026-11-12-quest-chapters"
 # стояло в старом журнале, и ошибиться молча; дешевле и честнее дать
 # всем пройти новую лестницу с начала
 QUEST_RESET = "2026-11-13-quest-reset"
+# Владение оружием пришло в клуб, когда город уже дрался. Очки обоих
+# пулов у живых бойцов появились сами — они считаются от уровня, — но
+# лежали бы нераспределёнными, а надетое оружие их требует. Вкладываем
+# за бойца минимум под то, что у него в руках, остаток оставляем ему:
+# иначе первый же взгляд на рюкзак говорил бы «нужно владение» про меч,
+# которым боец дерётся третий месяц
+MASTERY_FROM_GEAR = "2026-11-26-mastery-from-gear"
 CHIEF_NAME = "Ragnar"
 CHIEF_JOB = "police_chief"
 CHIEF_DIPLOMA = "police"
@@ -97,6 +104,9 @@ async def run(db: Database, now: int | None = None) -> list[str]:
 
     if await db.mark_chore(QUEST_RESET, moment):
         done.append(await _clear_the_quests(db))
+
+    if await db.mark_chore(MASTERY_FROM_GEAR, moment):
+        done.append(await _invest_for_worn(db))
 
     return done
 
@@ -169,6 +179,7 @@ async def _carry_the_licences(db: Database) -> str:
 __all__ = [
     "DROP_ENDURANCE",
     "LICENCE_PACKS",
+    "MASTERY_FROM_GEAR",
     "QUEST_CHAPTERS",
     "QUEST_RESET",
     "RAGNAR_CHIEF",
@@ -232,3 +243,51 @@ async def _clear_the_quests(db: Database) -> str:
     """
     rows = await db.clear_quests()
     return f"журнал заданий бармена сброшен: снято записей {rows}"
+
+
+async def _invest_for_worn(db: Database) -> str:
+    """Вложить каждому минимум владения под надетое в руках.
+
+    Работа идёт по рукам, а не по бойцам: владения требуют только вещи
+    в руках, и спрашивать рюкзаки всего города ради них незачем. Кому
+    вкладывать нечего — того и не сохраняем.
+
+    **Экипировку не трогаем.** Ни одной вещи не снимаем и не передаём:
+    правила рук спрашивают, когда вещь надевают, а здесь только очки.
+
+    **Кому очков не хватило — в журнал.** Это настоящий случай, а не
+    недосмотр: в пуле столько очков, сколько уровней, а надетого в
+    руках бывает два, со своими порогами. Такой боец доигрывает в своей
+    сборке и раскладывает очки заново к следующей смене оружия.
+
+    Работа идемпотентна сама по себе: вложенное закрывает порог, и
+    второй заход не находит, что доложить. Отметка о работе всё равно
+    стоит — повторять её незачем, а по ней видно, что с базой было.
+    """
+    from bot.mastery_service import settle_worn
+
+    worn = await db.worn_in_hands()
+    given = 0
+    touched = 0
+    tight = 0
+    for user_id, hands in worn.items():
+        player = await db.get_player(user_id)
+        if player is None:  # pragma: no cover - бойца удалили
+            continue
+        done, short = await settle_worn(db, player, hands)
+        if done:
+            touched += 1
+            given += sum(done.values())
+        if short:
+            tight += 1
+            logger.warning(
+                "Бойцу %s не хватает очков владения под надетое: %s. "
+                "Сборка остаётся, очки перераспределит сам",
+                user_id, ", ".join(short),
+            )
+    logger.info(
+        "Владение по надетому: бойцов %s, очков %s, не хватило у %s",
+        touched, given, tight,
+    )
+    note = f"владение по надетому: {given} очк. у {touched} бойцов"
+    return note if not tight else f"{note}; не хватило у {tight}"

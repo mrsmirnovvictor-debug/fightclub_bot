@@ -7198,6 +7198,31 @@ class Database:
             rows = await cursor.fetchall()
         return [(int(row["user_id"]), str(row["code"])) for row in rows]
 
+    async def worn_in_hands(self) -> dict[int, list[tuple[str, str]]]:
+        """Что у кого надето в руках: по бойцу — список «код вещи, клетка».
+
+        Нужно разовой работе про владение оружием: минимум очков под
+        надетое считается по тому, что уже на бойце, и перебрать это
+        надо разом, а не по бойцу. Из рук, а не из всего инвентаря:
+        владения требуют только вещи в руках, и тянуть ради них
+        рюкзаки всего города было бы лишней работой.
+        """
+        async with self.conn.execute(
+            f"""
+            SELECT i.user_id, i.code, i.slot FROM inventory AS i
+            JOIN players AS p ON p.user_id = i.user_id
+            WHERE i.slot IN ('weapon', 'offhand') AND p.{HUMANS}
+            ORDER BY i.user_id, i.slot
+            """
+        ) as cursor:
+            rows = await cursor.fetchall()
+        worn: dict[int, list[tuple[str, str]]] = {}
+        for row in rows:
+            worn.setdefault(int(row["user_id"]), []).append(
+                (str(row["code"]), str(row["slot"]))
+            )
+        return worn
+
     async def take_quest(self, user_id: int, code: str, now: int) -> None:
         """Записать взятое задание. Второй раз то же не берут."""
         await self.conn.execute(

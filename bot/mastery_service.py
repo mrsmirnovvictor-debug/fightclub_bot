@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 
 from bot.database import Database
 from bot.game.mastery import (
@@ -117,6 +118,106 @@ async def spend(db: Database, player: Player, raw: dict) -> dict[str, int]:
     return draft
 
 
+def needed_for(hands: Iterable[tuple[str, str]]) -> tuple[dict[str, int], dict[str, int]]:
+    """Какое владение требует надетое в руках: по видам и по хватам.
+
+    На входе то, что отдаёт база: код вещи и клетка, в которой она
+    лежит. Клетка важна — лёгкое оружие в основной руке требует только
+    вида, а во второй ещё и хвата «Второе оружие»; щит требует своего
+    хвата, где бы он ни лежал.
+
+    Два одинаковых требования не складываются: нужен максимум, а не
+    сумма. Владение седьмого уровня держит и меч седьмого, и нож
+    четвёртого — очки вкладывают в направление, а не в вещь.
+    """
+    from bot.game.equipment import Slot, get_item
+    from bot.game.gear import hold_required
+
+    families: dict[str, int] = {}
+    holds: dict[str, int] = {}
+    for code, cell in hands:
+        item = get_item(code)
+        if item is None:  # pragma: no cover - вещь из будущей версии
+            continue
+        need = item.mastery_required
+        if not need:
+            continue
+        try:
+            slot = Slot(cell)
+        except ValueError:  # pragma: no cover - клетка из будущей версии
+            continue
+        if item.family:
+            families[item.family] = max(families.get(item.family, 0), need)
+        hold = hold_required(item, slot)
+        if hold:
+            holds[hold] = max(holds.get(hold, 0), need)
+    return families, holds
+
+
+def plan_for(
+    level: int, points: dict[str, int], needs: dict[str, int]
+) -> dict[str, int]:
+    """Что доложить в пул, чтобы носить надетое, не выходя за остаток.
+
+    **Кладём только целые требования.** Половина порога не держит
+    ничего, а очки, положенные в неё, уже не переложить: лучше оставить
+    их свободными, чем закопать. Поэтому направление, которое целиком не
+    влезает, пропускаем — и идём дальше: меньшее за ним может влезть.
+
+    **Начинаем с самого дорогого.** Крупное требование — это обычно
+    главное оружие бойца, то, которым он дерётся; им и закрываемся в
+    первую очередь, пока очки есть.
+
+    Повторный вызов ничего не возвращает: вложенное уже покрывает
+    порог, и докладывать нечего. На этом стоит идемпотентность всей
+    миграции — она не помнит, что делала, а считает заново.
+    """
+    left = free_points(level, points)
+    plan: dict[str, int] = {}
+    for code, need in sorted(needs.items(), key=lambda one: -one[1]):
+        short = need - max(0, points.get(code, 0))
+        if short <= 0 or short > left:
+            continue
+        plan[code] = short
+        left -= short
+    return plan
+
+
+async def settle_worn(
+    db: Database, player: Player, hands: Iterable[tuple[str, str]]
+) -> tuple[dict[str, int], list[str]]:
+    """Вложить бойцу минимум под то, что у него уже надето.
+
+    Возвращает вложенное и названия направлений, на которые очков не
+    хватило. Надетое при этом не трогаем вовсе: правила рук и владения
+    спрашивают, когда вещь надевают, — снимать задним числом то, в чём
+    боец вышел на ринг, было бы наказанием за смену правил.
+
+    Не хватить может по-настоящему: очков в пуле столько, сколько
+    уровней, а надетого в руках бывает два, и пороги у них свои. Меч
+    девятого уровня с ножом четвёртого — это тринадцать очков вида на
+    девять имеющихся. Такой боец доигрывает в своей сборке и
+    перераспределяет очки к следующей смене оружия; случай попадает в
+    журнал, потому что сам по себе он не чинится.
+    """
+    families, holds = needed_for(hands)
+    done: dict[str, int] = {}
+    for points, needs in ((player.mastery, families), (player.holds, holds)):
+        for code, amount in plan_for(player.level, points, needs).items():
+            points[code] = max(0, points.get(code, 0)) + amount
+            done[code] = amount
+    if done:
+        await db.save_player(player)
+
+    short = [
+        title_of(code)
+        for points, needs in ((player.mastery, families), (player.holds, holds))
+        for code, need in sorted(needs.items())
+        if max(0, points.get(code, 0)) < need
+    ]
+    return done, short
+
+
 async def invest(
     db: Database, player: Player, code: str, amount: int = 1
 ) -> int:
@@ -154,8 +255,11 @@ async def invest(
 __all__ = [
     "MasteryError",
     "invest",
+    "needed_for",
     "parse_draft",
+    "plan_for",
     "pool_of",
+    "settle_worn",
     "spend",
     "title_of",
 ]
