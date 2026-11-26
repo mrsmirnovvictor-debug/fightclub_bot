@@ -5338,12 +5338,12 @@ async def test_the_opener_sees_the_clock_and_the_early_start(server):
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, mine)
 
-        clock = await page.locator(".raid-clock").inner_text()
+        clock = await page.locator(".lobby-clock").inner_text()
         assert clock.startswith("⏳ Выходим через 1:0")
 
         # секунда прошла — на экране это видно, без нового ответа сервера
         await page.wait_for_function(
-            "() => document.querySelector('.raid-clock')"
+            "() => document.querySelector('.lobby-clock')"
             ".textContent !== " + json.dumps(clock)
         )
 
@@ -5382,7 +5382,7 @@ async def test_a_lonely_gathering_has_nothing_to_start(server):
         browser, page = await open_raid(pw, server, alone)
 
         assert await page.locator("#raid-start-now").count() == 0
-        assert "Выходим через 9:5" in await page.locator(".raid-clock").inner_text()
+        assert "Выходим через 9:5" in await page.locator(".lobby-clock").inner_text()
         await browser.close()
 
 
