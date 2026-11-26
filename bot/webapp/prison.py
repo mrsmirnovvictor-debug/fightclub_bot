@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from bot.game.classes import get_class
 from bot.game.clock import club_moment
 from bot.game.health import now_ts
 from bot.game.police import (
@@ -33,13 +34,23 @@ from bot.models import Player
 def term_row(
     user_id: int, name: str, until: int, times: int, moment: int,
     mine: bool = False, since: int = 0, reason: str = POLICE_TERM,
+    level: int = 0, fclass: str = "",
 ) -> dict[str, Any]:
-    """Строка сидящего: кто, за что, насколько и сколько ему осталось."""
+    """Строка сидящего: кто, за что, насколько и сколько ему осталось.
+
+    Уровень и класс — для значка ℹ️ у ника: он подписывает всплывашку
+    до того, как приедет карточка. Нулевой уровень — бойца в базе уже
+    нет, и значка у строки не будет.
+    """
     out_text = club_moment(until, "%d.%m %H:%M")
     hours = term_hours(until, since, times)
+    who = get_class(fclass) if fclass else None
     return {
         "user_id": user_id,
         "name": name,
+        "level": level,
+        "emoji": who.emoji if who else "",
+        "fclass": who.title if who else "",
         "times": times,
         "until": until,
         "since": since,
@@ -73,6 +84,8 @@ async def build_prison(
             mine=user_id == player.user_id,
             since=int(one["since"]),
             reason=str(one["reason"]),
+            level=who.level if who else 0,
+            fclass=who.class_code if who else "",
         )
         rows.append(row)
         if row["mine"]:

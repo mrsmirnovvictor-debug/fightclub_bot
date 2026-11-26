@@ -13524,6 +13524,59 @@ async def test_the_house_shows_who_is_here_and_who_can_be_robbed(server, db):
         await browser.close()
 
 
+async def test_the_house_opens_a_card_for_everyone_who_stands_in_it(server, db):
+    """Значок ℹ️ стоит у каждой строки дома — и у соседа, и у городового.
+
+    Кто перед тобой — первый вопрос и к тому, кого собираешься взять за
+    карман, и к тому, кто пришёл за тобой. Прежде карточку открывал
+    только список клуба, а в доме её не было вовсе: там человека
+    узнавали по нику и уровню.
+    """
+    from bot.game.patrol import officer_id, where_now
+    from bot.patrol_service import officer_card
+    from bot.robbery_service import RobberyService
+    from bot.webapp.crowd import build_crowd
+    from tests.test_robbery import NOW, make_player as a_man
+
+    here = where_now(0, NOW)
+    me = a_man(42, "Тайлер", where=here)
+    me.seen_at = NOW
+    await db.save_player(me)
+    one = a_man(50, "Прохожий", where=here)
+    one.seen_at = NOW
+    await db.save_player(one)
+
+    service = RobberyService(db)
+    try:
+        board = await build_crowd(db, me, service, NOW)
+    finally:
+        await service.close()
+
+    async with async_playwright() as pw:
+        browser, page = await open_crowd(pw, server, me, board)
+
+        # Строк три: двое городовых и прохожий, и значок у каждой
+        rows = page.locator("#crowd .neighbour")
+        assert await rows.count() == 3
+        assert await rows.locator(".fighter-info").count() == 3
+
+        async def card_of(route):
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(officer_card(officer_id(0, 0), me.level, TOKEN)),
+            )
+
+        await page.route("**/api/card*", card_of)
+        await page.locator("#crowd .neighbour.patrol .fighter-info").first.click()
+        await page.wait_for_selector(".sheet-doll")
+
+        assert "Патрульный Пит Валдес" in await page.locator(
+            "#sheet-title"
+        ).inner_text()
+        assert "патруль" in await page.locator("#sheet-note").inner_text()
+        await browser.close()
+
+
 async def test_the_robbery_panel_shows_both_sides_and_the_log(server, db):
     """Панель драки: доска как в групповом бою, журнал судьи и кнопки."""
     don, _, live = await house_states(db)
@@ -22476,19 +22529,23 @@ async def test_the_info_button_opens_the_rival_before_the_fight(server):
         await browser.close()
 
 
-async def test_the_board_opens_the_rival_and_not_yourself(server):
-    """На табло боя ℹ️ стоит у соперника. У себя не стоит: своя рядом."""
+async def test_the_board_opens_both_sides_of_the_fight(server):
+    """На табло боя ℹ️ стоит у обоих: и у соперника, и у себя.
+
+    Своя карточка лежит и на вкладке бойца, но уходить с табло посреди
+    боя, чтобы посмотреть, чем ты закрываешься, — не дело.
+    """
     async with async_playwright() as pw:
         browser, page = await open_ring(pw, server, ring_with_duel())
         await page.wait_for_selector(".fight-board")
 
         sides = page.locator(".fight-side")
         assert await sides.count() == 2
-        mine = sides.locator("xpath=self::*[contains(@class,'you')]")
-        assert await mine.locator(".fighter-info").count() == 0
-        assert await page.locator(".fight-side .fighter-info").count() == 1
+        assert await page.locator(".fight-side .fighter-info").count() == 2
 
-        await page.locator(".fight-side .fighter-info").click()
+        mine = page.locator(".fight-side.you")
+        assert await mine.locator(".fighter-info").count() == 1
+        await page.locator(".fight-side:not(.you) .fighter-info").click()
         await page.wait_for_selector(".sheet-doll")
         assert "Марла" in await page.locator("#sheet-title").inner_text()
         await browser.close()
@@ -22503,8 +22560,8 @@ async def test_the_standoff_lets_you_read_the_rival_before_the_gong(server):
         browser, page = await open_ring(pw, server, waiting)
         await page.wait_for_selector(".fight-standoff")
 
-        assert await page.locator(".fight-side .fighter-info").count() == 1
-        await page.locator(".fight-side .fighter-info").click()
+        assert await page.locator(".fight-side .fighter-info").count() == 2
+        await page.locator(".fight-side:not(.you) .fighter-info").click()
         await page.wait_for_selector(".sheet-doll")
         assert "Марла" in await page.locator("#sheet-title").inner_text()
         await browser.close()

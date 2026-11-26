@@ -450,7 +450,7 @@ class RobberyService:
         них по тому, за кем пришли.
         """
         from bot.game.locations import get_location
-        from bot.game.patrol import FIRST_ID, officers
+        from bot.game.patrol import officers
         from bot.police_service import has_warrant
 
         moment = now_ts() if now is None else now
@@ -467,7 +467,7 @@ class RobberyService:
 
         here = suspect.where(moment)
         place = get_location(here)
-        wall = officers(suspect.level, FIRST_ID)
+        wall = officers(suspect.level, pair)
         raid = Robbery(
             id=next(self._ids),
             place=here,

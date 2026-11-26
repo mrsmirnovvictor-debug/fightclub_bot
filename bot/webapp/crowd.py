@@ -232,6 +232,14 @@ async def neighbour_row(
         "user_id": one.user_id,
         "name": one.nickname,
         "level": one.level,
+        # Класс в строке — для значка ℹ️: он подписывает всплывашку до
+        # того, как приедет карточка. Имена полей те же, что в строке
+        # вызова на ринге: значок один на весь город, и переклад у него
+        # один
+        "emoji": one.fclass.emoji,
+        "fclass": one.fclass.title,
+        "pro": one.is_pro(moment),
+        "badge": one.badge,
         "clan": "",
         "online": online,
         "presence": presence_text(one.seen_at, moment),
@@ -271,6 +279,10 @@ def patrol_rows(pair: int, level: int) -> list[dict[str, Any]]:
             "user_id": one.user_id,
             "name": one.name,
             "level": one.level,
+            "emoji": one.fclass.emoji,
+            "fclass": one.fclass.title,
+            "pro": False,
+            "badge": "",
             "clan": "VCPD",
             "online": True,
             "presence": "На смене",

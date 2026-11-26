@@ -235,7 +235,7 @@ from bot.ladder_service import (
     settle_due,
     week_place_of,
 )
-from bot.patrol_service import patrol_marks
+from bot.patrol_service import officer_card, patrol_marks
 from bot.robbery_service import RobberyError, RobberyService
 from bot.turf_war import TurfWar
 from bot.webapp.driving import build_police, build_school
@@ -557,6 +557,18 @@ async def api_card(request: web.Request) -> web.Response:
 
     player = await db.get_player(target_id)
     if player is None:
+        # Городовой: записи в базе у него нет вовсе, и карточка
+        # собирается от того, кто смотрит, — это тот патрульный, который
+        # выйдет против него. Смотрящему без персонажа показывать
+        # некого: уровень считать не от кого
+        me = await db.get_player(viewer.user_id)
+        cop = (
+            officer_card(target_id, me.level, config.bot_token)
+            if me is not None
+            else None
+        )
+        if cop is not None:
+            return web.json_response(cop)
         return web.json_response(
             {
                 "error": "no_character",

@@ -3651,16 +3651,7 @@ function fighterRow(fighter, open) {
     name,
     level,
   ];
-  if (!open) {
-    const info = document.createElement("button");
-    info.type = "button";
-    info.className = "fighter-info";
-    info.textContent = "ℹ️";
-    info.title = "Карточка бойца";
-    info.setAttribute("aria-label", "Карточка бойца " + fighter.nickname);
-    info.addEventListener("click", () => showFighter(fighter));
-    parts.push(info);
-  }
+  if (!open) parts.push(cardInfoButton(fighter));
   box.append(...parts);
 
   // ELO справа, у самого края: по нему список отсортирован, и прятать
@@ -3849,6 +3840,12 @@ async function showFighter(fighter) {
         card.name + " [" + card.level + "] " + starMark(card.stars);
       el("sheet-note").textContent =
         card.fclass.emoji + " " + card.fclass.title + " · " + card.state_text;
+    } else if (card.patrol) {
+      // У городового не город, а служба: он не живёт в клубе, он в нём
+      // работает. И уровень у него не свой — тот, с каким он выйдет
+      // против смотрящего
+      el("sheet-note").textContent =
+        card.fclass.emoji + " " + card.fclass.title + " · Городской патруль VCPD";
     } else {
       el("sheet-note").textContent =
         card.fclass.emoji + " " + card.fclass.title + " · " + card.city;
@@ -4218,22 +4215,30 @@ function myChallenge(challenge) {
  * списке игроков. Переклад один на все места, где эта кнопка стоит.
  */
 function rivalInfo(one) {
+  return cardInfoButton({
+    user_id: one.user_id,
+    nickname: one.name,
+    level: one.level,
+    fclass: { emoji: one.emoji, title: one.fclass },
+    pro: Boolean(one.pro),
+    badge: one.badge || "",
+  });
+}
+
+/** Сам значок ℹ️: кнопка у ника, открывающая карточку этого бойца.
+ *
+ * Один значок на весь город — в списке клуба, в строке вызова, в
+ * списке дома, в семье и за решёткой. Прежде их было два, и
+ * расходились они по мелочам: где-то подпись для диктора, где-то нет.
+ */
+function cardInfoButton(fighter) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "fighter-info";
   btn.textContent = "ℹ️";
   btn.title = "Карточка бойца";
-  btn.setAttribute("aria-label", "Карточка бойца " + one.name);
-  btn.addEventListener("click", () => {
-    showFighter({
-      user_id: one.user_id,
-      nickname: one.name,
-      level: one.level,
-      fclass: { emoji: one.emoji, title: one.fclass },
-      pro: Boolean(one.pro),
-      badge: one.badge || "",
-    });
-  });
+  btn.setAttribute("aria-label", "Карточка бойца " + fighter.nickname);
+  btn.addEventListener("click", () => showFighter(fighter));
   return btn;
 }
 
@@ -4327,9 +4332,10 @@ function fighterSide(fighter) {
   const said = document.createElement("span");
   said.textContent = fighter.emoji + " " + fighter.name + " [" + fighter.level + "]";
   name.appendChild(said);
-  // Карточка соперника — и до гонга, и во время боя. Своей рядом нет:
-  // она в одном нажатии на вкладке бойца, а табло узкое
-  if (!fighter.you) name.appendChild(rivalInfo(fighter));
+  // Карточка нужна про обоих: и про соперника, и про себя. Своя
+  // лежит и на вкладке бойца, но уходить с табло посреди боя, чтобы
+  // посмотреть, чем ты закрываешься, — не дело
+  name.appendChild(rivalInfo(fighter));
   const hp = document.createElement("p");
   hp.className = "fight-hp";
   hp.textContent = fighter.hp + "/" + fighter.max_hp;
@@ -13173,6 +13179,16 @@ function clanMemberRow(member, actions) {
   level.className = "fighter-level";
   level.textContent = "[" + member.level + "]";
   box.appendChild(level);
+  box.appendChild(
+    cardInfoButton({
+      user_id: member.user_id,
+      nickname: member.nickname,
+      level: member.level,
+      fclass: member.fclass,
+      pro: Boolean(member.pro),
+      badge: member.pro_badge || "",
+    })
+  );
 
   if (actions && actions.length) {
     const tools = document.createElement("div");
@@ -18376,7 +18392,12 @@ function inmatesBox(data) {
     left.className = "neighbour-clan jail-clock";
     left.dataset.until = String(one.until);
     left.textContent = fullClock(one.left);
-    line.append(name, left);
+    line.append(name);
+    // Карточка сидящего открывается и за решёткой: уровень у него не
+    // пропал, и знать, кого город взял, полезно. Нулевой уровень —
+    // бойца в базе уже нет, и значку нечего открывать
+    if (one.level) line.appendChild(rivalInfo(one));
+    line.appendChild(left);
     row.appendChild(line);
 
     const note = document.createElement("p");
@@ -18585,7 +18606,10 @@ function neighbourCard(one, data) {
   const where = document.createElement("span");
   where.className = "neighbour-clan";
   where.textContent = one.clan || "";
-  head.append(name, where);
+  // Значок ℹ️ стоит у всякого, кто в доме стоит: и у соседа, и у
+  // городового. Кто перед тобой — это первый вопрос и к тому, кого
+  // собираешься взять за карман, и к тому, кто пришёл за тобой
+  head.append(name, rivalInfo(one), where);
   box.appendChild(head);
 
   const said = document.createElement("p");

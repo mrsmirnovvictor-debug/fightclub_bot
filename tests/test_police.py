@@ -962,6 +962,35 @@ async def test_the_patrol_takes_the_wanted_man_where_it_stands(db):
     await service.close()
 
 
+async def test_the_pair_that_stood_there_is_the_pair_that_takes_him(db):
+    """Берёт та пара, что стоит в доме, — своими номерами и именами.
+
+    Прежде номера приходили со стороны, и задержание всегда выходило
+    под первой парой: в доме стоял Нил Барроу, а в журнале дрался Пит
+    Валдес. Четверо городовых — четыре человека, и подменять одного
+    другим нельзя.
+    """
+    from bot.game.patrol import officer_id, where_now
+    from bot.patrol_service import catch, patrol_at
+
+    service = RobberyService(db, rng=random.Random(5))
+    here = where_now(1, NOW)
+    suspect = make_player(50, "Мафиози", where=here)
+    await db.save_player(suspect)
+    await a_case(db, 99, suspect.user_id, loot=300, filed=True)
+    assert patrol_at(here, NOW) == 1, "в этот миг здесь стоит вторая пара"
+
+    raid = await catch(db, service, suspect, NOW)
+
+    assert raid is not None
+    took = sorted(one for one in raid.fighters if one < 0)
+    assert took == sorted(officer_id(1, number) for number in (0, 1))
+    assert {raid.names[one] for one in took} == {
+        "Патрульный Нил Барроу", "Сержант Макс Ортис"
+    }
+    await service.close()
+
+
 async def test_the_patrol_walks_past_the_clean_man(db):
     """Без ордера патруль не трогает никого: он не досматривает."""
     from bot.patrol_service import catch
@@ -1174,6 +1203,60 @@ async def test_the_house_screen_shows_the_patrol_and_starts_the_arrest(db, clien
     assert body["fight"]["kind"] == "arrest"
 
 
+async def test_the_card_of_a_patrolman_is_the_one_who_comes_for_you(db, client):
+    """Карточка городового открывается по значку ℹ️ и считается от смотрящего.
+
+    Записи в базе у патрульного нет вовсе: уровень у него не свой, а от
+    того, за кем он придёт. Поэтому карточка собирается в тот миг, когда
+    её попросили, и показывает того патрульного, который выйдет против
+    открывшего. Тем же правилом живёт карточка Тренера.
+    """
+    from bot.game.patrol import officer_id, officer_name
+
+    one = make_player(50, "Прохожий", level=7)
+    await db.save_player(one)
+
+    cop = await (await client.get(
+        f"/api/card?user_id={officer_id(1, 0)}", headers=headers(one.user_id)
+    )).json()
+
+    assert cop["name"] == officer_name(1, 0) == "Патрульный Нил Барроу"
+    assert cop["level"] == 12, "семь плюс пять"
+    assert cop["patrol"] is True
+    assert cop["fclass"]["code"] == "tank"
+    # Форма на нём надетая: щит в карточке видно по слотам
+    worn = {
+        cell["slot"]: (cell["item"] or {}).get("code")
+        for side in ("left", "right")
+        for cell in cop["slots"][side]
+    }
+    assert worn["offhand"] == "vcpd_riot_shield"
+    # Ни рейтинга, ни апгрейдов: он не игрок и в лестницах не стоит
+    assert cop["record"]["rating"] is None
+    assert cop["progress"]["ups"] == []
+    assert cop["progress"]["ups_matter"] is False
+    # Лицо своё, не классовое
+    assert "vcpd_patrolman_02" in cop["avatar"]["url"]
+    # И стоит он там, где стоит его пара, а не в клубе по умолчанию
+    from bot.game.patrol import where_now
+    from bot.game.health import now_ts as clock
+
+    assert cop["place"]["code"] == where_now(1, clock())
+
+
+async def test_a_number_that_is_not_a_patrolman_still_has_no_card(db, client):
+    """Чужой отрицательный номер карточки не выдаёт: патруль — это четверо."""
+    one = make_player(50, "Прохожий")
+    await db.save_player(one)
+
+    answer = await client.get(
+        "/api/card?user_id=-999", headers=headers(one.user_id)
+    )
+
+    assert answer.status == 404
+    assert (await answer.json())["error"] == "no_character"
+
+
 async def test_a_clean_man_sees_the_patrol_and_walks_on(db, client):
     """Чистому патруль виден, но не страшен: его не трогают."""
     from bot.game.patrol import where_now
@@ -1231,7 +1314,9 @@ async def test_the_house_lists_the_patrol_among_the_neighbours(db, client):
     )).json()
 
     patrol = [row for row in body["crowd"] if row.get("patrol")]
-    assert [row["name"] for row in patrol] == ["Патрульный 01", "Сержант 01"]
+    assert [row["name"] for row in patrol] == [
+        "Патрульный Пит Валдес", "Сержант Рэй Долан"
+    ]
     assert [row["level"] for row in patrol] == [12, 12], "семь плюс пять"
     assert all(row["picture"].startswith("https://") for row in patrol)
     assert len({row["picture"] for row in patrol}) == 2, "лица разные"
@@ -1258,5 +1343,7 @@ async def test_the_other_pair_has_its_own_faces(db, client):
     )).json()
 
     patrol = [row for row in body["crowd"] if row.get("patrol")]
-    assert [row["name"] for row in patrol] == ["Патрульный 02", "Сержант 02"]
+    assert [row["name"] for row in patrol] == [
+        "Патрульный Нил Барроу", "Сержант Макс Ортис"
+    ]
     assert body["patrol"] == 1

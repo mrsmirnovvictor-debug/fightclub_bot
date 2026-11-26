@@ -63,11 +63,13 @@ FIRST_ID = -201
 PAIR_CLASSES: tuple[str, ...] = ("tank", "warrior")
 
 # Кто в каком карауле: по человеку на место в паре, и у каждой пары
-# свои двое. Имя с номером — чтобы в журнале боя было видно, который
-# из патрульных работает, а не «Патрульный против Патрульного»
+# свои двое. У каждого имя и звание, а не номер: четверо городовых —
+# это четыре человека, которых в городе узнают, а «Патрульный 01»
+# читался бы как инвентарный ярлык. Звание впереди имени нарочно: по
+# нему в журнале боя видно, кто держит, а кто бьёт.
 OFFICER_NAMES: tuple[tuple[str, ...], ...] = (
-    ("Патрульный 01", "Сержант 01"),
-    ("Патрульный 02", "Сержант 02"),
+    ("Патрульный Пит Валдес", "Сержант Рэй Долан"),
+    ("Патрульный Нил Барроу", "Сержант Макс Ортис"),
 )
 
 # Лица: по файлу на каждого из четверых. Лежат рядом с прочими
@@ -167,6 +169,18 @@ def officer_level(suspect_level: int) -> int:
     return max(1 + LEVELS_ABOVE, suspect_level + LEVELS_ABOVE)
 
 
+def officer_id(pair: int, number: int) -> int:
+    """Номер этого городового в бою: своя четвёрка, по паре на двоих.
+
+    Номер считается от пары, а не задаётся снаружи: один и тот же
+    городовой обязан быть одним и тем же человеком и в списке дома, и в
+    журнале задержания. Прежде номер приходил со стороны, и
+    задерживающая пара выходила под номерами и именами первой, кто бы
+    ни стоял в доме.
+    """
+    return FIRST_ID - pair * PAIR_SIZE - number
+
+
 def officer_face(pair: int, number: int) -> str:
     """Лицо этого городового: у каждого из четверых своё."""
     from bot.game.art import patrol_avatar
@@ -207,7 +221,19 @@ def _stats_for(level: int) -> Stats:
     )
 
 
-def officers(level: int, start: int = FIRST_ID, pair: int = 0) -> list[Fighter]:
+def officer_at(user_id: int) -> tuple[int, int] | None:
+    """Пара и место в паре по номеру городового. Пусто — это не патруль.
+
+    Обратная сторона `officer_id`: по номеру из боя или из ссылки нужно
+    понять, кто это был, — иначе карточку городового не собрать.
+    """
+    shift = FIRST_ID - user_id
+    if shift < 0 or shift >= OFFICERS:
+        return None
+    return divmod(shift, PAIR_SIZE)
+
+
+def officers(level: int, pair: int = 0) -> list[Fighter]:
     """Пара патрульных как бойцы боя — по уровню того, за кем пришли."""
     rank = officer_level(level)
     out: list[Fighter] = []
@@ -215,7 +241,7 @@ def officers(level: int, start: int = FIRST_ID, pair: int = 0) -> list[Fighter]:
         fclass = PAIR_CLASSES[number % len(PAIR_CLASSES)]
         out.append(
             Fighter(
-                user_id=start - number,
+                user_id=officer_id(pair, number),
                 name=officer_name(pair, number),
                 fclass=FIGHTER_CLASSES[fclass],
                 stats=_stats_for(rank),
@@ -240,7 +266,9 @@ __all__ = [
     "PAIR_SIZE",
     "ROUTES",
     "SHIFT_SECONDS",
+    "officer_at",
     "officer_face",
+    "officer_id",
     "officer_level",
     "officer_name",
     "officers",

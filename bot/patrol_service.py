@@ -56,6 +56,59 @@ def patrol_board(now: int | None = None) -> list[dict]:
     ]
 
 
+def officer_card(user_id: int, level: int, bot_token: str) -> dict | None:
+    """Карточка городового под значком ℹ️. Пусто — это не патрульный.
+
+    **Это тот патрульный, который выйдет против смотрящего.** Уровень у
+    патруля не свой, а считается от того, за кем он придёт, — значит и
+    карточка у него не абсолютная: открывший её видит, с чем столкнётся
+    он сам. Тем же правилом живёт карточка Тренера.
+
+    Записи в базе у городового нет вовсе, и заводить её ради одного
+    экрана незачем: карточка собирается из тех же правил, по которым он
+    выходит в бой, и собирается в тот миг, когда её попросили. Поэтому
+    тут настоящий `Player` — но не сохранённый, а собранный: карточку
+    рисует один и тот же код на игрока, бойца отряда и городового.
+    """
+    from bot.game.patrol import officer_at, officers
+    from bot.webapp.card import build_card
+
+    at = officer_at(user_id)
+    if at is None:
+        return None
+    pair, number = at
+    one = officers(level, pair)[number]
+    npc = Player(
+        user_id=one.user_id,
+        nickname=one.name,
+        class_code=one.fclass.code,
+        level=one.level,
+        **one.stats.as_dict(),
+    )
+    # Форма у него надетая, а не в рюкзаке: слот у каждой вещи свой, и
+    # карточка раскладывает её по слотам сама
+    npc.gear = list(one.equipment.items.values())
+    # Он на смене и стоит там, где стоит его пара: иначе карточка
+    # показывала бы его в клубе, пока сам он в баре
+    moment = now_ts()
+    npc.location = where_now(pair, moment)
+    npc.seen_at = moment
+    card = build_card(npc, bot_token)
+    # Лицо в рамке — то же, что в списке дома: в форме и своё у каждого
+    card["avatar"] = dict(
+        card.get("avatar") or {},
+        url=one.picture,
+        look="",
+        look_title="Патруль VCPD",
+        photo=False,
+    )
+    # По этому полю страница и подписывает всплывашку: не город и класс,
+    # как у человека, а служба. Знака клана мы ему не выдаём: VCPD — это
+    # служба, а не семья, и вкладка «Клан» у него не появляется
+    card["patrol"] = True
+    return card
+
+
 async def takeable(
     db: Database, player: Player, now: int | None = None
 ) -> bool:
@@ -107,6 +160,7 @@ async def catch(
 
 __all__ = [
     "catch",
+    "officer_card",
     "patrol_at",
     "patrol_board",
     "patrol_marks",
