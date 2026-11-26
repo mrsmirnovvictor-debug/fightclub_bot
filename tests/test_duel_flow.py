@@ -53,6 +53,9 @@ class FakeBot:
     said: list[SentMessage] = field(default_factory=list)
     # Закрепы объявлений: (чат, сообщение)
     pinned: list[tuple[int, int]] = field(default_factory=list)
+    # Тихо ли закрепляли: Telegram на закреп шлёт своё уведомление, и
+    # вместе с самим объявлением их приходило два
+    pins_quiet: list[bool] = field(default_factory=list)
     unpinned: list[tuple[int, int]] = field(default_factory=list)
     _next_id: int = 100
 
@@ -69,8 +72,17 @@ class FakeBot:
         self.said.append(message)
         return message
 
-    async def pin_chat_message(self, chat_id, message_id, **kwargs):
+    # Подпись повторяет настоящую: `business_connection_id` стоит
+    # третьим, и позиционный вызов уехал бы в него
+    async def pin_chat_message(
+        self, chat_id, message_id, business_connection_id=None,
+        disable_notification=None, **kwargs
+    ):
+        assert business_connection_id is None, (
+            "в business_connection_id уехало лишнее: закреп зовут по именам"
+        )
         self.pinned.append((chat_id, message_id))
+        self.pins_quiet.append(bool(disable_notification))
 
     # Подпись повторяет настоящую из aiogram 3, включая порядок: там на
     # втором месте `business_connection_id`, а не `message_id`. Пока

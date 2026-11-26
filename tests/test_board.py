@@ -151,6 +151,26 @@ async def test_the_pin_comes_off_when_there_is_nobody_left_to_call(
     assert tail in bot.edits[-1].text
 
 
+async def test_the_pin_itself_says_nothing(bot, db):
+    """Закрепляем молча: уведомление об объявлении должно быть одно.
+
+    Telegram на каждый закреп шлёт своё служебное сообщение «бот
+    закрепил сообщение», и в ветке их приходило два: само объявление и
+    сообщение о том, что его закрепили. Одно событие — одно
+    уведомление, остальное шум. Висеть сверху закреп от этого не
+    перестаёт.
+    """
+    await mark_all(db)
+    duels = duels_of(bot, db)
+    challenger = make_player(1, "Тайлер")
+    await db.save_player(challenger)
+
+    await duels.open_challenge(None, None, challenger, mode=FightMode.FIST)
+
+    assert bot.pinned, "объявление не закрепили вовсе"
+    assert bot.pins_quiet == [True] * len(bot.pinned)
+
+
 async def test_the_club_calls_telegram_by_the_names_it_really_has(bot, db):
     """Закреп и снятие зовут по именам из настоящей подписи aiogram.
 

@@ -117,12 +117,25 @@ class Announcer:
         Закреп требует прав, которых у бота может не быть: в клубе его
         могли добавить обычным участником. Объявление от этого не
         пропадает — просто не висит сверху, поэтому падать тут не на чем.
+
+        **Закрепляем молча.** Telegram на каждый закреп шлёт своё
+        служебное уведомление «бот закрепил сообщение», и в ветке
+        приходило два: само объявление и сообщение о том, что его
+        закрепили. Одно событие — одно уведомление, остальное шум.
+        Висеть сверху закреп от этого не перестаёт.
         """
         if chat_id is None or message_id is None:
             return False
         self.budget.spend(chat_id)
         try:
-            await self.bot.pin_chat_message(chat_id, message_id)
+            # Только по именам: у `pin_chat_message` третьим параметром
+            # идёт `business_connection_id`, и позиционный вызов отправил
+            # бы в него что угодно, кроме того, что задумано
+            await self.bot.pin_chat_message(
+                chat_id=chat_id,
+                message_id=message_id,
+                disable_notification=True,
+            )
             return True
         except TelegramRetryAfter as error:
             logger.info("Закреп пропущен: Telegram просит подождать %s сек",
