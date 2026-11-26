@@ -1293,6 +1293,40 @@ async def test_the_map_shows_where_the_patrols_stand(db, client):
     assert len(body["patrols"]) == PAIRS
 
 
+async def test_the_map_counts_the_patrol_among_the_people_in_the_house(db, client):
+    """Значок в углу карты считает и городовых, а не только соседей.
+
+    Значок — единственный вход в список дома. Не считая патруль, город
+    прятал сам вход: в доме, где стоит пара и больше никого, значок не
+    загорался вовсе, и человек, стоящий перед патрулём, не мог его
+    открыть — ни посмотреть, кто перед ним, ни прочесть, чем это ему
+    будет.
+    """
+    from bot.game.patrol import PAIR_SIZE, where_now
+    from bot.game.health import now_ts as clock
+
+    moment = clock()
+    here = where_now(0, moment)
+    one = make_player(50, "Прохожий", where=here)
+    one.seen_at = moment
+    await db.save_player(one)
+
+    body = await (await client.get(
+        "/api/map", headers=headers(one.user_id)
+    )).json()
+
+    assert body["crowd"]["total"] == PAIR_SIZE, "в доме стоит пара"
+    assert body["crowd"]["online"] == PAIR_SIZE, "они на смене"
+    # И в доме, куда патруль не заходит, значок по-прежнему пуст
+    away = make_player(51, "Другой", where="mansion")
+    away.seen_at = moment
+    await db.save_player(away)
+    empty = await (await client.get(
+        "/api/map", headers=headers(away.user_id)
+    )).json()
+    assert empty["crowd"]["total"] == 0
+
+
 async def test_the_house_lists_the_patrol_among_the_neighbours(db, client):
     """Патрульные стоят в списке дома: имя, звание и уровень.
 

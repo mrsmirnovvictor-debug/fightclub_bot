@@ -517,7 +517,16 @@ async def crowd_marks(db, player: Player, service, now: int | None = None
     Считается отдельно от экрана и нарочно коротко: карта открывается
     на каждом шаге по городу, и тащить ради значка в углу полсотни
     соседей со всеми их отказами было бы дорого ни за что.
+
+    **Патруль в доме тоже считается.** Городовые в списке дома стоят
+    строками, и не считать их здесь значило бы прятать сам вход: в дом,
+    где стоит одна пара и больше никого, значок не загорался бы вовсе —
+    и человек, стоящий перед патрулём, не мог бы его открыть. Они на
+    смене, поэтому идут и в «сколько здесь», и в «сколько в сети».
     """
+    from bot.game.patrol import PAIR_SIZE
+    from bot.patrol_service import patrol_at
+
     moment = now_ts() if now is None else now
     here = player.where(moment)
     rows = [
@@ -527,9 +536,12 @@ async def crowd_marks(db, player: Player, service, now: int | None = None
         and one.where(moment) == here
         and not one.in_transit(moment)
     ]
+    cops = PAIR_SIZE if patrol_at(here, moment) >= 0 else 0
     return {
-        "total": len(rows),
-        "online": sum(1 for one in rows if is_online(one.seen_at, moment)),
+        "total": len(rows) + cops,
+        "online": sum(
+            1 for one in rows if is_online(one.seen_at, moment)
+        ) + cops,
         "fights": len(service.at(here)) if service is not None else 0,
     }
 
