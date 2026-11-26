@@ -42,7 +42,7 @@ from bot.game.equipment import (
     shop_sections,
 )
 from bot.game.abilities import MAX_ABILITIES, TIERS, TIER_COST
-from bot.game.gear import HAND_TITLES, ModKind, hold_required, missing_mastery
+from bot.game.gear import HAND_TITLES, ModKind, hold_required
 from bot.game.market import FEE as MARKET_FEE, buyback
 from bot.game.health import (
     FULL_REGEN_SECONDS,
@@ -289,7 +289,7 @@ def mastery_rows(player: Player, item: Item) -> list[dict]:
 
     from bot.game.mastery import HoldType, WeaponFamily
 
-    gaps = set(missing_mastery(item, player.mastery, player.holds))
+    gaps = set(player.mastery_gaps(item))
     rows: list[dict] = []
     if item.family:
         family = WeaponFamily(item.family)
@@ -394,7 +394,10 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
         "buyback": buyback(item),
         "requirements": requirements_payload(player, item),
         "arming": arming_payload(item),
-        "can_equip": player.can_equip(item),
+        # «Надеть» гаснет и без владения: сервер вещь не наденет, и живая
+        # кнопка обещала бы то, чего не будет. Чего не хватает, разобрано
+        # по строкам требований — порознь рост и владение
+        "can_equip": player.can_equip(item) and not player.mastery_gaps(item),
         "bonus": item.describe_bonus(),
         "bonuses": bonuses_payload(item, player.fclass, owned),
         "kit": kit_payload(owned.item, player.equipment),

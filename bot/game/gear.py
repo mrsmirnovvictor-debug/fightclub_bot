@@ -890,6 +890,34 @@ def describe_requirements(item: Item) -> str:
     return ", ".join(parts)
 
 
+def describe_mastery(
+    item: Item, gaps: Iterable[str], slot: Slot | None = None
+) -> str:
+    """Какого владения не хватает под эту вещь — словами.
+
+    Называет порознь вид и хват, в том же порядке и теми же числами, что
+    стоят в требованиях на экране: отказ и карточка вещи обязаны
+    говорить одно и то же, иначе боец не поймёт, какое из двух чисел
+    правда.
+    """
+    from bot.game.mastery import HoldType, WeaponFamily
+
+    parts: list[str] = []
+    for code in gaps:
+        if code == "family" and item.family:
+            parts.append(
+                f"{WeaponFamily(item.family).title.lower()} "
+                f"{item.mastery_required}"
+            )
+        elif code == "hold":
+            hold = hold_required(item, slot)
+            if hold:
+                parts.append(
+                    f"{HoldType(hold).title.lower()} {item.mastery_required}"
+                )
+    return ", ".join(parts)
+
+
 def roll_fight_wear(won: bool | None, rng: random.Random | None = None) -> bool:
     """Схватила ли надетая вещь пункт износа за этот бой.
 

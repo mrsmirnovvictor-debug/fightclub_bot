@@ -20,6 +20,7 @@ from bot.game.equipment import (
     RepairResult,
     Slot,
     apply_fight_wear,
+    describe_mastery,
     describe_requirements,
     get_item,
     repair,
@@ -146,6 +147,18 @@ async def equip(
     if not player.can_equip(owned.item, without=busy):
         raise InventoryError(
             f"Пока не по плечу: нужно {describe_requirements(owned.item)}."
+        )
+
+    # Владение спрашивается здесь, а не в `can_equip`: по той проверке
+    # `settle_gear` снимает с бойца то, что ему больше не по плечу, — и
+    # владение сняло бы оружие со всего города задним числом. Правило
+    # одно: вещь требует вида и хвата, когда её надевают
+    gaps = player.mastery_gaps(owned.item, target)
+    if gaps:
+        raise InventoryError(
+            "Не хватает владения: "
+            f"{describe_mastery(owned.item, gaps, target)}. "
+            "Очки раскладывают в карточке бойца."
         )
 
     if busy is not None:

@@ -8,6 +8,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from bot.config import Config
 from bot.game.classes import Stats, get_class
 from bot.game.locations import Service
+from bot.game.mastery import HoldType, WeaponFamily
 from bot.game.modes import FightMode
 from bot.game.equipment import (
     ALL_SLOTS,
@@ -30,6 +31,10 @@ from bot.webapp.server import create_app
 from tests.test_webapp import TOKEN, make_init_data
 
 ARMED = FightMode.ARMED
+KNIVES = WeaponFamily.KNIVES.value
+CLUBS = WeaponFamily.CLUBS.value
+SWORDS = WeaponFamily.SWORDS.value
+OFFHAND = HoldType.OFFHAND.value
 KNUCKLES = CATALOGUE["knuckles"]
 # Кеды и бинты пак сетов сменил на «Кеды плута» и байкерские перчатки:
 # покупать здесь нужно то, что сейчас лежит на прилавке
@@ -60,6 +65,13 @@ def make_player(user_id: int = 1, credits: int = 500, **kwargs) -> Player:
         endurance=stats.endurance,
         level=kwargs.pop("level", 5),
         credits=credits,
+        # Владение под оружие этих проверок. Они про другое — про
+        # клетки, опору, износ и требования роста, — и без очков каждая
+        # упиралась бы в отказ по владению, до которого дело не должно
+        # доходить. Четыре очка в ножах и кастетах на пятом уровне
+        # законны: очков в пуле столько, сколько уровней
+        mastery=kwargs.pop("mastery", {KNIVES: 4}),
+        holds=kwargs.pop("holds", {OFFHAND: 4}),
         **kwargs,
     )
 
@@ -339,7 +351,8 @@ async def test_what_is_worn_is_not_taken_back(db):
     from bot.inventory_service import hand_in
 
     player = make_player(
-        credits=500, level=8, stats=Stats(strength=20, agility=8, intuition=8, endurance=8)
+        credits=500, level=8, mastery={CLUBS: 6},
+        stats=Stats(strength=20, agility=8, intuition=8, endurance=8),
     )
     await db.save_player(player)
     owned = await buy(db, player, "bat")
@@ -474,7 +487,12 @@ async def test_deleting_a_fighter_takes_the_inventory_with_him(db):
 
 
 def test_inventory_rows_carry_everything_the_screen_draws():
-    player = make_player(level=1, stats=Stats(strength=4, agility=4, intuition=4, endurance=4))
+    # Очков владения у него тоже нет: эта строка требований — про
+    # бойца, который не дотягивается до вещи ничем
+    player = make_player(
+        level=1, mastery={}, holds={},
+        stats=Stats(strength=4, agility=4, intuition=4, endurance=4),
+    )
     player.gear = [OwnedItem(item=KNUCKLES, id=11, wear=3)]
 
     card = build_card(player, TOKEN, viewer_id=player.user_id)
@@ -1300,7 +1318,7 @@ def test_the_two_pairs_of_canvas_trousers_do_not_share_a_picture():
 
 async def test_a_stat_from_gear_opens_the_door_to_the_next_item(db):
     """Меч даёт +5 интуиции, и под него надевается клинок с требованием 7."""
-    player = make_player(user_id=1, level=5, stats=Stats(
+    player = make_player(user_id=1, level=5, mastery={SWORDS: 2}, stats=Stats(
         strength=12, agility=8, intuition=2, endurance=12
     ))
     await db.save_player(player)
@@ -1325,7 +1343,7 @@ async def test_taking_off_the_support_takes_off_what_stood_on_it(db):
     Опорой берём вещь, которая себя не держит: у наручей прибавка меньше
     их же требования, поэтому без чужой поддержки они не стоят.
     """
-    player = make_player(user_id=1, level=5, stats=Stats(
+    player = make_player(user_id=1, level=5, mastery={SWORDS: 2}, stats=Stats(
         strength=12, agility=8, intuition=9, endurance=12
     ))
     await db.save_player(player)
@@ -1347,7 +1365,7 @@ async def test_taking_off_the_support_takes_off_what_stood_on_it(db):
 
 async def test_an_item_never_props_itself_up_while_being_replaced(db):
     """Меняем меч на вещь, которую держал сам меч, — не выйдет."""
-    player = make_player(user_id=1, level=5, stats=Stats(
+    player = make_player(user_id=1, level=5, mastery={SWORDS: 2}, stats=Stats(
         strength=12, agility=8, intuition=3, endurance=12
     ))
     await db.save_player(player)
@@ -1365,7 +1383,7 @@ async def test_an_item_never_props_itself_up_while_being_replaced(db):
 
 async def test_the_cascade_keeps_going_until_the_gear_stands_on_its_own(db):
     """Снятие идёт не в один заход: за первой вещью может уйти вторая."""
-    player = make_player(user_id=1, level=5, stats=Stats(
+    player = make_player(user_id=1, level=5, mastery={SWORDS: 2}, stats=Stats(
         strength=12, agility=8, intuition=9, endurance=12
     ))
     saber = OwnedItem(item=CATALOGUE["lightsaber"], id=1, slot=Slot.WEAPON)
@@ -1399,7 +1417,7 @@ async def test_a_respec_undresses_what_it_can_no_longer_carry(db):
     """Сбросили характеристики — надетое не по плечу уходит в рюкзак."""
     from bot.inventory_service import settle_gear
 
-    player = make_player(user_id=1, level=5, stats=Stats(
+    player = make_player(user_id=1, level=5, mastery={KNIVES: 1}, stats=Stats(
         strength=20, agility=8, intuition=20, endurance=12
     ))
     await db.save_player(player)

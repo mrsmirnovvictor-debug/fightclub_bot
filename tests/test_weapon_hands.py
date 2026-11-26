@@ -16,10 +16,14 @@ from bot.game.equipment import CATALOGUE, Item, ItemKind, Slot, WeaponHand
 from bot.game.gear import hold_required, missing_mastery
 from bot.game.mastery import HoldType, WeaponFamily
 from bot.inventory_service import InventoryError, equip, unequip
+from bot.mastery_service import invest
 from bot.models import Player
 
 SWORDS = WeaponFamily.SWORDS.value
 KNIVES = WeaponFamily.KNIVES.value
+OFFHAND = HoldType.OFFHAND.value
+TWO_HANDED = HoldType.TWO_HANDED.value
+SHIELD = HoldType.SHIELD.value
 
 
 def a_weapon(code: str, hand: WeaponHand, level: int = 1, family: str = SWORDS) -> Item:
@@ -53,11 +57,20 @@ def hands(monkeypatch) -> dict[str, Item]:
 
 
 async def a_fighter(db: Database) -> Player:
+    """Боец, у которого владение под пробные вещи уже разложено.
+
+    Правила рук и правила владения — разные правила, и проверяются они
+    здесь порознь: без очков любая попытка упиралась бы в отказ по
+    владению, и до рук дело не доходило бы вовсе. Вещи пробные, первого
+    уровня, поэтому и очков на них нужно по одному — щиту два.
+    """
     player = Player(
         user_id=42,
         nickname="Тайлер",
         class_code="assassin",
         level=10,
+        mastery={SWORDS: 1, KNIVES: 1},
+        holds={OFFHAND: 1, TWO_HANDED: 1, SHIELD: 2},
         **Stats(strength=20, agility=20, intuition=20, endurance=20).as_dict(),
     )
     await db.save_player(player)
@@ -239,6 +252,62 @@ def test_the_gaps_in_mastery_are_named_one_by_one(hands):
     assert missing_mastery(both, {KNIVES: 9}, {HoldType.TWO_HANDED.value: 5}) == [
         "family"
     ]
+
+
+async def test_without_the_mastery_the_weapon_stays_in_the_backpack(db, hands):
+    """Проверка владения включена: без очков вида вещь не надеть.
+
+    Отказ называет, чего не хватает, теми же словами и числами, что
+    стоят в требованиях на экране: иначе боец не поймёт, какое из двух
+    чисел правда.
+    """
+    player = Player(
+        user_id=43,
+        nickname="Марла",
+        class_code="assassin",
+        level=10,
+        **Stats(strength=20, agility=20, intuition=20, endurance=20).as_dict(),
+    )
+    await db.save_player(player)
+    owned = await give(db, player, "probe_main")
+
+    with pytest.raises(InventoryError) as oops:
+        await equip(db, player, owned.id)
+    assert "Не хватает владения: мечи 1" in str(oops.value)
+    assert player.gear_in_slot(Slot.WEAPON) is None
+
+    # Вложили очко — и та же вещь надевается
+    await invest(db, player, SWORDS)
+    await equip(db, player, owned.id)
+    assert player.gear_in_slot(Slot.WEAPON).code == "probe_main"
+
+
+async def test_the_hold_is_asked_for_the_cell_it_goes_into(db, hands):
+    """Нож в первой руке берут за вид, во второй — ещё и за хват.
+
+    У бойца очко вида есть, а хвата нет: в основную руку нож идёт, во
+    вторую — отказ, и в отказе назван именно хват.
+    """
+    player = Player(
+        user_id=44,
+        nickname="Боб",
+        class_code="rogue",
+        level=10,
+        mastery={KNIVES: 1, SWORDS: 1},
+        **Stats(strength=20, agility=20, intuition=20, endurance=20).as_dict(),
+    )
+    await db.save_player(player)
+    main = await give(db, player, "probe_main")
+    second = await give(db, player, "probe_second")
+    await equip(db, player, main.id)
+
+    with pytest.raises(InventoryError) as oops:
+        await equip(db, player, second.id, Slot.OFFHAND)
+    assert "второе оружие 1" in str(oops.value)
+
+    # А в основную руку тот же нож идёт и без хвата — был бы вид
+    await equip(db, player, second.id)
+    assert player.gear_in_slot(Slot.WEAPON).code == "probe_second"
 
 
 def test_a_thing_without_a_family_asks_for_no_mastery(hands):

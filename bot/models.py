@@ -296,6 +296,24 @@ class Player:
         """Сколько вложено в этот тип владения."""
         return max(0, self.holds.get(code, 0))
 
+    def mastery_gaps(self, item: Item, slot: Slot | None = None) -> list[str]:
+        """Чего не хватает во владении, чтобы взять эту вещь в эту руку.
+
+        Коды нехваток — `family` и `hold`; словами их называет тот, кто
+        показывает отказ. Городским не хватает нечего: очков владения у
+        них нет, и оружие приходит вместе с ними, — а требовать с них
+        то, чего им не выдают, значило бы раздеть весь город.
+
+        Надетое этим не трогают: спрашивают, когда вещь надевают.
+        Поэтому проверка живёт здесь, а не в `can_equip`, по которому
+        `settle_gear` снимает то, что бойцу больше не по плечу.
+        """
+        from bot.game.gear import missing_mastery
+
+        if self.user_id <= 0:
+            return []
+        return missing_mastery(item, self.mastery, self.holds, slot)
+
     @property
     def backpack(self) -> list[OwnedItem]:
         """Вещи, которые лежат в инвентаре и ждут своего часа."""
