@@ -1191,3 +1191,40 @@ def test_the_jewelled_kit_fills_all_four_cells():
         rings = {kit[slot].code for slot in RING_SLOTS}
         assert len(rings) == 1 and rings.pop().startswith("fan_"), fclass.code
         assert kit[Slot.NECKLACE].code.startswith("fan_"), fclass.code
+
+
+def test_a_set_weapon_matches_the_family_of_its_class():
+    """Оружие комплекта — из того семейства, что рекомендовано классу.
+
+    Боец, одетый в свой набор, не должен оказываться с оружием чужого
+    вида: иначе очки владения приходится вкладывать не туда, куда ведёт
+    класс, и комплект спорит сам с собой. Прежде так и было — у
+    трикстера булава, у танка кастет.
+
+    Исключение одно, и оно сознательное: меч героя остался мечом в
+    воинском наборе. Он показывает, что чужое направление не запрещено,
+    а стоит очков.
+    """
+    from bot.game.mastery import advice_for
+
+    for item in CATALOGUE.values():
+        if not item.code.startswith("set_") or not item.is_weapon:
+            continue
+        if item.code == "set_hero_weapon":
+            continue
+        for code in item.for_classes:
+            advised, _ = advice_for(code)
+            assert item.family in [one.value for one in advised], item.code
+
+
+def test_the_hero_sword_is_the_two_handed_example():
+    """Меч героя остался мечом и взялся обеими руками.
+
+    Арт и название у него прежние — перерисовывать не пришлось, — а
+    двуручный хват дал ранний пример этого типа владения.
+    """
+    hero = CATALOGUE["set_hero_weapon"]
+
+    assert hero.title == "Длинный меч героя"
+    assert hero.two_handed
+    assert hero.family == "swords"

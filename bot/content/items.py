@@ -775,6 +775,16 @@ def _weapon(
     )
 
 
+# Оружие комплектов. Каждому классу — его рекомендованное семейство:
+# танку молоты и топоры, воину дубины и булавы, трикстеру ножи и
+# кастеты, ассасину мечи. Прежде комплекты собирали кто во что горазд —
+# у трикстера булава, у танка кастет, — и боец, одетый в свой набор,
+# оказывался с оружием чужого вида: вкладывать очки приходилось не туда,
+# куда ведёт класс.
+#
+# Числа у вещей при этом не трогали: поменялась не сила, а то, чем она
+# нанесена. Исключение одно — меч героя: он остался мечом и стал
+# двуручным, как решили по задаче.
 SET_WEAPONS: tuple[Item, ...] = (
     # ---------- 3 ступень: средний урон 4 ----------
     _weapon(
@@ -788,33 +798,33 @@ SET_WEAPONS: tuple[Item, ...] = (
         strength=1, damage_min=2, damage_max=5, accuracy=0.05,
     ),
     _weapon(
-        'plut', 'Булава с маской шута', '🔨', 'булавой с маской шута',
+        'plut', 'Кастет с маской шута', '🔩', 'кастетом с маской шута',
         ROGUE, 3, 120, Stats(agility=12),
         agility=1, damage_min=2, damage_max=5, dodge=0.05,
     ),
     _weapon(
-        'mercenary', 'Кукри с волком', '🗡', 'кукри с волком',
+        'mercenary', 'Короткий меч с волком', '⚔️', 'коротким мечом с волком',
         ASSASSIN, 3, 120, Stats(intuition=12),
         intuition=1, damage_min=1, damage_max=6, crit=0.05,
     ),
     # ---------- 5 ступень: средний урон 8 ----------
     _weapon(
-        'boxer', 'Бронзовый кастет', '🔩', 'бронзовым кастетом',
+        'boxer', 'Бронзовый молот', '🔨', 'бронзовым молотом',
         TANK, 5, 180, Stats(endurance=15),
         strength=1, damage_min=6, damage_max=8, accuracy=0.11, anticrit=0.11,
     ),
     _weapon(
-        'biker', 'Топор с крылатым черепом', '🪓', 'топором с крылатым черепом',
+        'biker', 'Булава с крылатым черепом', '🏏', 'булавой с крылатым черепом',
         WARRIOR, 5, 180, Stats(strength=15),
         strength=1, damage_min=5, damage_max=9, accuracy=0.11, anticrit=0.08,
     ),
     _weapon(
-        'croupier', 'Трость с рулеткой', '🦯', 'тростью с рулеткой',
+        'croupier', 'Кастет крупье', '🔩', 'кастетом крупье',
         ROGUE, 5, 180, Stats(agility=15),
         agility=1, damage_min=5, damage_max=9, dodge=0.11, anticrit=0.06,
     ),
     _weapon(
-        'strangler', 'Цепь с рукоятями', '⛓', 'цепью с рукоятями',
+        'strangler', 'Клинок душителя', '⚔️', 'клинком душителя',
         ASSASSIN, 5, 180, Stats(intuition=15),
         intuition=1, damage_min=3, damage_max=11, accuracy=0.11, crit=0.08,
     ),
@@ -825,7 +835,7 @@ SET_WEAPONS: tuple[Item, ...] = (
         strength=2, damage_min=11, damage_max=14, accuracy=0.24, anticrit=0.24,
     ),
     _weapon(
-        'fighter', 'Стальной кастет', '🔩', 'стальным кастетом',
+        'fighter', 'Стальная булава', '🏏', 'стальной булавой',
         WARRIOR, 7, 300, Stats(strength=20),
         strength=2, damage_min=9, damage_max=16, accuracy=0.24, anticrit=0.2,
     ),
@@ -835,13 +845,13 @@ SET_WEAPONS: tuple[Item, ...] = (
         agility=2, damage_min=9, damage_max=16, dodge=0.24, anticrit=0.12,
     ),
     _weapon(
-        'camouflage', 'Нож со змеёй', '🔪', 'ножом со змеёй',
+        'camouflage', 'Сабля со змеёй', '⚔️', 'саблей со змеёй',
         ASSASSIN, 7, 300, Stats(intuition=20),
         intuition=2, damage_min=5, damage_max=20, accuracy=0.24, crit=0.2,
     ),
     # ---------- 9 ступень: средний урон 23 ----------
     _weapon(
-        'bouncer', 'Дубинка с бульдогом', '🏏', 'дубинкой с бульдогом',
+        'bouncer', 'Молот с бульдогом', '🔨', 'молотом с бульдогом',
         TANK, 9, 500, Stats(endurance=25),
         strength=4, damage_min=19, damage_max=23, accuracy=0.38, anticrit=0.38,
     ),
@@ -856,7 +866,7 @@ SET_WEAPONS: tuple[Item, ...] = (
         agility=4, damage_min=17, damage_max=25, dodge=0.38, anticrit=0.19,
     ),
     _weapon(
-        'killer', 'Рубиновый кинжал', '🗡', 'рубиновым кинжалом',
+        'killer', 'Рубиновый меч', '⚔️', 'рубиновым мечом',
         ASSASSIN, 9, 500, Stats(intuition=25),
         intuition=4, damage_min=11, damage_max=31, accuracy=0.38, crit=0.34,
     ),
