@@ -83,6 +83,7 @@ from bot.game.gear import (
     repair,
     repair_points,
     roll_fight_wear,
+    two_handed_damage,
 )
 from bot.game.sets import BASE_POWER, amplified, next_step, power_percent, set_power
 
@@ -158,11 +159,11 @@ class Equipment:
         real = owned.real
         slot = owned.slot
         if slot is None:  # pragma: no cover - в экипировке лежит только надетое
-            return amplified(real, self.power(owned))
+            return two_handed_damage(amplified(real, self.power(owned)))
         ready = self._grown.get(slot)
         if ready is not None and ready[0] is real:
             return ready[1]
-        grown = amplified(real, self.power(owned))
+        grown = two_handed_damage(amplified(real, self.power(owned)))
         self._grown[slot] = (real, grown)
         return grown
 
@@ -422,5 +423,6 @@ __all__ = [
     "repair_points",
     "roll_fight_wear",
     "shelf_of",
+    "two_handed_damage",
     "shop_sections",
 ]
