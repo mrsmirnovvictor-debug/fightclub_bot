@@ -2585,8 +2585,15 @@ async def test_the_character_sheet_stands_in_boxes(server):
         # Заголовки набраны прописными через `text-transform`, и
         # браузер отдаёт их такими же: сверяем слова, а не регистр
         heads = await page.locator("#hero-stats .hero-sub").all_inner_texts()
+        # Владение оружием стоит сразу за раздачей очков: обе коробки о
+        # том, что боец выбрал сам, — и только ниже начинается бой
         assert [one.lower() for one in heads] == [
-            "характеристики", "бои", "атака", "защита", "модификаторы"
+            "характеристики",
+            "бои",
+            "владение оружием",
+            "атака",
+            "защита",
+            "модификаторы",
         ], heads
 
         # Место рождения и дата — под всем, одной подписью. Место
@@ -3221,9 +3228,14 @@ async def test_the_card_of_a_stranger_is_laid_out_like_your_own(server):
         await page.wait_for_selector(".sheet-doll")
 
         sheet = page.locator("#sheet-list")
-        assert await sheet.evaluate(
+        theirs = await sheet.evaluate(
             "(o) => [...o.querySelectorAll('.hero-sub')].map((one) => one.textContent)"
-        ) == mine
+        )
+        # Коробки те же и в том же порядке — кроме владения оружием:
+        # очки раздают только свои, и в чужой карточке этой коробке
+        # нечего делать
+        assert theirs == [one for one in mine if one != "Владение оружием"]
+        assert "Владение оружием" in mine, "на своём экране коробка есть"
         # Шкала опыта, строка рейтинга и подпись о рождении — тоже
         assert await sheet.locator(".xp-panel .xp-level-number").inner_text() == "7"
         assert await sheet.locator(".hero-rating .hero-elo").count() == 1
