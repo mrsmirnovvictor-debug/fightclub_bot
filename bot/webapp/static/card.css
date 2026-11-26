@@ -839,6 +839,17 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   word-spacing: -0.2em;
 }
 .up-value.added { color: var(--hp-green); }
+/* Владение оружием: строки те же, что у раздачи очков, плюс знак
+   рекомендации. Рекомендованное классу подсвечено, но не выделено
+   рамкой: это подсказка, а не запрет на остальное */
+.mastery-row.advised .row-name,
+.mastery-row.advised .up-name { color: var(--accent); }
+.mastery-row.advised .up-name::after,
+.mastery-row.advised .row-name::after {
+  content: " ★";
+  font-size: 11px;
+  opacity: 0.8;
+}
 .up-buttons {
   display: flex;
   gap: 8px;
@@ -1163,6 +1174,16 @@ body.dark .bar-tab.active .bar-icon {
   margin-top: 4px;
 }
 
+/* Почему вещь не надеть. Строка под кнопками, а не подсказка на них:
+   погасшую кнопку не нажать. Красным не красим — это не ошибка, а
+   список того, что ещё предстоит добрать */
+.thing-blocked {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-top: 8px;
+  line-height: 1.35;
+}
+
 /* Выбор клетки под кольцо: три клетки в ряд, под каждой — что в ней
    лежит. Клетка здесь крупнее, чем в кукле: там она у́же вдвое, потому
    что стоит в ряду с другими, а здесь по ней надо попасть пальцем */
@@ -1333,6 +1354,10 @@ body.dark .bar-tab.active .bar-icon {
    первой ступени — зелёная: это уже не совет, а прибавка в бою */
 .thing-kit { color: var(--muted); font-size: 12.5px; margin-top: 6px; line-height: 1.35; }
 .thing-kit.strong { color: var(--hp-green); font-weight: 600; }
+
+/* Чем берут вещь: вид, хват и порог владения. Строка приглушена, как
+   износ и комплект: это справка о вещи, а не то, чем вещь хвалится */
+.thing-arming { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
 
 .thing-buttons {
   display: flex;

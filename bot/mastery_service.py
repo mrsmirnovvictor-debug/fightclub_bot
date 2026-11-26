@@ -57,6 +57,66 @@ def title_of(code: str) -> str:
     return code
 
 
+def parse_draft(raw: dict) -> dict[str, int]:
+    """Разобрать заявку «куда сколько». Мусор и минусы не проходят.
+
+    Заявка приходит с экрана одной пачкой: боец раскладывает очки, видит
+    итог и подтверждает. Поэтому разбор строгий — непонятное число или
+    чужой код останавливают всю заявку, а не тихо выпадают из неё.
+    """
+    draft: dict[str, int] = {}
+    for code, value in (raw or {}).items():
+        if not pool_of(str(code)):
+            raise MasteryError(f"Такого направления нет: {code}.")
+        try:
+            amount = int(value)
+        except (TypeError, ValueError) as error:
+            raise MasteryError(
+                f"Непонятно, сколько очков в «{title_of(str(code))}»."
+            ) from error
+        if amount < 0:
+            raise MasteryError("Очки можно только вкладывать, не отнимать.")
+        if amount:
+            draft[str(code)] = amount
+    if not draft:
+        raise MasteryError("Не выбрано ни одного очка.")
+    return draft
+
+
+async def spend(db: Database, player: Player, raw: dict) -> dict[str, int]:
+    """Разложить очки владения пачкой. Вернуть то, что легло.
+
+    Пулы считаются порознь: перебор в видах не трогает хваты, и
+    наоборот. Заявка проходит целиком или не проходит вовсе — половина
+    разложенного хуже отказа: боец не поймёт, что именно легло.
+    """
+    draft = parse_draft(raw)
+    for pool, points, kind in (
+        ("family", player.mastery, "вида оружия"),
+        ("hold", player.holds, "типа владения"),
+    ):
+        asked = sum(
+            amount for code, amount in draft.items() if pool_of(code) == pool
+        )
+        left = free_points(player.level, points)
+        if asked > left:
+            raise MasteryError(
+                f"Столько очков {kind} нет: свободных {left}, "
+                f"а разложено {asked}."
+            )
+
+    for code, amount in draft.items():
+        points = player.mastery if pool_of(code) == "family" else player.holds
+        points[code] = max(0, points.get(code, 0)) + amount
+    await db.save_player(player)
+    logger.info(
+        "Боец %s разложил очки владения: %s",
+        player.user_id,
+        {title_of(code): amount for code, amount in draft.items()},
+    )
+    return draft
+
+
 async def invest(
     db: Database, player: Player, code: str, amount: int = 1
 ) -> int:
@@ -91,4 +151,11 @@ async def invest(
     return points[code]
 
 
-__all__ = ["MasteryError", "invest", "pool_of", "title_of"]
+__all__ = [
+    "MasteryError",
+    "invest",
+    "parse_draft",
+    "pool_of",
+    "spend",
+    "title_of",
+]

@@ -46,6 +46,7 @@ from bot.pro_service import (
     promo_taken,
     redeem_code,
 )
+from bot.mastery_service import MasteryError, spend as mastery_spend
 from bot.store_service import StoreError, StoreService
 from bot.upgrade_service import UpgradeError, spend_points
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
@@ -1143,6 +1144,29 @@ async def api_upgrade(request: web.Request) -> web.Response:
             "card": build_card(player, config.bot_token, player.user_id),
             "spent": {stat.value: gain.get(stat) for stat in ALL_STATS},
             "left": player.free_points,
+        }
+    )
+
+
+async def api_mastery(request: web.Request) -> web.Response:
+    """Разложить очки владения оружием.
+
+    Заявка приходит пачкой: боец раскладывает очки на экране, видит
+    итог и подтверждает. Сервер считает остаток заново — страница тоже
+    считает, но только чтобы не рисовать мёртвых кнопок.
+    """
+    data = await _payload(request)
+    try:
+        player = await _own_player(request)
+        spent = await mastery_spend(request.app[DB_KEY], player, data)
+    except (InventoryError, MasteryError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "spent": spent,
         }
     )
 
@@ -4614,6 +4638,7 @@ def create_app(
             web.post("/api/buy", api_buy),
             web.post("/api/use", api_use),
             web.post("/api/upgrade", api_upgrade),
+            web.post("/api/mastery", api_mastery),
             web.get("/api/club", api_club),
             web.get("/api/ladder", api_ladder),
             web.post("/api/seen", api_seen),

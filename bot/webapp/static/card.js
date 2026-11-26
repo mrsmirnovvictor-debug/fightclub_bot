@@ -774,6 +774,8 @@ function wornCard(item) {
     label.textContent = "Даёт надетой";
     body.append(label, bonusList(item));
   }
+  const worn_arming = armingNote(item);
+  if (worn_arming) body.appendChild(worn_arming);
   if (item.in_hands) {
     const hands = document.createElement("div");
     hands.className = "thing-note";
@@ -800,6 +802,23 @@ function requirementList(item) {
     list.appendChild(li);
   });
   return list;
+}
+
+// Чем берут вещь: вид оружия, хват и требуемое владение — одной строкой.
+// Это свойство самой вещи, и говорит оно о вещи, а не о бойце: сколько у
+// него вложено, стоит рядом, в требованиях. Строки нет вовсе у того, кому
+// владения не нужно, — у одежды и огнестрела
+function armingNote(item) {
+  if (!item.arming || !item.arming.mastery) return null;
+  const note = document.createElement("div");
+  note.className = "thing-arming";
+  const parts = [];
+  if (item.arming.family_title) parts.push(item.arming.family_title);
+  else if (item.arming.hold_title) parts.push(item.arming.hold_title);
+  if (item.arming.hand_title) parts.push(item.arming.hand_title);
+  parts.push("владение " + item.arming.mastery);
+  note.textContent = item.arming.emoji + " " + parts.join(" · ");
+  return note;
 }
 
 // Строка комплекта: сколько вещей набора надето и во что это превращает
@@ -958,6 +977,9 @@ function thingCard(item, credits, shop, bare) {
     }
   }
 
+  const arming = armingNote(item);
+  if (arming) body.appendChild(arming);
+
   const reqLabel = document.createElement("div");
   reqLabel.className = "thing-label";
   reqLabel.textContent = "Требования";
@@ -1035,7 +1057,6 @@ function thingCard(item, credits, shop, bare) {
     buttons.appendChild(
       button("Надеть", {
         disabled: !item.can_equip,
-        hint: "Нужно подрасти: " + requirementText(item),
         onClick: () => askRingSlot(item),
       })
     );
@@ -1046,7 +1067,6 @@ function thingCard(item, credits, shop, bare) {
         button(text, {
           secondary: index > 0,
           disabled: !item.can_equip,
-          hint: "Нужно подрасти: " + requirementText(item),
           onClick: () => act("api/equip", { item_id: item.id, slot: slot.slot }),
         })
       );
@@ -1065,6 +1085,17 @@ function thingCard(item, credits, shop, bare) {
     );
   }
   body.appendChild(buttons);
+
+  // Почему «Надеть» погасла — строкой под кнопкой, а не подсказкой на
+  // ней: погасшую кнопку не нажать, и объяснение осталось бы
+  // ненайденным. Недостача разобрана на части, и видно, что докупать
+  const why = blockedHint(item);
+  if (why) {
+    const locked = document.createElement("div");
+    locked.className = "thing-blocked";
+    locked.textContent = why;
+    body.appendChild(locked);
+  }
 
   box.appendChild(body);
   return box;
@@ -1120,11 +1151,23 @@ function askRingSlot(item) {
   el("sheet-list").appendChild(row);
 }
 
-function requirementText(item) {
-  return item.requirements
-    .filter((need) => !need.ok)
-    .map((need) => need.title.toLowerCase() + " " + need.need)
-    .join(", ");
+// Почему вещь не надеть — порознь, по происхождению недостачи. Уровень и
+// характеристики добирают ростом, вид и хват — очками владения, и это
+// разные действия: «нужно подрасти: мечи 7» не сказало бы, что делать, а
+// одно общее «нельзя» не сказало бы и этого
+function blockedHint(item) {
+  const grow = [];
+  const learn = [];
+  item.requirements.forEach((need) => {
+    if (need.ok) return;
+    const text = need.title.toLowerCase() + " " + need.need;
+    if (need.code === "family" || need.code === "hold") learn.push(text);
+    else grow.push(text);
+  });
+  const parts = [];
+  if (grow.length) parts.push("Нужно подрасти: " + grow.join(", "));
+  if (learn.length) parts.push("Нужно владение: " + learn.join(", "));
+  return parts.join(". ");
 }
 
 // ---------- награда за вход ----------
@@ -1740,6 +1783,194 @@ function statStep(stat) {
 
   row.append(label, minus, value, plus);
   return row;
+}
+
+// ---------- владение оружием ----------
+//
+// Два пула: вид оружия и хват. Очки приходят по одному за уровень в
+// каждый, и переносить между пулами нельзя. Раскладывают их во
+// всплывашке — как и очки характеристик, — а на экране остаётся то,
+// что уже вложено, и кнопка, когда есть чем распорядиться.
+//
+// Рекомендации класса подсвечены, но ничего не запрещают: вкладывать
+// можно куда угодно, и у танка с мечами свои резоны.
+
+let masteryDraft = {};
+
+function masteryRows(card) {
+  const held = card.mastery;
+  return held ? held.families.concat(held.holds) : [];
+}
+
+function masteryFree(card) {
+  const held = card.mastery;
+  return held ? held.free.family + held.free.hold : 0;
+}
+
+function masteryDraftIn(pool, card) {
+  // Сколько из заявки уходит в этот пул: пулы считаются порознь, и
+  // «+» в видах не должен гаснуть из-за разложенных хватов
+  const codes = ((card.mastery || {})[pool === "family" ? "families" : "holds"]
+    || []).map((one) => one.code);
+  return codes.reduce((sum, code) => sum + (masteryDraft[code] || 0), 0);
+}
+
+function masteryLeft(pool, card) {
+  const free = ((card.mastery || {}).free || {})[pool] || 0;
+  return free - masteryDraftIn(pool, card);
+}
+
+/** Что вложено, строками: направление, значение и знак рекомендации. */
+function paintMastery(card) {
+  const box = el("mastery");
+  const panel = el("hero-mastery");
+  if (!box || !panel) return;
+  // Городским раздавать нечего: оружие приходит вместе с ними
+  panel.classList.toggle("hidden", !card.mastery || !card.is_self);
+  box.textContent = "";
+  if (!card.mastery) return;
+
+  masteryRows(card).forEach((one) => {
+    const row = document.createElement("div");
+    row.className = "row mastery-row" + (one.advised ? " advised" : "");
+    const name = document.createElement("span");
+    name.className = "row-name";
+    name.textContent = one.emoji + " " + one.title;
+    const value = document.createElement("span");
+    value.className = "row-value";
+    value.textContent = one.level;
+    row.append(name, value);
+    box.appendChild(row);
+  });
+
+  const btn = el("mastery-up");
+  if (!btn) return;
+  const free = masteryFree(card);
+  btn.classList.toggle("hidden", free <= 0 || !card.is_self);
+  btn.textContent = "Владение (" + free + ")";
+}
+
+function openMastery() {
+  if (!cardData || masteryFree(cardData) <= 0) return;
+  masteryDraft = {};
+  openSheet("Владение оружием", "Очки вида и хвата считаются порознь", true);
+  paintMasterySheet();
+}
+
+function paintMasterySheet() {
+  const box = el("sheet-list");
+  if (!box || !cardData) return;
+  box.textContent = "";
+
+  [["family", "Вид оружия", "families"], ["hold", "Тип владения", "holds"]]
+    .forEach(([pool, title, key]) => {
+      const head = document.createElement("p");
+      head.className = "up-free";
+      head.textContent =
+        title + " · свободных: " + masteryLeft(pool, cardData)
+        + " из " + ((cardData.mastery.free || {})[pool] || 0);
+      box.appendChild(head);
+      const rows = document.createElement("ul");
+      rows.className = "rows";
+      (cardData.mastery[key] || []).forEach((one) => {
+        rows.appendChild(masteryStep(one, pool));
+      });
+      box.appendChild(rows);
+    });
+
+  const buttons = document.createElement("div");
+  buttons.className = "up-buttons";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "save";
+  save.textContent = "Сохранить";
+  save.disabled = !masteryTotal();
+  save.addEventListener("click", applyMastery);
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "reset";
+  reset.textContent = "Сбросить";
+  reset.disabled = !masteryTotal();
+  reset.addEventListener("click", () => {
+    masteryDraft = {};
+    paintMasterySheet();
+  });
+  buttons.append(save, reset);
+  box.appendChild(buttons);
+}
+
+function masteryStep(one, pool) {
+  const row = document.createElement("li");
+  row.className = "up-row mastery-row" + (one.advised ? " advised" : "");
+
+  const label = document.createElement("span");
+  label.className = "up-name";
+  label.textContent = one.emoji + " " + one.title;
+
+  const value = document.createElement("span");
+  value.className = "up-value";
+  const added = masteryDraft[one.code] || 0;
+  value.textContent = one.level + (added ? " + " + added : "");
+  if (added) value.classList.add("added");
+
+  const minus = document.createElement("button");
+  minus.type = "button";
+  minus.className = "step";
+  minus.textContent = "−";
+  minus.disabled = !added;
+  minus.addEventListener("click", () => {
+    masteryDraft[one.code] = Math.max(0, (masteryDraft[one.code] || 0) - 1);
+    if (!masteryDraft[one.code]) delete masteryDraft[one.code];
+    paintMasterySheet();
+  });
+
+  const plus = document.createElement("button");
+  plus.type = "button";
+  plus.className = "step";
+  plus.textContent = "+";
+  plus.disabled = masteryLeft(pool, cardData) <= 0;
+  plus.addEventListener("click", () => {
+    if (masteryLeft(pool, cardData) <= 0) return;
+    masteryDraft[one.code] = (masteryDraft[one.code] || 0) + 1;
+    haptic((feedback) => feedback.selectionChanged());
+    paintMasterySheet();
+  });
+
+  row.append(label, minus, value, plus);
+  return row;
+}
+
+function masteryTotal() {
+  return Object.values(masteryDraft).reduce((sum, one) => sum + one, 0);
+}
+
+async function applyMastery() {
+  if (busy || !masteryTotal()) return;
+  // Называем выбор словами: человек соглашается с тем, что увидит в
+  // карточке, — «+2 к мечам», а не «2 очка»
+  const named = masteryRows(cardData)
+    .filter((one) => masteryDraft[one.code])
+    .map((one) => "+" + masteryDraft[one.code] + " · " + one.title)
+    .join("\n");
+  const ok = await confirmAction(
+    "Сохранить выбор:\n" + named + "\n\nПоменять его будет уже нельзя."
+  );
+  if (!ok) return;
+
+  busy = true;
+  const spent = masteryTotal();
+  try {
+    const data = await post("api/mastery", masteryDraft);
+    masteryDraft = {};
+    closeSheet();
+    render(data.card, true);
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    popup("🎯 Владение выросло", "Вложено очков: " + spent + ".");
+  } catch (error) {
+    popup("Владение", error.message);
+  } finally {
+    busy = false;
+  }
 }
 
 /** Зелёная кнопка под характеристиками — всё, что от раздачи очков
@@ -2427,6 +2658,9 @@ function lotCard(lot) {
       lot.fee + ")";
     body.appendChild(take);
   }
+
+  const lot_arming = armingNote(lot);
+  if (lot_arming) body.appendChild(lot_arming);
 
   const reqLabel = document.createElement("div");
   reqLabel.className = "thing-label";
@@ -8601,6 +8835,7 @@ function render(card, keepTab) {
   cardStats = card.is_self ? card.stats : [];
   freePoints = card.is_self ? card.progress.free_points : 0;
   paintUpgrade();
+  paintMastery(card);
 
   // Шкала опыта стоит наверху карточки, отдельным блоком. Свободные
   // очки в ней не повторяем: их показывает и считает блок раздачи
@@ -22645,6 +22880,7 @@ watchInteriors();
 
 // Раздачу очков открывает кнопка под характеристиками
 el("hero-up").addEventListener("click", openUpgrade);
+el("mastery-up").addEventListener("click", openMastery);
 
 // Нарисованные иконки подменяют эмодзи, если приехали
 dressTabs();

@@ -489,8 +489,15 @@ def test_inventory_rows_carry_everything_the_screen_draws():
     assert gain["Сила"]["value"] == CATALOGUE["knuckles"].strength
     # у оружия в свойствах стоит диапазон урона, а не прибавка со знаком плюс
     assert gain["Урон"]["text"] == CATALOGUE["knuckles"].describe_damage()
-    # уровень и сила не дотягивают — обе строки требований помечены красным
-    assert [need["ok"] for need in row["requirements"]] == [False, False]
+    # Уровень, сила и владение кастетами — три строки требований, и все
+    # красные. Строк именно три: недостачу перечисляют порознь, иначе
+    # по одному «нельзя» не понять, что докупать
+    assert [need["code"] for need in row["requirements"]] == [
+        "level",
+        "strength",
+        "family",
+    ]
+    assert [need["ok"] for need in row["requirements"]] == [False, False, False]
     # Места у оружия решает хват: кастет лёгкий, и его берут любой
     # рукой. Прежде карточка показывала обе руки у всякого оружия, и
     # кувалда уживалась со щитом
@@ -726,8 +733,12 @@ def test_shop_marks_what_is_locked_owned_and_affordable():
     assert goods["bat"]["unlocked"] is False  # бита — с 6 уровня
     assert goods["bat"]["level_required"] == 6
     assert [c["code"] for c in goods["bat"]["suits"]] == ["warrior"]
-    # требования показываются и в лавке: сила у трубы уже есть, уровень биты — нет
-    assert all(need["ok"] for need in goods["pipe"]["requirements"])
+    # Требования показываются и в лавке. Уровень и сила у трубы уже
+    # есть, а очков владения в дубинах боец не вкладывал — и эта строка
+    # стоит красной отдельно от роста
+    shown = {need["code"]: need for need in goods["pipe"]["requirements"]}
+    assert shown["level"]["ok"] and shown["strength"]["ok"]
+    assert not shown["family"]["ok"] and shown["family"]["need"] == 4
     assert weapons["open"] < len(weapons["items"])
 
 

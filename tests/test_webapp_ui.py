@@ -3843,6 +3843,130 @@ async def test_free_points_are_handed_out_right_on_the_hero_screen(server):
         await browser.close()
 
 
+async def test_the_mastery_sheet_keeps_the_two_pools_apart(server):
+    """Владение раздают той же всплывашкой, но пулы в ней считаются порознь.
+
+    Это главное, что экран обязан показать: очко вида и очко хвата —
+    разные очки, и разложенные мечи не должны гасить «плюс» у щитов.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        sent = []
+
+        async def mastery(route):
+            draft = json.loads(route.request.post_data)
+            sent.append(draft)
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"card": card, "spent": draft}),
+            )
+
+        await page.route("**/api/mastery", mastery)
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        opens = page.locator("#mastery-up")
+        assert await opens.inner_text() == "Владение (10)", "5 вида и 5 хвата"
+        # Что вложено, видно и без всплывашки — строками в карточке
+        block = await page.locator("#hero-mastery").inner_text()
+        assert "Мечи" in block and "Щиты" in block
+        await opens.click()
+
+        box = page.locator("#sheet-list")
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        text = await box.inner_text()
+        assert "Вид оружия · свободных: 5 из 5" in text
+        assert "Тип владения · свободных: 5 из 5" in text
+
+        save = box.get_by_role("button", name="Сохранить")
+        assert await save.is_disabled(), "пока ничего не разложено"
+
+        # Четыре вида, потом три хвата: порядок тот же, что в карточке
+        plus = box.locator(".up-row .step:last-child")
+        assert await plus.count() == 7
+        for _ in range(5):
+            await plus.nth(3).click()  # мечи
+        text = await box.inner_text()
+        assert "Вид оружия · свободных: 0 из 5" in text
+        assert "Тип владения · свободных: 5 из 5" in text, "хваты не тронуты"
+        # Вид разложен весь — плюсы видов погасли, плюсы хватов живы
+        assert await plus.nth(0).is_disabled()
+        assert await plus.nth(4).is_enabled()
+
+        await plus.nth(6).click()  # щиты
+        assert "Тип владения · свободных: 4 из 5" in await box.inner_text()
+
+        asked = []
+
+        def agree(dialog):
+            asked.append(dialog.message)
+            asyncio.ensure_future(dialog.accept())
+
+        page.on("dialog", agree)
+        await save.click()
+        await page.wait_for_timeout(150)
+        assert asked and "+5 · Мечи" in asked[0] and "+1 · Щиты" in asked[0]
+        await page.wait_for_timeout(250)
+
+        assert sent == [{"swords": 5, "shield": 1}]
+        assert await page.locator("#sheet").is_hidden()
+        await browser.close()
+
+
+async def test_a_stranger_card_has_no_mastery_block(server):
+    """Чужое владение не раздают: блок есть только на своей карточке."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=999)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        assert await page.locator("#hero-mastery").is_hidden()
+        await browser.close()
+
+
+async def test_a_weapon_in_the_bag_says_what_holds_it_and_what_is_missing(server):
+    """Строка вещи говорит вид, хват и порог, а под кнопкой — чего не хватает.
+
+    Нехватка разобрана на части: уровень и характеристики — одной
+    строкой, вид и хват — другой. Они и добираются по-разному: первое
+    ростом, второе очками владения, и одно общее «нельзя» не сказало бы,
+    куда идти.
+    """
+    player = make_player()
+    player.mastery = {"knives_knuckles": 4}
+    player.gear = [
+        OwnedItem(item=CATALOGUE["greatsword"], id=7),
+        OwnedItem(item=CATALOGUE["knife"], id=8),
+    ]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
+        await page.wait_for_selector("#bag-list .thing")
+
+        heavy = page.locator("#bag-list .thing", has_text="Двуручный меч").first
+        text = await heavy.inner_text()
+        # Чем берут: вид, хват и порог владения
+        assert "Мечи · обе руки · владение 8" in text, text
+        # Чего не хватает — порознь, и видно, что докупать
+        assert "Нужно подрасти: уровень 8, сила 20" in text, text
+        assert "Нужно владение: мечи 8, двуручное оружие 8" in text, text
+
+        # Вложенное закрывает строку владения: в ножах у бойца четыре очка
+        light = page.locator("#bag-list .thing", has_text="Нож").first
+        text = await light.inner_text()
+        assert "Ножи и кастеты · любая рука · владение 4" in text, text
+        assert "Нужно" not in text, text
+        await browser.close()
+
+
 async def test_a_fighter_without_points_sees_no_panel(server):
     """Раздавать нечего — и кнопки нет: она обещала бы несуществующее."""
     player = make_player()

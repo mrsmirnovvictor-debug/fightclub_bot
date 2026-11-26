@@ -42,7 +42,7 @@ from bot.game.equipment import (
     shop_sections,
 )
 from bot.game.abilities import MAX_ABILITIES, TIERS, TIER_COST
-from bot.game.gear import ModKind
+from bot.game.gear import HAND_TITLES, ModKind, hold_required, missing_mastery
 from bot.game.market import FEE as MARKET_FEE, buyback
 from bot.game.health import (
     FULL_REGEN_SECONDS,
@@ -183,6 +183,8 @@ def worn_payload(
         "image": owned.image,
         "bonus": shown.describe_bonus(),
         "bonuses": bonuses_payload(shown, fclass, owned),
+        # Чем берут эту вещь: вид, хват и требуемое владение
+        "arming": arming_payload(shown),
         # Класс меняет урон оружия — говорим об этом там же, где число
         "in_hands": f"У {fclass.title.lower()}а в руках: {in_hands}"
         if in_hands
@@ -235,6 +237,16 @@ def requirements_payload(player: Player, item: Item) -> list[dict]:
     «Есть» считается по надетому: меч с прибавкой к интуиции открывает нож,
     до которого боец сам не дотягивается, — значит и в требованиях должно
     стоять то число, по которому решает сервер.
+
+    Недостаток перечисляется порознь — уровень, каждая характеристика,
+    вид оружия и тип владения отдельными строками: «нельзя» одной
+    строкой не говорит, что именно докупать, а вид и хват докупаются
+    по-разному и из разных пулов.
+
+    Владение считается для основной руки. Лёгкое оружие годится и во
+    вторую, но строка о «Втором оружии» в карточке вещи сбивала бы с
+    толку: нож прежде всего оружие своего вида, а вторая рука — это
+    выбор сборки, а не свойство ножа.
     """
     missing = set(player.missing_for(item))
     rows = [
@@ -259,7 +271,80 @@ def requirements_payload(player: Player, item: Item) -> list[dict]:
                     "ok": stat.value not in missing,
                 }
             )
+    return rows + mastery_rows(player, item)
+
+
+def mastery_rows(player: Player, item: Item) -> list[dict]:
+    """Строки владения в требованиях вещи: вид и хват.
+
+    Городским этих строк не рисуем вовсе: очков владения у них нет, их
+    оружие приходит вместе с ними, — и перечислять городскому недостачу
+    значило бы показывать на его карточке долг, которого не бывает.
+
+    Одежде и огнестрелу владения не нужно, и строк у них нет: порог у
+    таких вещей нулевой, а требование в ноль — это не требование.
+    """
+    if player.user_id <= 0 or not item.mastery_required:
+        return []
+
+    from bot.game.mastery import HoldType, WeaponFamily
+
+    gaps = set(missing_mastery(item, player.mastery, player.holds))
+    rows: list[dict] = []
+    if item.family:
+        family = WeaponFamily(item.family)
+        rows.append(
+            {
+                "code": "family",
+                "title": family.title,
+                "emoji": family.emoji,
+                "need": item.mastery_required,
+                "have": player.mastery_in(item.family),
+                "ok": "family" not in gaps,
+            }
+        )
+    code = hold_required(item)
+    if code:
+        hold = HoldType(code)
+        rows.append(
+            {
+                "code": "hold",
+                "title": hold.title,
+                "emoji": hold.emoji,
+                "need": item.mastery_required,
+                "have": player.hold_in(code),
+                "ok": "hold" not in gaps,
+            }
+        )
     return rows
+
+
+def arming_payload(item: Item) -> dict:
+    """Чем берут вещь: вид, хват и требуемое владение. Пусто — ничем.
+
+    Это свойство вещи, а не бойца, поэтому строка одна и та же на
+    прилавке, в рюкзаке и на рынке. Сколько у бойца вложено, говорят
+    требования (`mastery_rows`) — здесь только сама вещь.
+    """
+    if not item.mastery_required:
+        return {}
+
+    from bot.game.mastery import HoldType, WeaponFamily
+
+    family = WeaponFamily(item.family) if item.family else None
+    hold = hold_required(item)
+    return {
+        "family": item.family,
+        "family_title": family.title if family else "",
+        "emoji": family.emoji if family else HoldType(hold).emoji,
+        # Хват есть только у оружия. Щит держат второй рукой всегда, и
+        # «основная рука» в его строке была бы прямой неправдой
+        "hand": item.hand.value if item.is_weapon else "",
+        "hand_title": HAND_TITLES[item.hand] if item.is_weapon else "",
+        "hold": hold,
+        "hold_title": HoldType(hold).title if hold else "",
+        "mastery": item.mastery_required,
+    }
 
 
 def mod_mark(owned: OwnedItem) -> dict:
@@ -308,6 +393,7 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
         # Сколько даст лавка, если сдать вещь. Ноль — такое она не берёт
         "buyback": buyback(item),
         "requirements": requirements_payload(player, item),
+        "arming": arming_payload(item),
         "can_equip": player.can_equip(item),
         "bonus": item.describe_bonus(),
         "bonuses": bonuses_payload(item, player.fclass, owned),
@@ -561,6 +647,7 @@ def goods_payload(
         "can_equip": player.can_equip(item),
         "owned": owned,
         "requirements": requirements_payload(player, item),
+        "arming": arming_payload(item),
         "bonuses": bonuses_payload(item, player.fclass),
         "kit": kit_payload(item, player.equipment),
         "suits": suits_payload(item),
@@ -775,6 +862,53 @@ def pro_payload(
     }
 
 
+def mastery_payload(player: Player) -> dict[str, Any]:
+    """Владение оружием для экрана: два пула, направления и остаток.
+
+    Рекомендации класса приезжают отметкой `advised`, а не отдельным
+    списком: экран их подсвечивает, но ничего не запрещает — вкладывать
+    очки можно куда угодно, и у танка с мечами свои резоны.
+
+    Городским этот блок не собирается вовсе: очков владения у них нет,
+    как нет и апгрейдов, — их оружие приходит вместе с ними.
+    """
+    from bot.game.mastery import (
+        ALL_FAMILIES,
+        ALL_HOLDS,
+        advice_for,
+        free_points,
+    )
+
+    families, holds = advice_for(player.class_code)
+    advised = {one.value for one in families} | {one.value for one in holds}
+    return {
+        "free": {
+            "family": free_points(player.level, player.mastery),
+            "hold": free_points(player.level, player.holds),
+        },
+        "families": [
+            {
+                "code": one.value,
+                "title": one.title,
+                "emoji": one.emoji,
+                "level": player.mastery_in(one.value),
+                "advised": one.value in advised,
+            }
+            for one in ALL_FAMILIES
+        ],
+        "holds": [
+            {
+                "code": one.value,
+                "title": one.title,
+                "emoji": one.emoji,
+                "level": player.hold_in(one.value),
+                "advised": one.value in advised,
+            }
+            for one in ALL_HOLDS
+        ],
+    }
+
+
 def ups_payload(player: Player) -> list[dict[str, Any]]:
     """Засечки шкалы: по апгрейду на каждый, кроме четвёртого.
 
@@ -981,6 +1115,7 @@ def lot_payload(player: Player, lot: dict, now: int = 0) -> dict:
         "affordable": player.can_afford(price, now, Service.MARKET),
         "can_equip": player.can_equip(item),
         "requirements": requirements_payload(player, item),
+        "arming": arming_payload(item),
         "bonuses": bonuses_payload(item, player.fclass),
         "shop_price": item.price if item.on_sale and not item.is_magic else 0,
     }
@@ -1368,6 +1503,9 @@ def build_card(
             for effect in player.active_effects(moment)
         ],
         "city": player.city,
+        # Владение оружием: два пула и семь направлений. У городских его
+        # нет — оружие приходит вместе с ними, и раздавать им нечего
+        "mastery": mastery_payload(player) if player.user_id > 0 else None,
         "progress": {
             "exp": player.exp,
             "exp_needed": player.exp_needed,
