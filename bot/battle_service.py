@@ -13,6 +13,7 @@ import contextlib
 import itertools
 import logging
 import random
+import time
 from dataclasses import dataclass, field
 from uuid import uuid4
 
@@ -138,6 +139,10 @@ class Lobby:
     names: dict[int, str] = field(default_factory=dict)
     message_id: int | None = None
     task: asyncio.Task | None = None
+    # Когда объявили сбор: по этой метке считается обратный отсчёт до
+    # начала. Часы монотонные — перевод системного времени сбор не
+    # сломает, как и у сбора в рейд
+    opened_at: float = field(default_factory=time.monotonic)
 
     @property
     def key(self) -> ChatKey | None:
@@ -146,6 +151,15 @@ class Lobby:
     @property
     def total(self) -> int:
         return len(self.members)
+
+    def seconds_left(self) -> int:
+        """Сколько ещё ждут состав. Время вышло — ноль, не отрицательное.
+
+        Срок у каждого сбора свой: его выбирает тот, кто собирает. По
+        этому числу тикают часы на экране — сервер поправляет их на
+        каждом опросе, и секунда у всех одна.
+        """
+        return max(0, round(self.wait - (time.monotonic() - self.opened_at)))
 
     @property
     def capacity(self) -> int:

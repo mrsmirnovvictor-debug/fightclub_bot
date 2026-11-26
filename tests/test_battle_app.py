@@ -66,6 +66,25 @@ async def start_royale(client, battles, size: int = 4) -> dict:
     return body
 
 
+
+async def a_fighter(db, owner, name: str = "Громила"):
+    """Боец в отряде этого игрока, помеченный «идёт в бой»."""
+    from bot.game.classes import get_class
+    from bot.game.squad import npc_stats
+    from bot.models import Player
+
+    npc_id = await db.next_npc_id()
+    stats = npc_stats(get_class("tank"), 1, max(1, owner.level - 1))
+    npc = Player(
+        user_id=npc_id, nickname=name, class_code="tank",
+        level=max(1, owner.level - 1), **stats.as_dict(),
+    )
+    await db.save_player(npc)
+    await db.add_squad(npc_id, owner.user_id, 1, 1, 0)
+    await db.set_squad_party(npc_id, True)
+    return npc
+
+
 # ---------- сбор ----------
 
 
@@ -116,6 +135,71 @@ async def test_the_lineup_can_be_left(club):
     assert status == 200
     assert after["lobby"] is None
     assert battles.lobby_of_user(42) is None
+
+
+async def test_the_lineup_counts_down_to_the_gong(club):
+    """В сборе видно, сколько осталось до начала боя.
+
+    Срок у каждого сбора свой — его назначает созвавший, — и ждать
+    вслепую нечестно: по часам и решают, успеешь ли дойти.
+    """
+    client, battles, _ = club
+
+    _, mine = await act(client, 42, action="open", kind="team", size=2, wait=5)
+    lobby = battles.lobby_of_user(42)
+
+    left = mine["lobby"]["seconds_left"]
+    assert 0 < left <= lobby.wait
+    # Часы идут от самого сбора, а не от запроса: сервер поправляет
+    # страницу на каждом опросе
+    lobby.opened_at -= lobby.wait - 3
+    again = await state(client, 42)
+    assert again["lobby"]["seconds_left"] <= 3
+    # Время вышло — ноль, а не отрицательное число
+    lobby.opened_at -= 100
+    assert (await state(client, 42))["lobby"]["seconds_left"] == 0
+
+
+async def test_the_lineup_shows_the_fighters_a_man_brings_along(club):
+    """Боец отряда стоит в составе рядом с хозяином.
+
+    В бой он выйдет за ту же сторону, и сторона из двоих с четырьмя
+    бойцами — это не сторона из двоих. Места в составе он при этом не
+    занимает: места тут для людей.
+    """
+    client, battles, db = club
+    owner = await db.get_player(42)
+    npc = await a_fighter(db, owner, name="Громила")
+
+    _, mine = await act(client, 42, action="open", kind="team", size=2)
+
+    side = mine["lobby"]["teams"][0]["members"]
+    assert [one["name"] for one in side] == ["Тайлер"]
+    assert [one["name"] for one in side[0]["squad"]] == ["Громила"]
+    assert side[0]["squad"][0]["user_id"] == npc.user_id
+    assert side[0]["squad"][0]["level"] == npc.level
+    # Мест в составе он не занимает: счёт идёт по людям
+    assert mine["lobby"]["total"] == 1
+    # И чужому глазу он виден так же: в бою он выйдет и против него
+    theirs = await state(client, 43)
+    held = theirs["lobbies"][0]["teams"][0]["members"][0]["squad"]
+    assert [one["name"] for one in held] == ["Громила"]
+
+
+async def test_nobody_brings_a_fighter_to_the_royale(club):
+    """В мясорубке бойцов отряда нет: там каждый сам за себя.
+
+    Боец вышел бы против собственного хозяина — поэтому в бой их там не
+    берут вовсе, и в составе им тоже не место.
+    """
+    client, _, db = club
+    owner = await db.get_player(42)
+    await a_fighter(db, owner, name="Громила")
+
+    _, mine = await act(client, 42, action="open", kind="royale", size=3)
+
+    side = mine["lobby"]["teams"][0]["members"]
+    assert [one["squad"] for one in side] == [[]]
 
 
 async def test_the_size_is_checked_by_the_server(club):

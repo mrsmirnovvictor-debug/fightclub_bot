@@ -5206,18 +5206,23 @@ function clockText(seconds) {
 function paintClocks() {
   // Срок сбора приезжает с сервера один раз на опрос, а рисуем мы его каждую
   // секунду: до чего осталось, считаем по часам телефона от того ответа.
-  document.querySelectorAll(".raid-clock").forEach((node) => {
+  //
+  // Часы одни на все сборы — и в подвал, и в групповой бой: считают они
+  // одно и то же, а разнятся одним словом, и слово лежит в самой строке
+  document.querySelectorAll(".lobby-clock").forEach((node) => {
     const until = Number(node.dataset.until || 0);
     const left = Math.max(0, Math.round((until - Date.now()) / 1000));
-    node.textContent = "⏳ Выходим через " + clockText(left);
+    node.textContent = (node.dataset.word || "⏳ Через ") + clockText(left);
   });
 }
 
-function lobbyClock(lobby) {
+function lobbyClock(lobby, word) {
   const line = document.createElement("p");
-  line.className = "fight-row-note raid-clock";
+  line.className = "fight-row-note lobby-clock";
+  const said = word || "⏳ Выходим через ";
   line.dataset.until = String(Date.now() + (lobby.seconds_left || 0) * 1000);
-  line.textContent = "⏳ Выходим через " + clockText(lobby.seconds_left || 0);
+  line.dataset.word = said;
+  line.textContent = said + clockText(lobby.seconds_left || 0);
   return line;
 }
 
@@ -6002,6 +6007,9 @@ function startWatchingBattle() {
   if (battleTimer) return;
   loadBattle();
   battleTimer = setInterval(loadBattle, 2000);
+  // Часы тикают чаще, чем ходит опрос: секунда на экране должна быть
+  // секундой. Часы те же, что у сбора в подвал
+  if (!raidClock) raidClock = setInterval(paintClocks, 1000);
 }
 
 function stopWatchingBattle() {
@@ -6198,10 +6206,24 @@ function battleLobby(lobby, mine) {
     " · сбор " + lobby.wait_text;
   box.appendChild(head);
 
+  // Часы до начала: сбор ждёт ровно столько, сколько назначил
+  // созвавший, и ждать вслепую нечестно — по ним и решают, успеешь ли
+  box.appendChild(lobbyClock(lobby, "⏳ До начала: "));
+
   lobby.teams.forEach((team) => {
     const row = document.createElement("p");
     row.className = "fight-row-note";
-    const names = team.members.map((one) => one.name).join(", ");
+    // Боец отряда стоит рядом с хозяином: в бой он выйдет за ту же
+    // сторону, и сторона из двоих с четырьмя бойцами — это не сторона
+    // из двоих. В составе он не занимает места: места тут для людей
+    const names = team.members
+      .map((one) => {
+        const held = (one.squad || [])
+          .map((npc) => npc.name + " [" + npc.level + "]")
+          .join(", ");
+        return held ? one.name + " (" + held + ")" : one.name;
+      })
+      .join(", ");
     row.textContent =
       (lobby.kind === "team" ? team.title + ": " : "") + (names || "пусто");
     box.appendChild(row);
@@ -6426,7 +6448,10 @@ function battleLog(battle) {
   head.className = "shelf-head";
   head.textContent = "Ход боя";
   box.appendChild(head);
-  battle.log.slice().reverse().forEach((turn) => judgeLines(turn, box));
+  // Сверху вниз, как в дуэли: лента читается в ту же сторону, в какую
+  // шёл бой. Прежде размены шли от нового к старому, а строки внутри
+  // размена — в прямом порядке, и лента читалась то вниз, то вверх
+  battle.log.forEach((turn) => judgeLines(turn, box));
   return box;
 }
 

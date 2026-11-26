@@ -2402,7 +2402,11 @@ async def api_raid_action(request: web.Request) -> web.Response:
 async def api_battle(request: web.Request) -> web.Response:
     """Состояние раздела «Отряд»: сбор, идущий раунд или итог."""
     player = await _fighter(request)
-    return web.json_response(build_battle(player, request.app.get(BATTLES_KEY)))
+    return web.json_response(
+        await build_battle(
+            request.app[DB_KEY], player, request.app.get(BATTLES_KEY)
+        )
+    )
 
 
 async def api_battle_action(request: web.Request) -> web.Response:
@@ -2472,7 +2476,9 @@ async def api_battle_action(request: web.Request) -> web.Response:
         return web.json_response({"error": str(error)}, status=409)
 
     fresh = await request.app[DB_KEY].get_player(player.user_id)
-    return web.json_response(build_battle(fresh or player, battles))
+    return web.json_response(
+        await build_battle(request.app[DB_KEY], fresh or player, battles)
+    )
 
 
 async def api_raids_history(request: web.Request) -> web.Response:

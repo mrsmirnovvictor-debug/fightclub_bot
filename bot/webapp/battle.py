@@ -44,8 +44,19 @@ KIND_TITLES = {
 KIND_EMOJI = {BattleKind.TEAM: "🤝", BattleKind.ROYALE: "🌪"}
 
 
-def lobby_payload(lobby: Lobby, viewer_id: int) -> dict[str, Any]:
-    """Сбор состава: кто уже записан и за какую сторону."""
+def lobby_payload(
+    lobby: Lobby,
+    viewer_id: int,
+    squads: dict[int, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    """Сбор состава: кто уже записан, с кем он придёт и сколько ждать.
+
+    `squads` — бойцы отряда, которых записавшиеся берут с собой: номер
+    хозяина → его бойцы. В бою они выйдут за ту же сторону, значит и в
+    составе им место рядом с хозяином: иначе сторона из двоих с
+    четырьмя бойцами читалась бы как сторона из двоих.
+    """
+    held = squads or {}
     return {
         "id": lobby.id,
         "kind": lobby.kind.value,
@@ -61,6 +72,9 @@ def lobby_payload(lobby: Lobby, viewer_id: int) -> dict[str, Any]:
         # свой, и по нему же тикают часы на странице
         "wait": lobby.wait,
         "wait_text": f"{max(1, lobby.wait // 60)} мин",
+        # Сколько осталось до начала. Страница тикает сама, а сервер
+        # поправляет её на каждом опросе — часы у всех одни
+        "seconds_left": lobby.seconds_left(),
         "mine": lobby.opener_id == viewer_id,
         "joined": viewer_id in lobby.members,
         "in_app": lobby.chat_id is None,
@@ -70,7 +84,18 @@ def lobby_payload(lobby: Lobby, viewer_id: int) -> dict[str, Any]:
                 "title": team_name(team),
                 "free": lobby.size - len(lobby.side(team)),
                 "members": [
-                    {"user_id": user_id, "name": lobby.names.get(user_id, "боец")}
+                    {
+                        "user_id": user_id,
+                        "name": lobby.names.get(user_id, "боец"),
+                        # Кого он ведёт с собой: в мясорубке никого —
+                        # там каждый сам за себя, и боец вышел бы
+                        # против собственного хозяина
+                        "squad": (
+                            held.get(user_id, [])
+                            if lobby.kind is BattleKind.TEAM
+                            else []
+                        ),
+                    }
                     for user_id in lobby.side(team)
                 ],
             }
@@ -144,7 +169,35 @@ def battle_payload(session: BattleSession, viewer_id: int) -> dict[str, Any]:
     }
 
 
-def build_battle(player: Player, service: BattleService | None) -> dict[str, Any]:
+async def party_of(db, user_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    """Бойцы отряда, которых эти игроки берут с собой: хозяин → бойцы.
+
+    Спрашивается ровно о тех, кто стоит в показываемых составах:
+    сбор держит до десяти человек, и тянуть отряды всего города ради
+    одной строки незачем.
+    """
+    from bot.squad_service import companions
+
+    out: dict[int, list[dict[str, Any]]] = {}
+    for user_id in user_ids:
+        held = [
+            {
+                "user_id": npc.user_id,
+                "name": npc.nickname,
+                "level": npc.level,
+                "stars": int(row["stars"]),
+                "owner_id": user_id,
+            }
+            for row, npc in await companions(db, user_id)
+        ]
+        if held:
+            out[user_id] = held
+    return out
+
+
+async def build_battle(
+    db, player: Player, service: BattleService | None
+) -> dict[str, Any]:
     """Всё, что нужно разделу «Отряд», одним ответом."""
     body: dict[str, Any] = {
         "attacks": [dict(row) for row in ATTACK_BUTTONS],
@@ -201,14 +254,21 @@ def build_battle(player: Player, service: BattleService | None) -> dict[str, Any
         return body
 
     own = service.lobby_of_user(player.user_id)
-    if own is not None:
-        body["lobby"] = lobby_payload(own, player.user_id)
-    body["lobbies"] = [
-        lobby_payload(lobby, player.user_id)
+    others = [
+        lobby
         for lobby in service.open_lobbies()
         if player.user_id not in lobby.members
+    ]
+    shown = ([own] if own is not None else []) + others
+    squads = await party_of(
+        db, [user_id for lobby in shown for user_id in lobby.members]
+    )
+    if own is not None:
+        body["lobby"] = lobby_payload(own, player.user_id, squads)
+    body["lobbies"] = [
+        lobby_payload(lobby, player.user_id, squads) for lobby in others
     ]
     return body
 
 
-__all__ = ["battle_payload", "build_battle", "lobby_payload"]
+__all__ = ["battle_payload", "build_battle", "lobby_payload", "party_of"]

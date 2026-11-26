@@ -6228,6 +6228,90 @@ async def open_squad(pw, server, battle=None):
     return browser, page
 
 
+def a_lineup(**over) -> dict:
+    """Ответ клуба: идёт сбор состава, и в нём свой боец отряда."""
+    lobby = {
+        "id": 7, "kind": "team", "kind_title": "Командный бой", "emoji": "🤝",
+        "mode": {"code": "armed", "title": "бой с оружием", "emoji": "⚔️"},
+        "size": 2, "capacity": 4, "total": 2,
+        "min_level": 3, "max_level": 7,
+        "wait": 300, "wait_text": "5 мин", "seconds_left": 125,
+        "mine": True, "joined": True, "in_app": True,
+        "teams": [
+            {
+                "team": 0, "title": "Красные", "free": 1,
+                "members": [
+                    {
+                        "user_id": 42, "name": "Тайлер",
+                        "squad": [
+                            {"user_id": -101, "name": "Громила", "level": 4,
+                             "stars": 2, "owner_id": 42},
+                        ],
+                    }
+                ],
+            },
+            {
+                "team": 1, "title": "Синие", "free": 1,
+                "members": [{"user_id": 43, "name": "Марла", "squad": []}],
+            },
+        ],
+    }
+    lobby.update(over)
+    return {**EMPTY_BATTLE, "lobby": lobby}
+
+
+async def test_the_lineup_counts_down_and_shows_the_fighters(server):
+    """В сборе тикают часы до начала, а рядом с хозяином стоит его боец.
+
+    Ждать вслепую нечестно: срок назначает созвавший, и по часам
+    решают, успеешь ли. А боец отряда выйдет за ту же сторону — сторона
+    из двоих с бойцом не равна стороне из двоих.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, a_lineup())
+
+        clock = page.locator("#battle-body .lobby-clock")
+        assert await clock.count() == 1
+        said = await clock.inner_text()
+        assert "До начала" in said and "2:05" in said, said
+
+        rows = await page.locator("#battle-body .fight-row-note").all_inner_texts()
+        joined = "\n".join(rows)
+        assert "Красные: Тайлер (Громила [4])" in joined, joined
+        assert "Синие: Марла" in joined, joined
+        await browser.close()
+
+
+async def test_the_group_log_reads_from_the_top_down(server):
+    """Лента группового боя идёт сверху вниз, как в дуэли.
+
+    Прежде размены шли от нового к старому, а строки внутри размена — в
+    прямом порядке, и лента читалась то вниз, то вверх.
+    """
+    def turn(number, who):
+        return {
+            "number": number, "round": number, "turn": number, "finished": False,
+            "winner_id": None, "hp_after": {"42": 70, "43": 20},
+            "lines": [who + ": удар", who + ": ответ"],
+            "strikes": [],
+        }
+
+    battle = battle_with_round({"log": [turn(1, "первый"), turn(2, "второй")]})
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, battle)
+        await page.wait_for_selector("#battle-body .fight-log")
+
+        said = await page.locator(
+            "#battle-body .fight-log .log-line"
+        ).all_text_contents()
+
+        assert said == [
+            "первый: удар", "первый: ответ",
+            "второй: удар", "второй: ответ",
+        ], said
+        await browser.close()
+
+
 async def test_the_squad_section_offers_both_kinds_of_group_fight(server):
     """Оба боя стоят первой строкой формы: выбрать можно любой."""
     async with async_playwright() as pw:
@@ -13770,7 +13854,7 @@ async def test_the_battle_form_asks_four_questions(server, db):
     player = make_player("fight_club")
     player.level = 7
     await db.save_player(player)
-    body = build_battle(player, None)
+    body = await build_battle(db, player, None)
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
     sent = []
