@@ -241,6 +241,13 @@ class Player:
     # Сданные курсы: коды дипломов. Диплом не отбирают и не продлевают,
     # поэтому ничего, кроме кода, у него нет — всё прочее знает курс
     diplomas: list[str] = field(default_factory=list)
+    # Владение оружием: сколько очков вложено в каждый вид и в каждый
+    # хват. Два пула, и переносить между ними нельзя. Сам запас не
+    # хранится — он считается от уровня (`mastery.points_at`), и
+    # свободный остаток выходит вычитанием: так его нельзя ни потерять
+    # при перескоке уровней, ни начислить дважды
+    mastery: dict[str, int] = field(default_factory=dict)
+    holds: dict[str, int] = field(default_factory=dict)
     # За рулём. Пусто — боец идёт пешком; `car_until` — до какого часа
     # машина его, ноль у купленной. Сами машины лежат в таблице `cars`, а
     # здесь та, что под ним сейчас: о ней спрашивают дорога и карточка,
@@ -266,6 +273,28 @@ class Player:
     @property
     def equipment(self) -> Equipment:
         return Equipment.from_owned(self.gear)
+
+    @property
+    def mastery_free(self) -> int:
+        """Сколько очков вида оружия ещё не вложено."""
+        from bot.game.mastery import free_points
+
+        return free_points(self.level, self.mastery)
+
+    @property
+    def holds_free(self) -> int:
+        """Сколько очков типа владения ещё не вложено."""
+        from bot.game.mastery import free_points
+
+        return free_points(self.level, self.holds)
+
+    def mastery_in(self, code: str) -> int:
+        """Сколько вложено в этот вид оружия."""
+        return max(0, self.mastery.get(code, 0))
+
+    def hold_in(self, code: str) -> int:
+        """Сколько вложено в этот тип владения."""
+        return max(0, self.holds.get(code, 0))
 
     @property
     def backpack(self) -> list[OwnedItem]:

@@ -38,6 +38,7 @@ from bot.game.progress import QuestLog
 from bot.game.turf import Owner
 from bot.game.looks import MALE
 from bot.game.modes import FightMode, mode_of
+from bot.game.mastery import FAMILY_CODES, HOLD_CODES, pack, unpack
 from bot.game.potions import ActiveEffect, get_potion
 from bot.game.world import DEFAULT_CITY
 from bot.models import CardMove, Player, Ring
@@ -114,6 +115,13 @@ CREATE TABLE IF NOT EXISTS players (
     study_tries     INTEGER NOT NULL DEFAULT 0,
     lesson_until    INTEGER NOT NULL DEFAULT 0,
     diplomas        TEXT    NOT NULL DEFAULT '',
+    -- Владение оружием: вложенные очки видов и хватов, строкой через
+    -- запятую — «swords:7,clubs_maces:2». Колонка на каждое из семи
+    -- направлений стоила бы семи колонок и миграции на каждое новое, а
+    -- спрашивают их всегда целиком и только у своего бойца. Запас не
+    -- хранится вовсе: он считается от уровня
+    mastery         TEXT    NOT NULL DEFAULT '',
+    holds           TEXT    NOT NULL DEFAULT '',
     -- За рулём: код машины и до какого часа она на руках. Пусто — боец
     -- идёт пешком. Машины лежат в `cars`, а здесь — та, что под ним
     -- сейчас: её спрашивают и дорога, и карточка, то есть все и всегда
@@ -1410,7 +1418,7 @@ PLAYER_COLUMNS = (
     "account_debt, shift_until, "
     "shift_day, shift_minutes, "
     "study_code, study_since, study_lessons, study_day, study_exam_at, "
-    "study_tries, lesson_until, diplomas, car, car_until"
+    "study_tries, lesson_until, diplomas, mastery, holds, car, car_until"
 )
 
 # Колонки, добавленные после первой версии: их дописываем в уже живые базы.
@@ -1473,6 +1481,9 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("study_tries", "INTEGER NOT NULL DEFAULT 0"),
     ("lesson_until", "INTEGER NOT NULL DEFAULT 0"),  # 0 — занятие не идёт
     ("diplomas", "TEXT NOT NULL DEFAULT ''"),  # коды сданных курсов
+    # Владение оружием: вложенные очки видов и хватов
+    ("mastery", "TEXT NOT NULL DEFAULT ''"),
+    ("holds", "TEXT NOT NULL DEFAULT ''"),
     # За рулём: что под бойцом и до какого часа. Пусто — пешком
     ("car", "TEXT NOT NULL DEFAULT ''"),
     ("car_until", "INTEGER NOT NULL DEFAULT 0"),
@@ -2301,9 +2312,10 @@ class Database:
                 job_salary, account_debt, shift_until, shift_day, shift_minutes,
                 study_code, study_since, study_lessons, study_day,
                 study_exam_at, study_tries, lesson_until, diplomas,
+                mastery, holds,
                 car, car_until
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -2361,6 +2373,8 @@ class Database:
                 study_tries     = excluded.study_tries,
                 lesson_until    = excluded.lesson_until,
                 diplomas        = excluded.diplomas,
+                mastery         = excluded.mastery,
+                holds           = excluded.holds,
                 car             = excluded.car,
                 car_until       = excluded.car_until
             """,
@@ -2423,6 +2437,8 @@ class Database:
                 player.study_tries,
                 player.lesson_until,
                 ",".join(player.diplomas),
+                pack(player.mastery),
+                pack(player.holds),
                 player.car,
                 player.car_until,
             ),
@@ -9165,6 +9181,11 @@ def _to_player(row: Iterable[Any]) -> Player:
     data["diplomas"] = [
         one for one in str(data.get("diplomas") or "").split(",") if one
     ]
+    # Владение лежит строкой, а у бойца это раскладка по направлениям.
+    # Чужие куски разбор отбрасывает сам: строка из будущей версии не
+    # должна ронять карточку
+    data["mastery"] = unpack(data.get("mastery") or "", FAMILY_CODES)
+    data["holds"] = unpack(data.get("holds") or "", HOLD_CODES)
     return Player(**data)
 
 

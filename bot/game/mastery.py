@@ -164,6 +164,41 @@ def advice_for(class_code: str) -> tuple[tuple[WeaponFamily, ...], tuple[HoldTyp
     return families, holds
 
 
+def pack(points: dict[str, int]) -> str:
+    """Вложенное одной строкой для базы: «clubs_maces:2,swords:7».
+
+    Колонка на каждый вид и хват стоила бы семи колонок и миграции на
+    каждое новое направление, а спрашивают их всегда целиком и только у
+    своего бойца. Пустые вложения в строку не идут: ноль — это
+    отсутствие записи, и писать его значило бы хранить пустоту.
+
+    Порядок в строке — по коду: одна и та же раскладка обязана
+    сохраняться одинаково, иначе строки в базе расходятся на ровном месте.
+    """
+    return ",".join(
+        f"{code}:{value}"
+        for code, value in sorted(points.items())
+        if value > 0
+    )
+
+
+def unpack(text: str, codes: tuple[str, ...]) -> dict[str, int]:
+    """Разобрать строку базы обратно в раскладку.
+
+    Чужие и ломаные куски молча отбрасываем: `codes` — это весь список
+    направлений, какие бывают, и строка из будущей версии не должна
+    ронять карточку бойца. Отрицательных вложений не бывает.
+    """
+    out: dict[str, int] = {}
+    for chunk in str(text or "").split(","):
+        code, _, value = chunk.partition(":")
+        if code not in codes or not value.strip().lstrip("-").isdigit():
+            continue
+        if int(value) > 0:
+            out[code] = int(value)
+    return out
+
+
 def spent(points: dict[str, int]) -> int:
     """Сколько очков пула уже вложено. Отрицательных вложений не бывает."""
     return sum(max(0, value) for value in points.values())
@@ -193,6 +228,10 @@ def enough(invested: int, level_required: int) -> bool:
     return max(0, invested) >= required_for(level_required)
 
 
+FAMILY_CODES: tuple[str, ...] = tuple(one.value for one in ALL_FAMILIES)
+HOLD_CODES: tuple[str, ...] = tuple(one.value for one in ALL_HOLDS)
+
+
 __all__ = [
     "ALL_FAMILIES",
     "ALL_HOLDS",
@@ -202,11 +241,15 @@ __all__ = [
     "POINTS_PER_LEVEL",
     "START_POINTS",
     "WeaponFamily",
+    "FAMILY_CODES",
+    "HOLD_CODES",
     "advice_for",
     "free_points",
     "enough",
     "may_spend",
+    "pack",
     "points_at",
     "required_for",
     "spent",
+    "unpack",
 ]
