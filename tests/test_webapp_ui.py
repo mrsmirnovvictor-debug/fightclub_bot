@@ -22927,24 +22927,29 @@ async def test_the_club_wears_the_same_segmented_switch_as_the_desk(server):
 
 
 async def test_the_ring_buttons_wear_the_club_colours(server):
-    """Кнопки выхода на ринг — в цветах клуба, служебные — нет.
+    """Весь боевой путь — в цветах клуба, отказы — обведённые.
 
     Голубой с фиолетовым в этой игре значит «дело клуба»: та же пара на
-    шкале опыта и на выбранном приёме. Ровная заливка акцентом осталась
-    у служебных кнопок, и разницу видно до чтения надписи.
+    шкале опыта и на выбранном приёме. В этих цветах теперь и вызов, и
+    его принятие, и «Вперёд!», и «Завершить бой» — весь путь до боя и
+    обратно, включая промежуточные страницы. Обведённой остаётся другая
+    роль: отказ — «Отозвать», «Выйти из состава».
     """
     async with async_playwright() as pw:
-        browser, page = await open_ring(pw, server, trainer_call())
+        browser, page = await open_training(pw, server, trainer_call())
 
-        calls = page.locator(".fight-open .btn")
-        assert await calls.count() == 1  # в заготовке один режим
-        for name in ("fight-open", "fight-card"):
+        for name in ("fight-card",):
             btn = page.locator(f".{name} .btn").first
             assert "neon" in (await btn.get_attribute("class")), name
             paint = await btn.evaluate("one => getComputedStyle(one).backgroundImage")
             assert paint.startswith("linear-gradient"), (name, paint)
 
-        # А «Отозвать» и «Завершить бой» остаются служебными
+        await page.evaluate("pickClubSection('fights')")
+        calls = page.locator(".fight-open .btn")
+        assert await calls.count() == 1  # в заготовке один режим
+        assert "neon" in (await calls.first.get_attribute("class"))
+
+        # Итог боя — та же кнопка: это конец того же пути
         over = ring_with_duel()
         over["duel"]["finished"] = True
         over["duel"]["summary"] = ["🏆 Победа: Марла (Ассасин)"]
@@ -22954,5 +22959,19 @@ async def test_the_ring_buttons_wear_the_club_colours(server):
         await page.evaluate("() => loadFights()")
         await page.wait_for_selector(".fight-finish .btn")
         close = page.locator(".fight-finish .btn")
-        assert "neon" not in (await close.get_attribute("class"))
+        assert "neon" in (await close.get_attribute("class"))
+
+        # А отказ остаётся обведённым
+        waiting = json.loads(json.dumps(EMPTY_RING))
+        waiting["challenge"] = {
+            "id": 7, "mode": {"code": "fist", "title": "кулачный бой", "emoji": "🥊"},
+            "mine": True, "personal": False, "in_app": True,
+            "challenger": {
+                "user_id": 42, "name": "Тайлер", "level": 4,
+                "emoji": "⚔️", "fclass": "Воин",
+            },
+        }
+        await page.evaluate("(data) => renderFights(data)", waiting)
+        cancel = page.get_by_role("button", name="Отозвать")
+        assert "secondary" in (await cancel.get_attribute("class"))
         await browser.close()
