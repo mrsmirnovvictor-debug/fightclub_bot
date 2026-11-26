@@ -2280,35 +2280,13 @@ body.dark .bar-tab.active .bar-icon {
 .neighbour.me { border-color: var(--accent); }
 .neighbour.fight { border-color: #b02020; }
 
-/* Строка городового: синяя рамка VCPD и лицо слева. Пост не сосед — по
-   виду строки это должно быть понятно до чтения */
-.neighbour.patrol {
-  border-color: #3b6fb0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-}
-.neighbour.patrol .neighbour-head,
-.neighbour.patrol .neighbour-note,
-.neighbour.patrol .neighbour-why { flex: 1 1 60%; }
+/* Строка городового: та же строка, что у соседа, и только рамка синяя,
+   по цвету VCPD. Своя строка и строка в драке красятся так же —
+   цветная рамка в этом списке значит «эта строка про другое», а не
+   «здесь другая вёрстка». Раскладка была своя, под лицо слева; лица
+   больше нет, и раскладка вернулась общей */
+.neighbour.patrol { border-color: #3b6fb0; }
 
-.neighbour-face {
-  width: 44px;
-  height: 58px;
-  flex: 0 0 44px;
-  border-radius: 8px;
-  object-fit: cover;
-  object-position: top center;
-  background: var(--hp-track);
-}
-
-.neighbour-face.emoji {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 22px;
-}
 .neighbour-head {
   display: flex;
   align-items: baseline;

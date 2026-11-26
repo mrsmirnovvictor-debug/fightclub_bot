@@ -370,6 +370,78 @@ async def test_growing_up_recounts_the_stats_by_the_stars(db):
     assert npc.endurance == wanted.endurance
 
 
+async def test_a_fighter_hired_under_the_old_rule_gets_his_points_on_start(db, tmp_path):
+    """Нанятому раньше слепок дописывают на запуске, а не при повышении.
+
+    Характеристики бойца — вывод из трёх чисел, и в строке они лежат
+    слепком. Пересчитывало его только повышение, и боец, нанятый до
+    того, как бойцу вложили апы его уровня, так и стоял недоложенным:
+    повышения он с тех пор не брал, а на первом уровне и не возьмёт —
+    выше хозяина боец не растёт.
+    """
+    from bot.database import Database
+
+    player = await enlist(db, a_player(level=1))
+    shop = await showcase(db, player, WEEK, random.Random(3))
+    npc = await hire(db, player, shop["cards"][0]["slot"], WEEK)
+    row = (await db.squad_of(player.user_id))[0]
+    wanted = npc_stats(get_class(npc.class_code), row["stars"], npc.level)
+
+    # Слепок по старому правилу: три очка уровня не вложены, да ещё и
+    # очки на руках, которых у бойца не бывает
+    await db.conn.execute(
+        "UPDATE players SET strength = ?, agility = ?, intuition = ?,"
+        "       endurance = ?, free_points = 3 WHERE user_id = ?",
+        (wanted.strength - 2, wanted.agility - 1, wanted.intuition,
+         wanted.endurance, npc.user_id),
+    )
+    await db.conn.commit()
+    stale = await db.get_player(npc.user_id)
+    assert stale is not None and stale.strength == wanted.strength - 2
+
+    # Тот же файл, открытый заново: на запуске слепок сверяется с
+    # правилом и переписывается
+    again = Database(str(tmp_path / "test.db"))
+    await again.connect()
+    try:
+        fixed = await again.get_player(npc.user_id)
+    finally:
+        await again.close()
+
+    assert fixed is not None
+    assert fixed.strength == wanted.strength
+    assert fixed.agility == wanted.agility
+    assert fixed.intuition == wanted.intuition
+    assert fixed.endurance == wanted.endurance
+    assert fixed.level == 1, "уровень доливка очков не трогает"
+    assert fixed.free_points == 0, "раздавать их бойцу некому"
+
+
+async def test_the_start_leaves_a_correct_fighter_alone(db, tmp_path):
+    """Сошёлся слепок с правилом — строку не трогают вовсе."""
+    from bot.database import Database
+
+    player = await enlist(db, a_player(level=4))
+    shop = await showcase(db, player, WEEK, random.Random(4))
+    npc = await hire(db, player, shop["cards"][0]["slot"], WEEK)
+    # Что-то, чего пересчёт касаться не должен: деньги бойца и его опыт
+    await db.conn.execute(
+        "UPDATE players SET credits = 777, total_exp = 99 WHERE user_id = ?",
+        (npc.user_id,),
+    )
+    await db.conn.commit()
+
+    again = Database(str(tmp_path / "test.db"))
+    await again.connect()
+    try:
+        after = await again.get_player(npc.user_id)
+    finally:
+        await again.close()
+
+    assert after is not None
+    assert after.credits == 777 and after.total_exp == 99
+
+
 # ---------- больница и увольнение ----------
 
 

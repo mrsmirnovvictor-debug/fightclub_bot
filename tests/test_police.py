@@ -1294,11 +1294,16 @@ async def test_the_map_shows_where_the_patrols_stand(db, client):
 
 
 async def test_the_house_lists_the_patrol_among_the_neighbours(db, client):
-    """Патрульные стоят в списке дома: лицо, звание и уровень.
+    """Патрульные стоят в списке дома: имя, звание и уровень.
 
     Кнопок у строки нет никаких: задерживают они сами, а напасть на
     городскую службу нельзя. Уровень показан тот, каким они выйдут
     против смотрящего — пять сверху от его собственного.
+
+    Лица в строке нет: в доме стоят и соседи, и городовые, и строка у
+    них одна на всех. Портрет у одних и ник у других делил список
+    надвое по тому, кто чей, а не по тому, что с человеком можно
+    сделать. Лицо осталось в карточке под ℹ️.
     """
     from bot.game.patrol import where_now
     from bot.game.health import now_ts as clock
@@ -1318,8 +1323,8 @@ async def test_the_house_lists_the_patrol_among_the_neighbours(db, client):
         "Патрульный Пит Валдес", "Сержант Рэй Долан"
     ]
     assert [row["level"] for row in patrol] == [12, 12], "семь плюс пять"
-    assert all(row["picture"].startswith("https://") for row in patrol)
-    assert len({row["picture"] for row in patrol}) == 2, "лица разные"
+    assert not any("picture" in row for row in patrol), "строка дома без лица"
+    assert len({row["name"] for row in patrol}) == 2, "узнают их по имени"
     assert all(row["clan"] == "VCPD" for row in patrol)
     # Ни взять за карман, ни задержать: это пост, а не сосед
     assert not any(row["can_rob"] or row["can_arrest"] for row in patrol)
@@ -1328,8 +1333,8 @@ async def test_the_house_lists_the_patrol_among_the_neighbours(db, client):
     assert body["crowd"][0].get("patrol") is True
 
 
-async def test_the_other_pair_has_its_own_faces(db, client):
-    """Во втором доме стоит вторая пара — со своими лицами и именами."""
+async def test_the_other_pair_has_its_own_names(db, client):
+    """Во втором доме стоит вторая пара — со своими именами."""
     from bot.game.patrol import where_now
     from bot.game.health import now_ts as clock
 

@@ -18577,24 +18577,11 @@ function neighbourCard(one, data) {
   box.className = "neighbour" + (one.online ? "" : " away")
     + (one.patrol ? " patrol" : "");
 
-  // Лицо есть только у городовых: соседей в списке узнают по нику, а
-  // патрульные — пост, и у поста лицо вместо карточки
-  if (one.picture) {
-    const face = document.createElement("img");
-    face.className = "neighbour-face";
-    face.alt = "";
-    face.loading = "lazy";
-    face.decoding = "async";
-    face.addEventListener("error", () => {
-      const mark = document.createElement("span");
-      mark.className = "neighbour-face emoji";
-      mark.textContent = "🚔";
-      face.replaceWith(mark);
-    });
-    face.src = one.picture;
-    box.appendChild(face);
-  }
-
+  // Портрета в строке нет ни у кого: в доме стоят и соседи, и
+  // городовые, и узнают их одинаково — по имени с уровнем. Лицо у
+  // городового было, и из-за него список делился надвое по тому, кто
+  // чей, а не по тому, что с человеком в этом доме можно сделать.
+  // Лицо осталось в карточке под ℹ️ — там оно есть и у соседа
   const head = document.createElement("header");
   head.className = "neighbour-head";
   const name = document.createElement("span");

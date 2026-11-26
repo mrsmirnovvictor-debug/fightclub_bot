@@ -13560,6 +13560,22 @@ async def test_the_house_opens_a_card_for_everyone_who_stands_in_it(server, db):
         assert await rows.count() == 3
         assert await rows.locator(".fighter-info").count() == 3
 
+        # И строка у них одна на всех: портрета нет ни у городового, ни
+        # у соседа. Лицо городового делило список надвое по тому, кто
+        # чей, а не по тому, что с человеком в этом доме можно сделать.
+        # Ищем не `img`: не приехавший портрет подменялся значком, и по
+        # одной картинке проверка прошла бы и с лицом в строке
+        assert await rows.locator(".neighbour-face").count() == 0
+        assert not any(
+            "picture" in one for one in board["crowd"]
+        ), "лицо ушло из ответа, а не пряталось стилем"
+        # И раскладка общая: своя стояла под лицо слева
+        shapes = await page.evaluate(
+            "() => [...document.querySelectorAll('#crowd .neighbour')]"
+            "        .map((o) => getComputedStyle(o).display)"
+        )
+        assert len(set(shapes)) == 1, shapes
+
         async def card_of(route):
             await route.fulfill(
                 status=200, content_type="application/json",

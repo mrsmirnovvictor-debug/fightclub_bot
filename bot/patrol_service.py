@@ -94,7 +94,9 @@ def officer_card(user_id: int, level: int, bot_token: str) -> dict | None:
     npc.location = where_now(pair, moment)
     npc.seen_at = moment
     card = build_card(npc, bot_token)
-    # Лицо в рамке — то же, что в списке дома: в форме и своё у каждого
+    # Лицо в рамке: в форме и своё у каждого. В списке дома его нет —
+    # там городовой стоит той же строкой, что сосед, — и карточка под
+    # ℹ️ осталась единственным местом, где на него можно посмотреть
     card["avatar"] = dict(
         card.get("avatar") or {},
         url=one.picture,

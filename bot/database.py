@@ -1584,6 +1584,7 @@ class Database:
         await self._migrate_jail()
         await self._migrate_squad()
         await self._clear_npc_rating()
+        await self._restat_squad()
 
     async def _clear_npc_rating(self) -> None:
         """Снять рейтинг с городских: в лестнице они не стоят.
@@ -1599,6 +1600,74 @@ class Database:
         await self.conn.commit()
         if cursor.rowcount:
             logger.info("База обновлена: снят рейтинг у %s городских", cursor.rowcount)
+
+    async def _restat_squad(self) -> None:
+        """Доложить бойцам отряда очки их уровня.
+
+        Характеристики бойца — не его имущество, а вывод из трёх чисел:
+        класс, звёздность, уровень. В строке они лежат слепком, и
+        пересчитывает его только повышение: взял уровень — `restat`
+        сложил всё заново. Пока правило не менялось, этого хватало.
+
+        Потом бойцу вложили промежуточные апы его уровня: раздавать их
+        некому, и без них он был слабее одноуровневого игрока на три
+        очка только потому, что у него нет руки, которой очко берут.
+        Новые бойцы приходят уже с ними, но нанятому раньше новое
+        правило не из чего применить: повышения он с тех пор не брал, а
+        на первом уровне и не возьмёт — выше хозяина боец не растёт.
+        Такой боец так и стоял бы недоложенным.
+
+        Поэтому слепок сверяется с правилом на каждом запуске и
+        переписывается, когда разошёлся. Это не разовая починка одной
+        правки, а то же, что делает повышение, — только для бойцов,
+        которым повышаться незачем.
+        """
+        from bot.game.classes import get_class
+        from bot.game.squad import npc_stats
+
+        async with self.conn.execute(
+            "SELECT p.user_id, p.class_code, p.level, p.strength, p.agility, "
+            "       p.intuition, p.endurance, p.free_points, s.stars "
+            "  FROM squad s JOIN players p ON p.user_id = s.npc_id"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        fixed = 0
+        for row in rows:
+            try:
+                fclass = get_class(row["class_code"])
+            except ValueError:  # pragma: no cover - битый класс в базе
+                logger.warning(
+                    "У бойца %s неизвестный класс %r, характеристики не трогаем",
+                    row["user_id"], row["class_code"],
+                )
+                continue
+            stats = npc_stats(fclass, int(row["stars"]), int(row["level"]))
+            was = (
+                row["strength"], row["agility"], row["intuition"],
+                row["endurance"], row["free_points"],
+            )
+            # Свободных очков у бойца не бывает: раздать их некому, и
+            # оставить их значило бы показать в карточке кнопку, которой
+            # не на что нажать
+            now = (
+                stats.strength, stats.agility, stats.intuition,
+                stats.endurance, 0,
+            )
+            if was == now:
+                continue
+            await self.conn.execute(
+                "UPDATE players"
+                "   SET strength = ?, agility = ?, intuition = ?,"
+                "       endurance = ?, free_points = 0"
+                " WHERE user_id = ?",
+                (*now[:4], int(row["user_id"])),
+            )
+            fixed += 1
+        if fixed:
+            await self.conn.commit()
+            logger.info(
+                "База обновлена: пересчитаны характеристики %s бойцов отряда", fixed
+            )
 
     async def _migrate_squad(self) -> None:
         """Дописать отряду, кого хозяин берёт с собой в бой.
