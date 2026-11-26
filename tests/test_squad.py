@@ -119,6 +119,42 @@ def test_the_same_three_numbers_always_give_the_same_fighter():
     )
 
 
+def test_a_fighter_stands_with_the_points_of_his_level_spent():
+    """У бойца нет апов: очки своего уровня у него уже вложены.
+
+    Игрок добирает их по три на уровень и до следующего ходит
+    недокачанным — а бойцу раздавать их некому: своей воли у него нет,
+    а хозяин распоряжается отрядом, не характеристиками. Без этого
+    правила боец был бы слабее одноуровневого игрока на три очка
+    только потому, что у него нет руки, которой очко берут.
+    """
+    from bot.game.economy import MICRO_UPS_PER_LEVEL
+    from bot.game.reference import developed_stats
+
+    for level in (1, 2, 7):
+        mine = developed_stats(get_class("tank"), level)
+        his = npc_stats(get_class("tank"), 1, level)
+        spent = sum(his.as_dict().values()) - sum(mine.as_dict().values())
+        assert spent == MICRO_UPS_PER_LEVEL - 1, level
+
+    # Шаг уровня: четвёртый ап (сам уровень), три апа нового уровня и
+    # очко выносливости, которое уровень даёт сам
+    one = sum(npc_stats(get_class("tank"), 1, 1).as_dict().values())
+    two = sum(npc_stats(get_class("tank"), 1, 2).as_dict().values())
+    assert two - one == MICRO_UPS_PER_LEVEL + 1
+
+
+def test_a_fighter_never_has_points_in_hand():
+    """Свободных очков у бойца не бывает — ни при найме, ни при росте."""
+    assert npc_stats(get_class("tank"), 5, 4)  # формула вообще считается
+    player = Player(user_id=-101, nickname="Громила", class_code="tank", level=1)
+    player.free_points = 7
+
+    from bot.squad_service import restat
+
+    assert restat(player, 3).free_points == 0
+
+
 def test_the_rolled_star_is_always_one_of_the_five():
     """Бросок витрины не выдаёт звёздности, которой нет в таблице."""
     dice = random.Random(1)

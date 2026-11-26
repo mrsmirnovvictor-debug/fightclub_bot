@@ -209,9 +209,13 @@ function experienceBar(card) {
   left.textContent = "ОПЫТ";
   const rule = document.createElement("i");
   const right = document.createElement("span");
+  // Апгрейды считают только живому игроку: у городских их нет вовсе, и
+  // счёт «0 / 3» обещал бы им очки, которых никто не возьмёт
   right.textContent = data.capped
     ? "ПОТОЛОК"
-    : "АПГРЕЙДЫ " + data.micro_ups + " / " + (data.ups_per_level - 1);
+    : data.ups_matter
+      ? "АПГРЕЙДЫ " + data.micro_ups + " / " + (data.ups_per_level - 1)
+      : "";
   head.append(left, rule, right);
   main.appendChild(head);
 
@@ -265,7 +269,10 @@ function experienceBar(card) {
   next.className = "xp-next";
   next.textContent = data.capped
     ? "Потолок: выше " + data.max_level + " уровня в клубе не растут"
-    : "До следующего апгрейда: " + num(data.exp_to_next_up) + "\u00a0XP";
+    : data.ups_matter
+      ? "До следующего апгрейда: " + num(data.exp_to_next_up) + "\u00a0XP"
+      : "До следующего уровня: "
+        + num(Math.max(0, data.exp_needed - data.exp)) + "\u00a0XP";
   main.appendChild(next);
 
   box.appendChild(main);

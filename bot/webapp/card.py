@@ -1266,6 +1266,11 @@ def build_card(
     ready_in = player.seconds_until_ready(moment)
     full_in = player.seconds_until_full(moment)
 
+    # Апгрейды — дело живого игрока: это он решает, куда вложить очко.
+    # У городских — Тренера, бойца отряда, охраны, патруля — их нет
+    # вовсе: характеристики считаются от уровня, и очков в запасе у них
+    # не бывает. Шкала опыта у них про уровень, а не про апы
+    by_ups = player.user_id > 0
     avatar_url = None
     if player.avatar_file_id:
         expires = moment + AVATAR_TTL
@@ -1367,7 +1372,7 @@ def build_card(
             "exp": player.exp,
             "exp_needed": player.exp_needed,
             "total_exp": player.total_exp,
-            "micro_ups": player.micro_ups,
+            "micro_ups": player.micro_ups if by_ups else 0,
             "ups_per_level": MICRO_UPS_PER_LEVEL,
             "exp_to_next_up": player.exp_to_next_up,
             "capped": player.at_max_level,
@@ -1375,10 +1380,14 @@ def build_card(
             "free_points": player.free_points,
             "level": player.level,
             "next_level": min(player.level + 1, MAX_LEVEL),
+            # Раздаёт ли этот боец очки апгрейдами. У городских — нет:
+            # характеристики у них считаются от уровня, и шкала не
+            # должна обещать очки, которых никто не возьмёт
+            "ups_matter": by_ups,
             # Пороги апгрейдов этого уровня — те самые, по которым
             # начисляются очки. Шкала рисует по ним засечки, и считать их
             # на странице было бы вторым местом, где живёт лестница
-            "ups": ups_payload(player),
+            "ups": ups_payload(player) if by_ups else [],
         },
         "place": place_payload(player, moment),
         # Работа: по ней в шапке того дома, где боец стоит, встаёт кнопка

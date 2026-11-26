@@ -346,6 +346,32 @@ async def test_api_shows_a_strangers_fighter_with_his_face_and_no_stars(client, 
     assert card["is_self"] is False
 
 
+async def test_api_keeps_upgrades_out_of_an_npc_bar(client, db):
+    """В шкале городского нет апгрейдов: ни засечек, ни счёта.
+
+    Апгрейд — очко, которое игрок вкладывает сам. Бойцу отряда,
+    Тренеру и патрулю его вкладывать некому: характеристики им считает
+    уровень. Засечка на шкале обещала бы очко, которого не будет.
+    """
+    await db.save_player(make_player(user_id=42, nickname="Тайлер"))
+    npc_id = await a_hired_fighter(db, 42)
+
+    mine = await (await client.get(
+        "/api/card", headers={"X-Telegram-Init-Data": make_init_data(user_id=42)}
+    )).json()
+    his = await (await client.get(
+        f"/api/card?user_id={npc_id}",
+        headers={"X-Telegram-Init-Data": make_init_data(user_id=42)},
+    )).json()
+
+    assert his["progress"]["ups_matter"] is False
+    assert his["progress"]["ups"] == []
+    assert his["progress"]["micro_ups"] == 0
+    # А у живого игрока засечки на месте: ему очки и раздают
+    assert mine["progress"]["ups_matter"] is True
+    assert mine["progress"]["ups"], "у игрока засечки апгрейдов пропали"
+
+
 async def test_api_says_when_there_is_no_character(client):
     response = await client.get(
         "/api/card", headers={"X-Telegram-Init-Data": make_init_data()}

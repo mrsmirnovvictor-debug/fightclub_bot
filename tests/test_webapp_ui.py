@@ -22213,6 +22213,26 @@ def trainer_call(open_now: bool = True) -> dict:
     return ring
 
 
+FIGHTER_FACE = "https://example.invalid/npc_recruits/npc_male_07.png"
+
+
+def a_fighter_card() -> dict:
+    """Карточка бойца отряда так, как её отдаёт сервер хозяину."""
+    npc = make_player()
+    npc.user_id = -101
+    npc.nickname = "Громила"
+    npc.class_code = "tank"
+    card = build_card(npc, TOKEN, viewer_id=-101)
+    card["avatar"] = dict(
+        card["avatar"], url=FIGHTER_FACE, look="", look_title="Танк", photo=False
+    )
+    card.update(
+        {"squad": True, "stars": 2, "face": FIGHTER_FACE, "state": "free",
+         "state_text": "Свободен", "in_party": False}
+    )
+    return card
+
+
 def spar_call(npc_id: int = -101) -> dict:
     """Ринг, на котором зовёт драться свой боец, а не живой игрок."""
     ring = json.loads(json.dumps(EMPTY_RING))
@@ -22245,19 +22265,7 @@ async def test_the_club_opens_your_fighter_like_the_squad_does(server):
     же место службы. Прежде в клубе в рамке стоял классовый аватар, и
     купленный боец оказывался в ней другим человеком.
     """
-    face = "https://example.invalid/npc_recruits/npc_male_07.png"
-    npc = make_player()
-    npc.user_id = -101
-    npc.nickname = "Громила"
-    npc.class_code = "tank"
-    fighter = build_card(npc, TOKEN, viewer_id=-101)
-    fighter["avatar"] = dict(
-        fighter["avatar"], url=face, look="", look_title="Танк", photo=False
-    )
-    fighter.update(
-        {"squad": True, "stars": 2, "face": face, "state": "free",
-         "state_text": "Свободен", "in_party": False}
-    )
+    fighter = a_fighter_card()
 
     async with async_playwright() as pw:
         browser, page = await open_training(pw, server, spar_call())
@@ -22280,10 +22288,40 @@ async def test_the_club_opens_your_fighter_like_the_squad_does(server):
         # Лицо в рамке — то, с которым бойца наняли
         assert await page.locator(".sheet-doll .avatar img").get_attribute(
             "src"
-        ) == face
+        ) == FIGHTER_FACE
         # Подпись как в отряде: звёзды у имени, место службы под ним
         assert "⭐⭐" in await page.locator("#sheet-title").inner_text()
         assert "Свободен" in await page.locator("#sheet-note").inner_text()
+        await browser.close()
+
+
+async def test_the_fighters_bar_says_nothing_about_upgrades(server):
+    """В шкале бойца нет ни засечек апгрейдов, ни счёта «0 / 3».
+
+    Апгрейд — это очко, которое игрок вкладывает сам. У бойца такой
+    руки нет: характеристики ему считает уровень, и очков в запасе у
+    него не бывает. Засечки обещали бы то, чего не будет, а подпись
+    гнала бы хозяина к апгрейду, которого нет.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_training(pw, server, spar_call())
+
+        async def card_of(route):
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(a_fighter_card()),
+            )
+
+        await page.route("**/api/card*", card_of)
+        await page.locator("#training-body .fighter-info").click()
+        await page.wait_for_selector(".sheet-doll")
+
+        bar = page.locator(".sheet-hero .xp")
+        assert await bar.locator(".xp-mark-up").count() == 0
+        # Знак самого уровня на месте: уровни боец берёт
+        assert await bar.locator(".xp-mark-level").count() == 1
+        assert "АПГРЕЙД" not in await bar.locator(".xp-head").inner_text()
+        assert "До следующего уровня" in await bar.locator(".xp-next").inner_text()
         await browser.close()
 
 
