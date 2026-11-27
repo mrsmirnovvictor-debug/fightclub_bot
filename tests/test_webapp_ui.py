@@ -2609,6 +2609,58 @@ async def test_the_character_sheet_stands_in_boxes(server):
         await browser.close()
 
 
+async def test_the_figures_are_narrow_but_the_column_stays_even(server):
+    """Цифры — обычным шрифтом с табличными знаками, а не моноширинным.
+
+    Моноширинная гарнитура стояла ради ровного столбца, и платили за неё
+    шириной: «15 (14 + 1)» в узкой коробке упиралось в край. Табличные
+    знаки дают ту же ровность в обычном шрифте — он у́же.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-stats .hero-line-value")
+
+        value = page.locator("#hero-stats .hero-line-value").first
+        assert await value.evaluate(
+            "(o) => getComputedStyle(o).fontVariantNumeric"
+        ) == "tabular-nums"
+        # Семейство то же, что у текста вокруг: своей гарнитуры у цифр
+        # больше нет, и моноширинной в том числе
+        same = await page.evaluate(
+            "() => { const o = document.querySelector('#hero-stats .hero-line-value');"
+            "  return [getComputedStyle(o).fontFamily,"
+            "          getComputedStyle(document.body).fontFamily]; }"
+        )
+        assert same[0] == same[1], same
+
+        # И оно у́же прежнего: меряем ту же строку тем же кеглем в обоих
+        # шрифтах. Ровность столбца тут не проверить — `tabular-nums`
+        # опирается на таблицу признаков самого шрифта, а в этом
+        # браузере системный шрифт подменён запасным, у которого её
+        # может не быть вовсе. Объявление проверено выше, остальное —
+        # дело устройства
+        pair = await page.evaluate(
+            """() => {
+                const probe = document.createElement('span');
+                probe.style.cssText =
+                    'position:fixed;font-weight:700;font-size:12.5px;'
+                    + 'font-variant-numeric:tabular-nums';
+                probe.textContent = '15 (14 + 1) 1306';
+                document.body.appendChild(probe);
+                const now = probe.getBoundingClientRect().width;
+                probe.style.fontFamily = 'ui-monospace, "SF Mono", Menlo, monospace';
+                const was = probe.getBoundingClientRect().width;
+                probe.remove();
+                return [now, was];
+            }"""
+        )
+        assert pair[0] < pair[1], pair
+        await browser.close()
+
+
 async def test_the_rating_stands_under_the_level_and_over_the_moves(server):
     """Рейтинг — не характеристика, и за кнопку раздела он не убран.
 
@@ -3248,6 +3300,18 @@ async def test_the_card_of_a_stranger_is_laid_out_like_your_own(server):
         assert await sheet.locator(".xp-panel .xp-level-number").inner_text() == "7"
         assert await sheet.locator(".hero-rating .hero-elo").count() == 1
         assert "Место рождения" in await sheet.locator(".hero-born").inner_text()
+
+        # Рейтинг стоит тем же рядом, что на своём экране: отступ снизу
+        # живёт у ряда, а не у коробки — голой коробкой рейтинг
+        # оставался без отступа вовсе, и характеристики липли к нему
+        assert await sheet.locator(".hero-rating-row > .hero-rating").count() == 1
+        gap = await page.evaluate(
+            "() => { const r = document.querySelector('#sheet-list .hero-rating');"
+            "  const d = document.querySelector('#sheet-list .hero-duo');"
+            "  return d.getBoundingClientRect().top"
+            "         - r.getBoundingClientRect().bottom; }"
+        )
+        assert gap >= 10, gap
 
         # Место в недельном рейтинге знает только своя карточка: чужую
         # отдают без него, и выдумывать его здесь нечего

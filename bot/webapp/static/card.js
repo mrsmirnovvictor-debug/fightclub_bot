@@ -7656,7 +7656,15 @@ function ratingRow(record) {
     side.appendChild(said);
   }
   box.append(head, side);
-  return box;
+
+  // Тот же ряд, что на своём экране: отступ снизу живёт у ряда, а не у
+  // коробки — на карточке в нём стоит ещё и награда за вход, и отступ
+  // у одной из коробок развалил бы ряд. Голой коробкой рейтинг
+  // оставался без отступа вовсе, и характеристики липли к нему
+  const row = document.createElement("div");
+  row.className = "hero-rating-row";
+  row.appendChild(box);
+  return row;
 }
 
 /** Все коробки бойца разом: характеристики, бои, атака, защита, модификаторы.
