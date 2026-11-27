@@ -123,6 +123,22 @@ MAX_DODGE_CHANCE = 1.0 if NO_LIMITS else 0.8
 # лёгкие классы безвредными, а бой — бесконечным.
 MAX_ARMOR_SHARE = 0.6
 
+# Какую долю урона от силы приносит удар второй рукой. Урон своего
+# оружия она приносит целиком, а вот силу — вполовину: бьют-то одни и
+# те же руки и одно и то же тело, и полный замах во второй руке — это
+# второй такой же боец рядом.
+#
+# Прежде доля была полной, и парный хват давал к выходу за ход
+# +70…100%: второй удар приносил не только своё оружие, но и весь урон
+# от силы по второму разу. Против этого не стоял никакой множитель на
+# оружии — двуручному понадобилось бы в три с половиной раза, — и
+# выбора хвата не было: парно брали все, кому хватало очков.
+#
+# Половина — не из головы: с ней парный хват даёт около +45%, а
+# двуручный около +20% (`TWO_HANDED_DAMAGE`), и оба остаются выбором.
+# Парный при этом дороже: две вещи в руках и очки обоих пулов.
+OFFHAND_STRENGTH_SHARE = 0.5
+
 
 class Outcome(str, Enum):
     SKIP = "skip"  # боец не выбрал зону удара
@@ -1008,9 +1024,11 @@ def _roll_damage(
         # 150–200 — столько и прилетает, и ничего сверху
         raw = float(fighter.equipment.roll_weapon_damage(hand, rng))
     else:
-        raw = rng.randint(fighter.derived.damage_min, fighter.derived.damage_max)
+        own = rng.randint(fighter.derived.damage_min, fighter.derived.damage_max)
+        if hand:
+            own *= OFFHAND_STRENGTH_SHARE
         weapon = fighter.equipment.roll_weapon_damage(hand, rng)
-        raw += weapon * fighter.fclass.damage_mult
+        raw = own + weapon * fighter.fclass.damage_mult
     return raw * fatigue_multiplier(round_number, limit)
 
 
@@ -1027,7 +1045,10 @@ def _max_damage(
     if fighter.firearm(hand) is not None:
         raw = float(weapon)
     else:
-        raw = fighter.derived.damage_max + weapon * fighter.fclass.damage_mult
+        own = fighter.derived.damage_max
+        if hand:
+            own *= OFFHAND_STRENGTH_SHARE
+        raw = own + weapon * fighter.fclass.damage_mult
     return raw * fatigue_multiplier(round_number, limit)
 
 

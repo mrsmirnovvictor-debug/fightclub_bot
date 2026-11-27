@@ -18,7 +18,12 @@ import pytest
 
 from bot.database import Database
 from bot.game.classes import Stats, Zone, get_class
-from bot.game.combat import Action, Fighter, resolve_round
+from bot.game.combat import (
+    OFFHAND_STRENGTH_SHARE,
+    Action,
+    Fighter,
+    resolve_round,
+)
 from bot.game.equipment import CATALOGUE, Equipment, OwnedItem, Slot
 from bot.inventory_service import InventoryError, unequip
 from bot.models import Player
@@ -194,12 +199,20 @@ def test_a_modifier_on_the_second_hand_reaches_its_damage():
     assert min(rolls) >= sharp[0] and max(rolls) <= sharp[1]
 
 
-def test_equal_weapons_hit_equally_from_either_hand():
+def test_the_second_hand_brings_its_whole_weapon_and_half_the_strength():
     """Главная жалоба: второй удар будто без оружия. Меряем.
+
+    Оружие доходит до второй руки целиком — это и была жалоба, и она
+    закрыта. А вот урон от силы второй удар приносит вполовину
+    (`OFFHAND_STRENGTH_SHARE`): бьют одни и те же руки и одно и то же
+    тело, и полный замах во второй руке был бы вторым таким же бойцом
+    рядом. Пока он был полным, парный хват давал почти вдвое, и выбора
+    хвата не существовало.
 
     Обе руки бьют в одну зону, чтобы броня зоны не путала счёт, и оружие
     подобрано почти равным: меч 7–15 против заточенного клинка 8–14.
-    Средние должны сойтись — разница в руке роли не играет.
+    Поэтому расхождение рук должно сойтись с тем, которое обещает доля,
+    — а не с нулём и не с «второй руки будто нет».
     """
     victor = two_handed(("sharpen_weapon_1", 5))
     boss = Fighter(
@@ -228,10 +241,27 @@ def test_equal_weapons_hit_equally_from_either_hand():
     blade = hits["скрытым клинком"]
     assert len(sword) > 200 and len(blade) > 200, "обе руки должны бить"
     first, second = sum(sword) / len(sword), sum(blade) / len(blade)
-    # Оружие почти равное — и средние расходятся в пределах десятой доли
-    assert abs(first - second) / first < 0.1, (
-        f"руки бьют по-разному: {first:.1f} против {second:.1f}"
+
+    # Чего ждём: своё оружие у каждой руки целиком, сила — пополам.
+    # Половина написана числом, а не константой: с константой проверка
+    # согласилась бы с любой её правкой, в том числе с возвратом к
+    # полному удару, из-за которого парный хват и был единственным
+    assert OFFHAND_STRENGTH_SHARE == 0.5, "доля решена и проверяется числом"
+    own = (victor.derived.damage_min + victor.derived.damage_max) / 2
+    mult = victor.fclass.damage_mult
+    main, offhand = victor.equipment.weapon_damages
+    with_sword = own + sum(main) / 2 * mult
+    with_blade = own * 0.5 + sum(offhand) / 2 * mult
+    promised = with_blade / with_sword
+    measured = second / first
+
+    assert abs(measured - promised) < 0.1, (
+        f"руки бьют {measured:.2f} к одному, обещано {promised:.2f} "
+        f"({first:.1f} против {second:.1f})"
     )
+    # И это не «второй руки будто нет»: оружие в ней работает, и половина
+    # силы её удар не обнуляет
+    assert second > first * 0.5, (first, second)
 
 
 def test_an_empty_main_hand_makes_the_first_strike_bare_not_the_second():

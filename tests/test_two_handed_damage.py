@@ -161,3 +161,73 @@ def test_the_hold_reaches_the_health_of_the_other_fighter():
         hits[name] = total
 
     assert hits["двуручное"] > hits["одноручное"], hits
+
+
+def test_the_three_holds_make_a_ladder_and_not_one_right_answer():
+    """Лестница хватов: щит — двуручное — парно, и в этом порядке.
+
+    Это и есть весь баланс хватов одним правилом. Щит не прибавляет
+    урона вовсе, зато прикрывает; двуручное прибавляет множителем
+    (`TWO_HANDED_DAMAGE`); парно бьёт больше всех, но стоит двух вещей
+    в руках и очков обоих пулов, и щита при нём нет.
+
+    Пока второй удар приносил полный урон от силы, лестницы не было:
+    парно давало почти вдвое против пятой части у двуручного, и выбор
+    хвата был выбором только на словах. Проверяется здесь порядок, а не
+    числа: числа — решение владельца, а порядок — обещание игроку.
+    """
+    from bot.game.classes import FIGHTER_CLASSES
+    from bot.game.combat import OFFHAND_STRENGTH_SHARE
+    from bot.game.reference import best_kit, developed_stats, equipment_of
+    from bot.game.stats import derive
+
+    def output(fclass, level: int, kit: dict) -> float:
+        """Средний урон за ход этой сборкой: по удару на руку с оружием."""
+        equipment = equipment_of(kit)
+        derived = derive(fclass, developed_stats(fclass, level), 0)
+        own = (derived.damage_min + derived.damage_max) / 2
+        total = 0.0
+        for index, _ in enumerate(equipment.weapons):
+            low, high = equipment.weapon_damages[index]
+            share = OFFHAND_STRENGTH_SHARE if index else 1.0
+            total += own * share + (low + high) / 2 * fclass.damage_mult
+        return total
+
+    for fclass in FIGHTER_CLASSES.values():
+        for level in (5, 8, 12):
+            kit = dict(best_kit(fclass, level))
+            # Со щитом — эталонная сборка как есть
+            shield = output(fclass, level, kit)
+            bare = dict(kit)
+            bare.pop(Slot.OFFHAND, None)
+            # Парно: то же оружие в основной, лёгкое во второй
+            light = max(
+                (
+                    one
+                    for one in CATALOGUE.values()
+                    if one.is_weapon
+                    and one.on_sale
+                    and one.level_required <= level
+                    and one.slots == (Slot.WEAPON, Slot.OFFHAND)
+                ),
+                key=lambda one: (one.level_required, one.damage_max),
+            )
+            pair = dict(bare)
+            pair[Slot.OFFHAND] = light
+            # Двуручное: самое крупное, до какого боец дорос
+            heavy = [
+                one
+                for one in CATALOGUE.values()
+                if one.two_handed and one.level_required <= level
+            ]
+            where = f"{fclass.code} ур.{level}"
+            assert output(fclass, level, pair) > shield, where
+            if not heavy:
+                continue
+            best = max(heavy, key=lambda one: (one.level_required, one.damage_max))
+            hands = dict(bare)
+            hands[Slot.WEAPON] = best
+            # Двуручное бьёт больше, чем то же оружие било бы без
+            # множителя, и меньше, чем две руки
+            plain = dict(hands)
+            assert output(fclass, level, pair) > output(fclass, level, plain), where

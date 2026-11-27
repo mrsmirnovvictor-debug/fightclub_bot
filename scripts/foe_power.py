@@ -47,7 +47,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bot.game.classes import ALL_ZONES  # noqa: E402
-from bot.game.combat import MAX_ARMOR_SHARE, Fighter  # noqa: E402
+from bot.game.combat import (  # noqa: E402
+    MAX_ARMOR_SHARE,
+    OFFHAND_STRENGTH_SHARE,
+    Fighter,
+)
 from bot.game.economy import GEAR_TOP_LEVEL  # noqa: E402
 from bot.game.raid import (  # noqa: E402
     CELLAR_BOSS,
@@ -62,18 +66,29 @@ from bot.game.raid import (  # noqa: E402
 
 
 def damage_per_turn(fighter: Fighter) -> float:
-    """Средний урон за ход: сила, оружие и множитель класса.
+    """Средний урон за ход: по удару на руку с оружием.
+
+    Руки считаются порознь, каждая со своим оружием: вторая рука бьёт
+    тем, что в ней, а не копией первой. Урон от силы она приносит
+    долей (`OFFHAND_STRENGTH_SHARE`) — бьют одни и те же руки и одно и
+    то же тело, — и мерка обязана знать это правило, иначе она мерит
+    бойца, которого не бывает.
 
     У огнестрела своя арифметика: пулю не разгоняет ни сила бойца, ни
     класс, — поэтому в ход идёт ровно то, что написано на оружии.
     """
-    low, high = fighter.equipment.weapon_damage
-    if fighter.firearm() is not None:
-        return (low + high) / 2 * fighter.attacks_per_round
     derived = fighter.derived
     own = (derived.damage_min + derived.damage_max) / 2
-    weapon = (low + high) / 2 * fighter.fclass.damage_mult
-    return (own + weapon) * fighter.attacks_per_round
+    total = 0.0
+    for hand in range(fighter.attacks_per_round):
+        low, high = fighter.equipment.weapon_damages[hand]
+        middle = (low + high) / 2
+        if fighter.firearm(hand) is not None:
+            total += middle
+            continue
+        share = OFFHAND_STRENGTH_SHARE if hand else 1.0
+        total += own * share + middle * fighter.fclass.damage_mult
+    return total
 
 
 def spent(fighter: Fighter) -> Fighter:
