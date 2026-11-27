@@ -406,6 +406,26 @@ async def scene_page(request: web.Request) -> web.Response:
     )
 
 
+async def arsenal_page(request: web.Request) -> web.Response:
+    """Сверочный лист оружейной. Отдаётся всем: внутри только каталог.
+
+    Та же дверь, что у стенда сцены боя: бойца, его денег и его вещей
+    здесь нет вовсе, а числа и картинки каталога игрок и так видит на
+    прилавке. Нужен лист владельцу — сверять арт с названиями.
+    """
+    return web.Response(
+        text=(STATIC_DIR / "arsenal.html").read_text(encoding="utf-8"),
+        content_type="text/html",
+    )
+
+
+async def api_arsenal(request: web.Request) -> web.Response:
+    """Весь арсенал одной выдачей: 94 вещи, которые берут в руки."""
+    from bot.webapp.arsenal import arsenal_payload
+
+    return web.json_response(arsenal_payload())
+
+
 async def index(request: web.Request) -> web.Response:
     return web.Response(
         text=stamped_page(request.app[STAMP_KEY]),
@@ -4630,6 +4650,10 @@ def create_app(
             # как его покажет игра. Тот же конвейер, что в бою
             web.get("/scene", scene_page),
             web.post("/api/scene", api_scene),
+            # Сверочный лист оружейной: вся сотня вещей в руках с
+            # картинками, числами и полем для пометок. Владельцу, не игре
+            web.get("/arsenal", arsenal_page),
+            web.get("/api/arsenal", api_arsenal),
             web.get("/api/card", api_card),
             web.get("/api/map", api_map),
             web.post("/api/travel", api_travel),
