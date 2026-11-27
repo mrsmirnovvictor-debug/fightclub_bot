@@ -350,6 +350,42 @@ def test_the_reward_gear_never_reaches_the_counter():
             assert not kit & rewards, (fclass.code, sorted(kit & rewards))
 
 
+def test_the_reference_kit_is_one_a_fighter_could_actually_wear():
+    """Эталонная сборка носима: двуручного меча со щитом в ней не бывает.
+
+    По этой сборке меряется баланс и по ней одевают городских — зомби
+    станции, охрану, патруль. Пока двуручного хвата не было, щит и
+    двуручный меч уживались в ней молча; с хватом такая сборка стала
+    описывать бойца, которого не бывает, — и мерила бы она его же.
+
+    Эталон при этом берёт оружие в одну руку: из двух одинаково хороших
+    вещей ту, рядом с которой встаёт щит. Двуручное — выбор игрока со
+    своей ценой, а эталон должен быть серединой, а не крайностью.
+    """
+    from bot.game.equipment import SHOWCASE, Slot
+    from bot.game.reference import best_kit
+
+    for fclass in FIGHTER_CLASSES.values():
+        for level in range(1, 16):
+            kit = best_kit(fclass, level)
+            weapon = kit.get(Slot.WEAPON)
+            if weapon is None:
+                continue
+            one_handed = [
+                item
+                for item in SHOWCASE
+                if item.slot is Slot.WEAPON
+                and item.level_required <= level
+                and not item.two_handed
+            ]
+            if one_handed:
+                assert not weapon.two_handed, (fclass.code, level, weapon.code)
+            else:  # pragma: no cover - одноручное есть на всех уровнях
+                assert Slot.OFFHAND not in kit, (fclass.code, level)
+            # Щит рядом с двуручным не стоит никогда
+            assert not (weapon.two_handed and Slot.OFFHAND in kit)
+
+
 # ---------- лестницы: чем выше уровень, тем крупнее числа ----------
 
 

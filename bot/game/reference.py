@@ -42,7 +42,19 @@ def developed_stats(fclass: FighterClass, level: int) -> Stats:
 
 
 def best_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
-    """Лучшее, что боец этого класса мог купить к своему уровню."""
+    """Лучшее, что боец этого класса мог купить к своему уровню.
+
+    Сборка обязана быть носимой: по ней меряется баланс и по ней одевают
+    городских, а эталон, в котором боец держит двуручный меч и щит
+    разом, мерил бы бойца, которого не бывает.
+
+    **Эталон берёт оружие в одну руку.** Двуручное — выбор игрока, и
+    выбор этот со своей ценой: вторая рука остаётся пустой. Эталон же
+    должен быть серединой, а не крайностью, поэтому из двух одинаково
+    хороших вещей он берёт ту, рядом с которой встаёт щит. Двуручное
+    попадает в сборку только там, где одноручного на этом уровне нет
+    вовсе, — и тогда вторая рука пустеет, как и на живом бойце.
+    """
     kit: dict[Slot, Item] = {}
     for slot in ALL_SLOTS:
         options = [
@@ -51,8 +63,13 @@ def best_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
             if item.slot is slot and item.level_required <= level
         ]
         mine = [item for item in options if fclass.code in item.for_classes] or options
+        if slot is Slot.WEAPON:
+            mine = [item for item in mine if not item.two_handed] or mine
         if mine:
             kit[slot] = max(mine, key=lambda item: (item.level_required, item.price))
+    weapon = kit.get(Slot.WEAPON)
+    if weapon is not None and weapon.two_handed:
+        kit.pop(Slot.OFFHAND, None)
     return kit
 
 
