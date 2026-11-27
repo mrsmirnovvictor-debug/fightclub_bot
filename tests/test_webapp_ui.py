@@ -1834,6 +1834,53 @@ async def server(db):
     await server.close()
 
 
+async def test_the_arsenal_sheet_draws_every_thing_in_hand(server):
+    """Сверочный лист оружейной: 94 карточки, и переименованные сверху.
+
+    Лист живёт не в мини-аппе, а отдельной страницей на том же хосте, и
+    открывается без подписи Telegram. Проверяется то, ради чего он
+    сделан: вещи на месте, у переименованных стоит прежнее имя, пометка
+    переживает перезагрузку, и страница не разъезжается по ширине.
+
+    Картинки режем маршрутом, как и всюду: до бакета из проверки не
+    дотянуться, а лист обязан стоять и без них.
+    """
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            executable_path=CHROMIUM, args=["--no-proxy-server"]
+        )
+        page = await browser.new_page(viewport={"width": 1180, "height": 1400})
+        await page.route(IMAGES, lambda route: route.abort())
+        await page.goto(str(server.make_url("/arsenal")), wait_until="domcontentloaded")
+        await page.wait_for_selector(".card")
+
+        assert await page.locator(".card").count() == 94
+        # Переименованные стоят первыми и обведены: лист собран под
+        # сверку арта, и начинается он с того, что разошлось
+        first = await page.locator(".card").first.inner_text()
+        assert "раньше звалась" in first, first
+        assert await page.locator(".card.flag").count() == 10
+        tally = await page.locator("#tally").inner_text()
+        assert "94" in tally and "71" in tally
+
+        # Пометка остаётся в браузере: сервер её не хранит
+        await page.locator(".card textarea").first.fill("проверка пометки")
+        await page.wait_for_timeout(700)
+        await page.reload(wait_until="domcontentloaded")
+        await page.wait_for_selector(".card")
+        kept = await page.locator(".card textarea").first.input_value()
+        assert kept == "проверка пометки"
+
+        for width in (1180, 390):
+            await page.set_viewport_size({"width": width, "height": 1200})
+            await page.wait_for_timeout(120)
+            wide = await page.evaluate(
+                "document.documentElement.scrollWidth > window.innerWidth + 1"
+            )
+            assert not wide, f"страница шире окна при {width}"
+        await browser.close()
+
+
 async def test_stranger_card_has_no_backpack_and_no_shop(server):
     """Имя бойца в чате открывает его карточку — без инвентаря и лавки."""
     stranger = make_player()
