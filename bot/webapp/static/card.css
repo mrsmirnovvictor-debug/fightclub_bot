@@ -1466,9 +1466,47 @@ body.dark .bar-tab.active .bar-icon {
 }
 .lineup-name { overflow-wrap: anywhere; }
 /* Боец отряда — та же строка, только приглушённая: он дерётся наравне
-   с человеком, но кнопок не жмёт и в бой его привели */
-.lineup-row.npc { color: var(--muted); }
+   с человеком, но кнопок не жмёт и в бой его привели.
+
+   Зовётся она `hired`, а не `npc`: `npc` в аппе уже занято
+   нарисованным барменом, и тот `position: absolute`. Строка состава
+   подхватывала его правила и уезжала из столбца совсем — место на
+   стороне считалось, а имени в списке не было */
+.lineup-row.hired { color: var(--muted); }
 .lineup-empty { margin: 0; color: var(--muted); font-size: 13px; }
+/* Оставленный дома — та же строка, ещё тише и в рамке по пунктиру: он
+   не в составе, но позвать его можно, пока на стороне есть место */
+.lineup-row.benched { opacity: 0.65; }
+/* Крестик и плюс у своего бойца. Кружок маленький: строк в столбце до
+   десяти, и кнопка в сорок пикселей заняла бы его целиком. Палец сюда
+   попадает — вокруг знака пустое поле той же кнопки */
+.lineup-hand {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.lineup-hand.off { color: var(--muted); }
+.lineup-hand[disabled] { opacity: 0.4; cursor: not-allowed; }
+.lineup-hand:active { transform: scale(0.92); }
+body.dark .lineup-hand { border-color: rgba(255, 255, 255, 0.22); }
+
+/* Форма сбора под кнопкой «Создать бой»: отбита от неё, чтобы было
+   видно, что это её содержимое, а не следующий блок раздела */
+.fight-form { margin-top: 12px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lineup-hand:active { transform: none; }
+}
 /* Значок карточки в составе меньше: строк в столбце до десяти, и
    кружок в 26 пикселей занимал бы половину ширины */
 .lineup-row .fighter-info { width: 22px; height: 22px; font-size: 12px; }

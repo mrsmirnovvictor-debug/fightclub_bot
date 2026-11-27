@@ -2469,6 +2469,17 @@ async def api_battle_action(request: web.Request) -> web.Response:
             if lobby is None:
                 raise BattleError("Ты никуда не записан.")
             await battles.leave(lobby.id, player.user_id)
+        elif action in ("take", "bench"):
+            # Свой столбец хозяин переигрывает, пока гонга нет: бойца
+            # отряда можно оставить дома и взять обратно. Чужого не
+            # трогает никто — служба смотрит на номер записавшегося
+            lobby = battles.lobby_of_user(player.user_id)
+            if lobby is None:
+                raise BattleError("Ты никуда не записан.")
+            await battles.set_party(
+                lobby.id, player.user_id, _int_field(data, "npc"),
+                take=action == "take",
+            )
         elif action == "turn":
             # Ход целиком: удар каждой рукой и блок уходят одной кнопкой
             session = battles.battle_of_user(player.user_id)

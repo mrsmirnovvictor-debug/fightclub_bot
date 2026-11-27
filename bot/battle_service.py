@@ -448,6 +448,57 @@ class BattleService:
             await self._refresh_lobby(lobby)
         return lobby
 
+    async def set_party(
+        self, lobby_id: int, user_id: int, npc_id: int, take: bool
+    ) -> Lobby:
+        """Взять своего бойца в собираемый состав или оставить его дома.
+
+        Снимок состава делался раз и навсегда, на записи: с кем
+        записался, с тем и выйдешь. Правило честное для чужих мест, но
+        своё оно запирало тоже — передумать было нельзя, только выйти
+        из состава целиком и записаться заново, потеряв место. Пока
+        гонга нет, свой столбец хозяин переигрывает: место бойца —
+        его место, и освобождает он его у себя же.
+
+        Чужого бойца не трогает никто: распоряжаются только своим.
+        """
+        lobby = self._lobbies.get(lobby_id)
+        if lobby is None:
+            raise BattleError("Этот сбор уже закрыт.")
+        if user_id not in lobby.members:
+            raise BattleError("Тебя нет в этом составе.")
+        if lobby.kind is not BattleKind.TEAM:
+            raise BattleError("В королевской битве бойцов отряда нет.")
+
+        held = tuple(lobby.parties.get(user_id, ()))
+        if not take:
+            if npc_id not in held:
+                raise BattleError("Этого бойца в составе и нет.")
+            lobby.parties[user_id] = tuple(one for one in held if one != npc_id)
+            await self._refresh_lobby(lobby)
+            return lobby
+
+        if npc_id in held:
+            raise BattleError("Он уже в составе.")
+        side = lobby.members[user_id]
+        if not lobby.free_in(side):
+            raise BattleError(f"{team_name(side)} уже в полном составе.")
+
+        from bot.squad_service import companions
+
+        ready = {npc.user_id: npc for _, npc in await companions(self.db, user_id)}
+        npc = ready.get(npc_id)
+        if npc is None:
+            # Либо боец не его, либо лежит, либо стоит на точке —
+            # разницы для состава нет: в бой он сейчас не выйдет
+            raise BattleError("Этот боец сейчас в бой не выйдет.")
+        lobby.parties[user_id] = held + (npc_id,)
+        if lobby.is_full:
+            await self._start_from_lobby(lobby)
+        else:
+            await self._refresh_lobby(lobby)
+        return lobby
+
     async def leave(self, lobby_id: int, user_id: int) -> Lobby:
         lobby = self._lobbies.get(lobby_id)
         if lobby is None:

@@ -4396,8 +4396,11 @@ function renderFights(data) {
     el("fights-note").textContent = data.can_fight
       ? "Брось вызов или прими чужой."
       : "Здоровье не то — сначала отдышись.";
-    body.appendChild(openForm(data));
+    // Чужие вызовы — над формой: принять готовый бой быстрее, чем
+    // собрать свой, и то, что уже ждёт, не должно лежать под
+    // длинной формой, до которой ещё докрутить
     if (data.challenges.length) body.appendChild(challengeList(data));
+    body.appendChild(openForm(data));
   }
   renderTraining(data);
 }
@@ -6359,8 +6362,11 @@ function renderBattle(data) {
     el("battle-note").textContent = data.can_fight
       ? "Собери состав или влезь в чужой."
       : "Здоровье не то — сначала отдышись.";
-    body.appendChild(battleOpenForm(data));
+    // Чужие сборы — над кнопкой: влезть в готовый состав быстрее, чем
+    // собрать свой, и то, что уже ждёт гонга, не должно лежать под
+    // формой на пять вопросов
     data.lobbies.forEach((lobby) => body.appendChild(battleLobby(lobby, false)));
+    body.appendChild(battleOpenBlock(data));
   }
 }
 
@@ -6376,6 +6382,34 @@ const battleForm = {
   wait: 5,
 };
 
+/** Открыта ли форма сбора. Пока закрыта — на экране одна кнопка.
+ *
+ * Форма на пять вопросов стояла развёрнутой всегда и занимала экран
+ * целиком, а чужие сборы лежали под ней. Между тем собирают свой бой
+ * реже, чем влезают в чужой: сначала кнопка, форма — по нажатию.
+ */
+let battleFormOpen = false;
+
+/** Свой сбор: кнопка «Создать бой», а под ней — форма, если открыта. */
+function battleOpenBlock(data) {
+  const box = document.createElement("div");
+  box.className = "fight-open";
+
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "btn neon wide" + (battleFormOpen ? " secondary" : "");
+  open.textContent = battleFormOpen ? "Свернуть" : "➕ Создать бой";
+  open.disabled = !data.can_fight && !battleFormOpen;
+  open.addEventListener("click", () => {
+    battleFormOpen = !battleFormOpen;
+    renderBattle(battleData);
+  });
+  box.appendChild(open);
+
+  if (battleFormOpen) box.appendChild(battleOpenForm(data));
+  return box;
+}
+
 /** Форма сбора: четыре вопроса и одна кнопка.
 
     Раньше тут стояли четыре готовые кнопки — «командный на 2», «на 5»
@@ -6383,7 +6417,7 @@ const battleForm = {
     игрока: оружие, уровни и срок сбора. Теперь спрашиваем. */
 function battleOpenForm(data) {
   const box = document.createElement("div");
-  box.className = "fight-open";
+  box.className = "fight-form";
 
   const line = document.createElement("p");
   line.className = "fight-line";
@@ -6521,11 +6555,25 @@ function lineupSide(lobby, team, mine) {
   const rows = document.createElement("div");
   rows.className = "lineup-rows";
   team.members.forEach((one) => {
+    const own = one.user_id === viewerId();
     rows.appendChild(lineupRow(one, false));
     // Боец отряда стоит строкой под хозяином: в бою он дерётся
-    // наравне с человеком и место на стороне занимает своё
-    (one.squad || []).forEach((npc) => rows.appendChild(lineupRow(npc, true)));
+    // наравне с человеком и место на стороне занимает своё. В своей
+    // строке у него крестик — пока гонга нет, хозяин переигрывает
+    // свой столбец, и место бойца освобождает у себя же
+    (one.squad || []).forEach((npc) => {
+      rows.appendChild(lineupRow(npc, true, own ? "bench" : null));
+    });
   });
+  // Кого хозяин не взял — строкой ниже и с плюсом. Скамейка приезжает
+  // только со своим сбором, и только пока на стороне есть место
+  if (mine || lobby.joined) {
+    (lobby.bench || []).forEach((npc) => {
+      if (npc.owner_id !== viewerId()) return;
+      if (mySide(lobby) !== team.team) return;
+      rows.appendChild(lineupRow(npc, true, team.free > 0 ? "take" : "full"));
+    });
+  }
   if (!team.members.length) {
     const empty = document.createElement("p");
     empty.className = "lineup-empty";
@@ -6548,10 +6596,34 @@ function lineupSide(lobby, team, mine) {
   return col;
 }
 
-/** Строка состава: кто это, какого уровня и его карточка под значком. */
-function lineupRow(one, npc) {
+/** Чей это экран. Номер приезжает с карточкой, и до неё состава нет. */
+function viewerId() {
+  return (cardData && cardData.user_id) || 0;
+}
+
+/** На какой стороне стоит смотрящий: по ней и решают, где его скамейка. */
+function mySide(lobby) {
+  const me = viewerId();
+  const found = (lobby.teams || []).find(
+    (team) => (team.members || []).some((one) => one.user_id === me)
+  );
+  return found ? found.team : null;
+}
+
+/** Строка состава: кто это, какого уровня и его карточка под значком.
+ *
+ * `act` — что с этой строкой делает хозяин: `bench` увести бойца
+ * домой, `take` позвать обратно, `full` позвать некуда. Кнопка стоит
+ * только у своих бойцов: чужим составом не распоряжаются.
+ */
+function lineupRow(one, npc, act) {
   const row = document.createElement("p");
-  row.className = "lineup-row" + (npc ? " npc" : "");
+  // Не `npc`: это имя в аппе уже занято — им зовётся нарисованный
+  // бармен, и он `position: absolute`. Строка состава его правила
+  // подхватывала и уезжала из столбца совсем: место на стороне
+  // считалось, а имени в списке не было
+  row.className = "lineup-row" + (npc ? " hired" : "")
+    + (act === "take" || act === "full" ? " benched" : "");
   const said = document.createElement("span");
   said.className = "lineup-name";
   said.textContent =
@@ -6559,7 +6631,27 @@ function lineupRow(one, npc) {
     + (one.level ? " [" + one.level + "]" : "");
   row.appendChild(said);
   row.appendChild(rivalInfo(one));
+  if (act) row.appendChild(lineupHand(one, act));
   return row;
+}
+
+/** Крестик или плюс у своего бойца: увести домой или позвать обратно. */
+function lineupHand(one, act) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "lineup-hand" + (act === "bench" ? " off" : "");
+  btn.textContent = act === "bench" ? "✕" : "＋";
+  btn.title = act === "bench" ? "Оставить дома" : "Взять в бой";
+  if (act === "full") {
+    btn.disabled = true;
+    btn.title = "На этой стороне мест больше нет";
+    return btn;
+  }
+  btn.addEventListener("click", () => battleAction({
+    action: act === "bench" ? "bench" : "take",
+    npc: one.user_id,
+  }));
+  return btn;
 }
 
 /** Обратный отсчёт до гонга: часы и полоса под ними.

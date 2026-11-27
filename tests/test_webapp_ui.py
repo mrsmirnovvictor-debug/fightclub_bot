@@ -6574,14 +6574,117 @@ async def test_the_group_log_reads_from_the_top_down(server):
 
 
 async def test_the_squad_section_offers_both_kinds_of_group_fight(server):
-    """Оба боя стоят первой строкой формы: выбрать можно любой."""
+    """Оба боя стоят первой строкой формы: выбрать можно любой.
+
+    Сама форма до нажатия свёрнута: собирают свой бой реже, чем влезают
+    в чужой, и пять вопросов не должны занимать экран, пока их никто не
+    задавал.
+    """
     async with async_playwright() as pw:
         browser, page = await open_squad(pw, server)
+
+        assert "Собери состав" in await page.locator("#battle-note").inner_text()
+        # Сперва одна кнопка, и формы на экране нет вовсе
+        assert await page.locator("#battle-body .fight-form").count() == 0
+        body = await page.locator("#battle-body").inner_text()
+        assert "Королевская битва" not in body
+        await page.get_by_role("button", name="Создать бой").click()
 
         body = await page.locator("#battle-body").inner_text()
         assert "Командный бой" in body and "Королевская битва" in body
         assert "Собрать состав" in body
-        assert "Собери состав" in await page.locator("#battle-note").inner_text()
+        await browser.close()
+
+
+async def test_a_squad_fighter_really_stands_in_the_column(server):
+    """Боец отряда виден в столбце, а не только посчитан в местах.
+
+    Строка звалась `npc`, а это имя в аппе уже занято нарисованным
+    барменом — и тот `position: absolute`. Строка подхватывала его
+    правила и уезжала из столбца совсем: сторона показывала «2/3» при
+    одном имени в списке, и бойца будто не было.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, a_lineup())
+
+        # Ищем по имени, а не по классу: класс и был тем, что сломалось,
+        # и проверка на него одна прошла бы мимо следующего такого же
+        # совпадения имён
+        row = page.locator("#battle-body .lineup-row", has_text="Громила")
+        assert await row.count() == 1
+        assert await row.is_visible(), "строка на экране, а не уехала из него"
+
+        # Стоит она внутри своего столбца, а не поверх карточки
+        col = await page.locator("#battle-body .lineup-side").first.bounding_box()
+        box = await row.bounding_box()
+        assert col["x"] <= box["x"] and box["x"] < col["x"] + col["width"]
+        assert col["y"] <= box["y"] and box["y"] < col["y"] + col["height"]
+        # И занимает своё место в потоке: `absolute` его из него вынимал
+        assert await row.evaluate("(o) => getComputedStyle(o).position") == "static"
+        await browser.close()
+
+
+async def test_the_owner_benches_and_takes_back_his_own_fighter(server):
+    """Свой столбец хозяин переигрывает, пока гонга нет.
+
+    Снимок состава делался раз и навсегда, на записи, и передумать было
+    нельзя — только выйти целиком и записаться заново, потеряв место.
+    Место бойца — его место, и освобождает он его у себя же. Чужого
+    бойца не трогает никто.
+    """
+    body = a_lineup()
+    body["lobby"]["bench"] = [
+        {"user_id": -102, "name": "Клещ", "level": 3, "emoji": "🗡",
+         "fclass": "Ассасин", "owner_id": 42},
+    ]
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, body)
+
+        async def battle(route):
+            if route.request.method == "POST":
+                sent.append(json.loads(route.request.post_data))
+            await route.fulfill(
+                status=200, content_type="application/json", body=json.dumps(body)
+            )
+
+        await page.route("**/api/battle", battle)
+        await page.evaluate("stopWatchingBattle()")
+
+        # Взятый — с крестиком, оставленный дома — с плюсом и тише
+        taken = page.locator("#battle-body .lineup-row.hired:not(.benched)")
+        benched = page.locator("#battle-body .lineup-row.hired.benched")
+        assert "Громила" in await taken.inner_text()
+        assert "Клещ" in await benched.inner_text()
+        # Плюс погашен: сторона в фикстуре занята целиком
+        assert await benched.locator(".lineup-hand").is_disabled()
+
+        await taken.locator(".lineup-hand").click()
+        await page.wait_for_timeout(200)
+        assert sent == [{"action": "bench", "npc": -101}], sent
+
+        # У чужого бойца кнопки нет вовсе: распоряжаются только своим
+        theirs = page.locator("#battle-body .lineup-side").nth(1)
+        assert await theirs.locator(".lineup-hand").count() == 0
+        await browser.close()
+
+
+async def test_what_already_waits_stands_above_the_create_button(server):
+    """Чужие сборы — над кнопкой «Создать бой», а не под формой.
+
+    Влезть в готовый состав быстрее, чем собрать свой, и то, что уже
+    ждёт гонга, не должно лежать под формой на пять вопросов.
+    """
+    theirs = a_lineup(mine=False, joined=False)
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, theirs)
+
+        lobby = await page.locator("#battle-body .fight-card").bounding_box()
+        create = await page.get_by_role(
+            "button", name="Создать бой"
+        ).bounding_box()
+        assert lobby["y"] + lobby["height"] <= create["y"] + 1
         await browser.close()
 
 
@@ -14137,6 +14240,8 @@ async def test_the_battle_form_asks_four_questions(server, db):
         await page.wait_for_selector("#hero:not(.hidden)")
         await open_screen(page, "club")
         await page.evaluate("pickClubSection('battle')")
+        # Форма живёт под кнопкой «Создать бой» — сперва открываем её
+        await page.get_by_role("button", name="Создать бой").click()
         await page.wait_for_selector("#battle-body .form-row")
         await page.evaluate("stopWatchingBattle()")
 
@@ -22897,6 +23002,35 @@ async def test_the_info_button_opens_the_rival_before_the_fight(server):
         assert "Марла [7]" in await page.locator("#sheet-title").inner_text()
         # Кнопка «Принять вызов» при этом не нажалась: бой не начался
         assert await page.locator(".fight-round").count() == 0
+        await browser.close()
+
+
+async def test_a_waiting_challenge_stands_above_the_ring_form(server):
+    """Чужой вызов — над формой выхода на ринг, а не под ней.
+
+    Принять готовый бой быстрее, чем собрать свой, и то, что уже ждёт,
+    не должно лежать под формой, до которой ещё докрутить.
+    """
+    ring = json.loads(json.dumps(EMPTY_RING))
+    ring["challenges"] = [
+        {
+            "id": 7,
+            "mode": {"code": "fist", "title": "кулачный бой", "emoji": "🥊"},
+            "mine": False,
+            "personal": False,
+            "in_app": True,
+            "challenger": {
+                "user_id": 43, "name": "Марла", "level": 7,
+                "emoji": "🗡", "fclass": "Ассасин",
+            },
+        }
+    ]
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, ring)
+
+        call = await page.locator("#fights-body .fight-card").bounding_box()
+        form = await page.locator("#fights-body .fight-open").bounding_box()
+        assert call["y"] + call["height"] <= form["y"] + 1, (call, form)
         await browser.close()
 
 
