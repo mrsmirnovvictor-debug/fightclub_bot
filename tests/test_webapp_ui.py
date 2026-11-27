@@ -4090,7 +4090,10 @@ async def test_a_weapon_in_the_bag_says_what_holds_it_and_what_is_missing(server
         assert "Мечи · обе руки · владение 8" in text, text
         # Чего не хватает — порознь, и видно, что докупать
         assert "Нужно подрасти: уровень 8, сила 20" in text, text
-        assert "Нужно владение: мечи 8, двуручное оружие 8" in text, text
+        # Вид и навык названы порознь и теми же словами, что столбцы
+        # раздачи: игрок должен понять, какую кнопку ему открывать
+        assert "Нужно владение оружием: мечи 8" in text, text
+        assert "Нужны навыки боя: двуручное оружие 8" in text, text
 
         # Вложенное закрывает строку владения: в ножах у бойца четыре очка
         light = page.locator("#bag-list .thing", has_text="Нож").first

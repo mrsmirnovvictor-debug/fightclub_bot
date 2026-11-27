@@ -77,7 +77,10 @@ def test_the_card_shows_both_pools_and_marks_what_the_class_is_advised():
     }
     # Ассасину советуют мечи, второе оружие и двуручный хват
     assert advised == {SWORDS, HoldType.OFFHAND.value, TWO_HANDED}
-    assert all(one["title"] and one["emoji"] for one in block["families"])
+    assert all(one["title"] for one in block["families"])
+    # Значка направления в столбцах нет: подпись и число, как у атаки с
+    # защитой. Поле, которое экран не читает, в ответе не шлём
+    assert "emoji" not in block["families"][0]
 
 
 async def test_what_is_invested_stands_in_the_card(db):

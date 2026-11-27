@@ -1152,21 +1152,26 @@ function askRingSlot(item) {
 }
 
 // Почему вещь не надеть — порознь, по происхождению недостачи. Уровень и
-// характеристики добирают ростом, вид и хват — очками владения, и это
+// характеристики добирают ростом, вид оружия и навык боя — очками, и это
 // разные действия: «нужно подрасти: мечи 7» не сказало бы, что делать, а
-// одно общее «нельзя» не сказало бы и этого
+// одно общее «нельзя» не сказало бы и этого.
+//
+// Вид и навык названы теми же словами, что столбцы раздачи, и порознь:
+// пулы считаются отдельно, раздают их под разными кнопками, и игрок
+// должен увидеть в отказе ту кнопку, которую ему открывать
 function blockedHint(item) {
-  const grow = [];
-  const learn = [];
+  const found = { level: [], family: [], hold: [] };
   item.requirements.forEach((need) => {
     if (need.ok) return;
-    const text = need.title.toLowerCase() + " " + need.need;
-    if (need.code === "family" || need.code === "hold") learn.push(text);
-    else grow.push(text);
+    const where = need.code === "family" || need.code === "hold" ? need.code : "level";
+    found[where].push(need.title.toLowerCase() + " " + need.need);
   });
   const parts = [];
-  if (grow.length) parts.push("Нужно подрасти: " + grow.join(", "));
-  if (learn.length) parts.push("Нужно владение: " + learn.join(", "));
+  if (found.level.length) parts.push("Нужно подрасти: " + found.level.join(", "));
+  if (found.family.length) {
+    parts.push("Нужно владение оружием: " + found.family.join(", "));
+  }
+  if (found.hold.length) parts.push("Нужны навыки боя: " + found.hold.join(", "));
   return parts.join(". ");
 }
 

@@ -163,7 +163,7 @@ async def test_what_does_not_fit_stays_short_and_goes_to_the_log(db, caplog):
     assert saved.mastery == {HAMMERS: 9}
     assert saved.mastery_free == 0
     assert any("не хватило у 1" in line for line in done), done
-    assert "не хватает очков владения" in caplog.text
+    assert "не хватает очков под надетое" in caplog.text
     assert "Ножи и кастеты" in caplog.text
     # Нож при этом в руке и остался
     assert any(one.code == "knife" and one.slot for one in await db.list_gear(75))

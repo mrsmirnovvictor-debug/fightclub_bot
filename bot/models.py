@@ -283,7 +283,7 @@ class Player:
 
     @property
     def holds_free(self) -> int:
-        """Сколько очков типа владения ещё не вложено."""
+        """Сколько очков навыков боя ещё не вложено."""
         from bot.game.mastery import free_points
 
         return free_points(self.level, self.holds)
@@ -293,7 +293,7 @@ class Player:
         return max(0, self.mastery.get(code, 0))
 
     def hold_in(self, code: str) -> int:
-        """Сколько вложено в этот тип владения."""
+        """Сколько вложено в этот навык боя."""
         return max(0, self.holds.get(code, 0))
 
     def mastery_gaps(self, item: Item, slot: Slot | None = None) -> list[str]:

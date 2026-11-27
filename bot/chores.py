@@ -281,7 +281,7 @@ async def _invest_for_worn(db: Database) -> str:
         if short:
             tight += 1
             logger.warning(
-                "Бойцу %s не хватает очков владения под надетое: %s. "
+                "Бойцу %s не хватает очков под надетое: %s. "
                 "Сборка остаётся, очки перераспределит сам",
                 user_id, ", ".join(short),
             )
