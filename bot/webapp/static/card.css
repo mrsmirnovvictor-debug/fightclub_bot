@@ -839,17 +839,28 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   word-spacing: -0.2em;
 }
 .up-value.added { color: var(--hp-green); }
-/* Владение оружием: строки те же, что у раздачи очков, плюс знак
-   рекомендации. Рекомендованное классу подсвечено, но не выделено
-   рамкой: это подсказка, а не запрет на остальное */
-.mastery-row.advised .row-name,
-.mastery-row.advised .up-name { color: var(--accent); }
+/* Владение оружием: строки те же, что у раздачи очков (во всплывашке) и
+   что в атаке с защитой (на экране), плюс знак рекомендации.
+   Рекомендованное классу подсвечено, но не выделено рамкой: это
+   подсказка, а не запрет на остальное */
+.mastery-row.advised .up-name,
+.hero-line.advised .hero-line-name { color: var(--accent); }
 .mastery-row.advised .up-name::after,
-.mastery-row.advised .row-name::after {
+.hero-line.advised .hero-line-name::after {
   content: " ★";
   font-size: 11px;
   opacity: 0.8;
 }
+
+/* Два столбца владения — такая же пара, как атака с защитой, но с
+   кнопкой под каждым. Столбцы разной длины (четыре вида и три навыка),
+   и без этого кнопки встали бы на разной высоте: список растягивается
+   на весь столбец, кнопка прижимается к низу */
+.hero-mastery .hero-split > div {
+  display: flex;
+  flex-direction: column;
+}
+.mastery-list { flex: 1 1 auto; }
 .up-buttons {
   display: flex;
   gap: 8px;

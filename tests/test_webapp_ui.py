@@ -3856,10 +3856,12 @@ async def test_free_points_are_handed_out_right_on_the_hero_screen(server):
 
 
 async def test_the_mastery_sheet_keeps_the_two_pools_apart(server):
-    """Владение раздают той же всплывашкой, но пулы в ней считаются порознь.
+    """Владение и навыки боя раздают порознь: своя кнопка, своя всплывашка.
 
-    Это главное, что экран обязан показать: очко вида и очко хвата —
-    разные очки, и разложенные мечи не должны гасить «плюс» у щитов.
+    Это главное, что экран обязан показать: очко вида и очко навыка —
+    разные очки. Прежде оба пула стояли одним списком под одной
+    кнопкой, и два счёта складывались в одно число, по которому нельзя
+    было понять, чего именно свободно.
     """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
@@ -3880,36 +3882,37 @@ async def test_the_mastery_sheet_keeps_the_two_pools_apart(server):
         await page.route("**/api/mastery", mastery)
         await page.wait_for_selector("#hero:not(.hidden)")
 
-        opens = page.locator("#mastery-up")
-        assert await opens.inner_text() == "Владение (10)", "5 вида и 5 хвата"
-        # Что вложено, видно и без всплывашки — строками в карточке
-        block = await page.locator("#hero-mastery").inner_text()
-        assert "Мечи" in block and "Щиты" in block
-        await opens.click()
+        # Своя кнопка у каждого столбца, и на ней счёт только своего пула
+        families = page.locator("#mastery-up-family")
+        holds = page.locator("#mastery-up-hold")
+        assert await families.inner_text() == "Владение (5)"
+        assert await holds.inner_text() == "Навыки (5)"
 
+        # Что вложено, видно и без всплывашки — строками в столбцах, и
+        # вид с навыком стоят каждый в своём
+        shown = await page.locator("#mastery-families").inner_text()
+        assert "Мечи" in shown and "Щиты" not in shown
+        shown = await page.locator("#mastery-holds").inner_text()
+        assert "Щиты" in shown and "Мечи" not in shown
+
+        await families.click()
         box = page.locator("#sheet-list")
         await page.wait_for_selector("#sheet:not(.hidden)")
+        assert "Владение оружием" in await page.locator("#sheet-title").inner_text()
         text = await box.inner_text()
-        assert "Вид оружия · свободных: 5 из 5" in text
-        assert "Тип владения · свободных: 5 из 5" in text
+        assert "Свободных очков: 5 из 5" in text
+        # В окне только свой пул: навыки боя раздают из своего
+        assert "Мечи" in text and "Щиты" not in text
 
         save = box.get_by_role("button", name="Сохранить")
         assert await save.is_disabled(), "пока ничего не разложено"
 
-        # Четыре вида, потом три хвата: порядок тот же, что в карточке
         plus = box.locator(".up-row .step:last-child")
-        assert await plus.count() == 7
+        assert await plus.count() == 4, "четыре вида оружия"
         for _ in range(5):
             await plus.nth(3).click()  # мечи
-        text = await box.inner_text()
-        assert "Вид оружия · свободных: 0 из 5" in text
-        assert "Тип владения · свободных: 5 из 5" in text, "хваты не тронуты"
-        # Вид разложен весь — плюсы видов погасли, плюсы хватов живы
-        assert await plus.nth(0).is_disabled()
-        assert await plus.nth(4).is_enabled()
-
-        await plus.nth(6).click()  # щиты
-        assert "Тип владения · свободных: 4 из 5" in await box.inner_text()
+        assert "Свободных очков: 0 из 5" in await box.inner_text()
+        assert await plus.nth(0).is_disabled(), "вид разложен весь"
 
         asked = []
 
@@ -3920,11 +3923,57 @@ async def test_the_mastery_sheet_keeps_the_two_pools_apart(server):
         page.on("dialog", agree)
         await save.click()
         await page.wait_for_timeout(150)
-        assert asked and "+5 · Мечи" in asked[0] and "+1 · Щиты" in asked[0]
+        assert asked and "+5 · Мечи" in asked[0]
         await page.wait_for_timeout(250)
 
-        assert sent == [{"swords": 5, "shield": 1}]
+        # Ушёл только свой пул: хваты в заявке не участвовали
+        assert sent == [{"swords": 5}]
         assert await page.locator("#sheet").is_hidden()
+
+        # Вторая кнопка открывает своё окно, и очки в нём свои
+        await holds.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert "Навыки боя" in await page.locator("#sheet-title").inner_text()
+        text = await box.inner_text()
+        assert "Свободных очков: 5 из 5" in text, "вид его не тронул"
+        assert "Щиты" in text and "Мечи" not in text
+        assert await box.locator(".up-row .step:last-child").count() == 3
+        await browser.close()
+
+
+async def test_the_mastery_columns_read_like_attack_and_guard(server):
+    """Владение стоит парой столбцов, тем же шрифтом и без значков.
+
+    Прежде это был один список на семь строк общим `row` — в узком
+    столбце он подпись с числом не разводил вовсе, а семь картинок
+    читались раньше слов, по которым тут и выбирают.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        heads = await page.locator("#hero-mastery .hero-sub").all_inner_texts()
+        assert [one.lower() for one in heads] == ["владение оружием", "навыки боя"]
+
+        # Строка та же, что в атаке с защитой, а не общая строка аппа
+        assert await page.locator("#hero-mastery .hero-line").count() == 7
+        assert await page.locator("#hero-mastery .row").count() == 0
+
+        # Значков направления в строке нет
+        shown = await page.locator("#hero-mastery").inner_text()
+        for mark in ("🔪", "🏏", "🔨", "⚔", "🗡", "🪓", "🛡"):
+            assert mark not in shown, mark
+
+        # Кнопки стоят под столбцами и на одной высоте: столбцы разной
+        # длины, и без этого одна висела бы выше другой
+        low = await page.locator("#mastery-up-family").bounding_box()
+        high = await page.locator("#mastery-up-hold").bounding_box()
+        assert abs(low["y"] - high["y"]) < 2, (low["y"], high["y"])
+        rows = await page.locator("#hero-mastery .hero-line").last.bounding_box()
+        assert low["y"] >= rows["y"], "кнопка под строками, а не над ними"
         await browser.close()
 
 

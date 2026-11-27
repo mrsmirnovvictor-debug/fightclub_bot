@@ -1046,13 +1046,27 @@
         </div>
       </div>
 
-      <!-- Владение оружием: два пула и семь направлений. Вкладывают
-           очки во всплывашке, а на экране — что уже вложено и кнопка,
-           когда есть что раскладывать -->
-      <div class="hero-box" id="hero-mastery">
-        <div class="hero-sub">Владение оружием</div>
-        <div id="mastery"></div>
-        <button type="button" class="hero-up hidden" id="mastery-up"></button>
+      <!-- Владение: два столбца, как атака с защитой. Вид оружия и
+           навык боя — разные очки, и раздаются они порознь, так что у
+           каждого столбца своя кнопка и своя всплывашка. Одна кнопка
+           на оба пула складывала два счёта в одно число, и по нему
+           нельзя было понять, чего именно свободно. Вкладывают очки
+           во всплывашке, а на экране — что уже вложено -->
+      <div class="hero-box hero-fight hero-mastery" id="hero-mastery">
+        <div class="hero-split">
+          <div>
+            <div class="hero-sub">Владение оружием</div>
+            <div class="mastery-list" id="mastery-families"></div>
+            <button type="button" class="hero-up hidden"
+                    id="mastery-up-family"></button>
+          </div>
+          <div>
+            <div class="hero-sub guard">Навыки боя</div>
+            <div class="mastery-list" id="mastery-holds"></div>
+            <button type="button" class="hero-up hidden"
+                    id="mastery-up-hold"></button>
+          </div>
+        </div>
       </div>
 
       <div class="hero-box hero-fight">

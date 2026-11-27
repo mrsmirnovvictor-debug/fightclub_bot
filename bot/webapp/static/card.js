@@ -1802,11 +1802,6 @@ function masteryRows(card) {
   return held ? held.families.concat(held.holds) : [];
 }
 
-function masteryFree(card) {
-  const held = card.mastery;
-  return held ? held.free.family + held.free.hold : 0;
-}
-
 function masteryDraftIn(pool, card) {
   // Сколько из заявки уходит в этот пул: пулы считаются порознь, и
   // «+» в видах не должен гаснуть из-за разложенных хватов
@@ -1820,40 +1815,73 @@ function masteryLeft(pool, card) {
   return free - masteryDraftIn(pool, card);
 }
 
-/** Что вложено, строками: направление, значение и знак рекомендации. */
+// Столбец на пул: что в нём раздают, куда это пишется на экране, какой
+// кнопкой открывается и как подписана всплывашка. Пулы и прежде
+// считались порознь, но на экране стояли одним списком под одной
+// кнопкой: два счёта складывались в одно число, и по нему нельзя было
+// понять, чего именно свободно
+const MASTERY_POOLS = {
+  family: {
+    key: "families",
+    list: "mastery-families",
+    button: "mastery-up-family",
+    label: "Владение",
+    title: "Владение оружием",
+    note: "Очки вида оружия. Навыки боя считаются отдельно",
+  },
+  hold: {
+    key: "holds",
+    list: "mastery-holds",
+    button: "mastery-up-hold",
+    label: "Навыки",
+    title: "Навыки боя",
+    note: "Очки навыков боя. Владение оружием считается отдельно",
+  },
+};
+
+/** Какой пул сейчас раздают. Всплывашка на экране одна, и столбец, из
+ *  которого в неё вошли, должен пережить перерисовку её строк */
+let masteryPool = "family";
+
+/** Что вложено, строками: направление, значение и знак рекомендации.
+ *
+ * Строки те же, что в атаке с защитой: подпись слева, число справа и
+ * моноширинные цифры. Прежде это был общий `row` на весь апп — в узком
+ * столбце он подпись с числом не разводил вовсе. Значка направления в
+ * строке нет: семь картинок в двух столбцах читались раньше слов, а
+ * выбирают тут по словам.
+ */
 function paintMastery(card) {
-  const box = el("mastery");
   const panel = el("hero-mastery");
-  if (!box || !panel) return;
+  if (!panel) return;
   // Городским раздавать нечего: оружие приходит вместе с ними
   panel.classList.toggle("hidden", !card.mastery || !card.is_self);
-  box.textContent = "";
-  if (!card.mastery) return;
 
-  masteryRows(card).forEach((one) => {
-    const row = document.createElement("div");
-    row.className = "row mastery-row" + (one.advised ? " advised" : "");
-    const name = document.createElement("span");
-    name.className = "row-name";
-    name.textContent = one.emoji + " " + one.title;
-    const value = document.createElement("span");
-    value.className = "row-value";
-    value.textContent = one.level;
-    row.append(name, value);
-    box.appendChild(row);
+  Object.entries(MASTERY_POOLS).forEach(([pool, how]) => {
+    const box = el(how.list);
+    const btn = el(how.button);
+    if (box) {
+      box.textContent = "";
+      ((card.mastery || {})[how.key] || []).forEach((one) => {
+        const line = heroLine(one.title, one.level);
+        if (one.advised) line.classList.add("advised");
+        box.appendChild(line);
+      });
+    }
+    if (!btn) return;
+    const free = ((card.mastery || {}).free || {})[pool] || 0;
+    btn.classList.toggle("hidden", free <= 0 || !card.mastery || !card.is_self);
+    btn.textContent = how.label + " (" + free + ")";
   });
-
-  const btn = el("mastery-up");
-  if (!btn) return;
-  const free = masteryFree(card);
-  btn.classList.toggle("hidden", free <= 0 || !card.is_self);
-  btn.textContent = "Владение (" + free + ")";
 }
 
-function openMastery() {
-  if (!cardData || masteryFree(cardData) <= 0) return;
+function openMastery(pool) {
+  if (!cardData || !cardData.mastery) return;
+  if (masteryLeft(pool, cardData) <= 0) return;
+  masteryPool = pool;
   masteryDraft = {};
-  openSheet("Владение оружием", "Очки вида и хвата считаются порознь", true);
+  const how = MASTERY_POOLS[pool];
+  openSheet(how.title, how.note, true);
   paintMasterySheet();
 }
 
@@ -1862,21 +1890,20 @@ function paintMasterySheet() {
   if (!box || !cardData) return;
   box.textContent = "";
 
-  [["family", "Вид оружия", "families"], ["hold", "Тип владения", "holds"]]
-    .forEach(([pool, title, key]) => {
-      const head = document.createElement("p");
-      head.className = "up-free";
-      head.textContent =
-        title + " · свободных: " + masteryLeft(pool, cardData)
-        + " из " + ((cardData.mastery.free || {})[pool] || 0);
-      box.appendChild(head);
-      const rows = document.createElement("ul");
-      rows.className = "rows";
-      (cardData.mastery[key] || []).forEach((one) => {
-        rows.appendChild(masteryStep(one, pool));
-      });
-      box.appendChild(rows);
-    });
+  const pool = masteryPool;
+  const how = MASTERY_POOLS[pool];
+  const head = document.createElement("p");
+  head.className = "up-free";
+  head.textContent =
+    "Свободных очков: " + masteryLeft(pool, cardData)
+    + " из " + ((cardData.mastery.free || {})[pool] || 0);
+  box.appendChild(head);
+  const rows = document.createElement("ul");
+  rows.className = "rows";
+  (cardData.mastery[how.key] || []).forEach((one) => {
+    rows.appendChild(masteryStep(one, pool));
+  });
+  box.appendChild(rows);
 
   const buttons = document.createElement("div");
   buttons.className = "up-buttons";
@@ -1905,7 +1932,7 @@ function masteryStep(one, pool) {
 
   const label = document.createElement("span");
   label.className = "up-name";
-  label.textContent = one.emoji + " " + one.title;
+  label.textContent = one.title;
 
   const value = document.createElement("span");
   value.className = "up-value";
@@ -1965,9 +1992,12 @@ async function applyMastery() {
     closeSheet();
     render(data.card, true);
     haptic((feedback) => feedback.notificationOccurred("success"));
-    popup("🎯 Владение выросло", "Вложено очков: " + spent + ".");
+    popup(
+      "🎯 " + MASTERY_POOLS[masteryPool].title + ": рост",
+      "Вложено очков: " + spent + "."
+    );
   } catch (error) {
-    popup("Владение", error.message);
+    popup(MASTERY_POOLS[masteryPool].title, error.message);
   } finally {
     busy = false;
   }
@@ -22880,7 +22910,9 @@ watchInteriors();
 
 // Раздачу очков открывает кнопка под характеристиками
 el("hero-up").addEventListener("click", openUpgrade);
-el("mastery-up").addEventListener("click", openMastery);
+Object.entries(MASTERY_POOLS).forEach(([pool, how]) => {
+  el(how.button).addEventListener("click", () => openMastery(pool));
+});
 
 // Нарисованные иконки подменяют эмодзи, если приехали
 dressTabs();
