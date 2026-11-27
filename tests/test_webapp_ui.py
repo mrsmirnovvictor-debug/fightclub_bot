@@ -2585,12 +2585,15 @@ async def test_the_character_sheet_stands_in_boxes(server):
         # Заголовки набраны прописными через `text-transform`, и
         # браузер отдаёт их такими же: сверяем слова, а не регистр
         heads = await page.locator("#hero-stats .hero-sub").all_inner_texts()
-        # Владение оружием стоит сразу за раздачей очков: обе коробки о
-        # том, что боец выбрал сам, — и только ниже начинается бой
+        # Владение стоит сразу за раздачей очков: обе коробки о том, что
+        # боец выбрал сам, — и только ниже начинается бой. Столбцов у
+        # владения два, как у атаки с защитой: вид оружия и навык боя —
+        # разные очки, и раздаются они порознь
         assert [one.lower() for one in heads] == [
             "характеристики",
             "бои",
             "владение оружием",
+            "навыки боя",
             "атака",
             "защита",
             "модификаторы",
@@ -3231,11 +3234,16 @@ async def test_the_card_of_a_stranger_is_laid_out_like_your_own(server):
         theirs = await sheet.evaluate(
             "(o) => [...o.querySelectorAll('.hero-sub')].map((one) => one.textContent)"
         )
-        # Коробки те же и в том же порядке — кроме владения оружием:
-        # очки раздают только свои, и в чужой карточке этой коробке
-        # нечего делать
-        assert theirs == [one for one in mine if one != "Владение оружием"]
-        assert "Владение оружием" in mine, "на своём экране коробка есть"
+        # Коробки те же и в том же порядке — кроме владения: очки
+        # раздают только свои, и в чужой карточке этим столбцам нечего
+        # делать. Берём их с экрана, а не списком: столбцов у владения
+        # два, и забыть один из них в проверке было бы слишком легко
+        own_only = await page.evaluate(
+            "() => [...document.querySelectorAll('#hero-mastery .hero-sub')]"
+            "        .map((o) => o.textContent)"
+        )
+        assert own_only == ["Владение оружием", "Навыки боя"], own_only
+        assert theirs == [one for one in mine if one not in own_only]
         # Шкала опыта, строка рейтинга и подпись о рождении — тоже
         assert await sheet.locator(".xp-panel .xp-level-number").inner_text() == "7"
         assert await sheet.locator(".hero-rating .hero-elo").count() == 1
@@ -10305,6 +10313,13 @@ async def test_the_squad_section_says_it_is_empty(server):
 
         await page.locator("#hero-tabs .hero-act", has_text="Отряды").click()
         await page.wait_for_selector("#hero-squad:not(.hidden)")
+        # Состав приезжает своим запросом, а раздел показывают сразу:
+        # ждём не раздел, а ответ — иначе проверка читает пустую
+        # записку в тот миг, пока отряд ещё едет
+        await page.wait_for_function(
+            "() => (document.getElementById('squad-note') || {}).textContent",
+            timeout=5_000,
+        )
         body = await page.locator("#hero-squad").inner_text()
         assert "пока нет бойцов" in body, body
         # И горит только он: раздел, а не окно
