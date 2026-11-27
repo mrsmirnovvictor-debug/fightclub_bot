@@ -210,10 +210,45 @@ async def roster_of(db, lobbies: list[Lobby]) -> dict[int, dict[str, Any]]:
             for npc_id in lobby.parties.get(user_id, ()):
                 npc = await db.get_player(npc_id)
                 if npc is None:  # pragma: no cover - сломанная база
+                    # Место за ним всё равно занято — его считает сам
+                    # сбор. Пропустить строку значило бы показать
+                    # сторону, где мест занято больше, чем видно имён:
+                    # «2/3» при одном бойце в столбце
+                    held.append({
+                        "user_id": npc_id,
+                        "name": "боец",
+                        "level": 0,
+                        "emoji": "",
+                        "fclass": "",
+                        "owner_id": user_id,
+                    })
                     continue
                 held.append(fighter_line(npc, owner_id=user_id))
             rows[user_id] = dict(fighter_line(one), squad=held)
     return rows
+
+
+async def bench_of(db, lobby, user_id: int) -> list[dict[str, Any]]:
+    """Свои бойцы, которых хозяин в этот состав не взял.
+
+    Пока гонга нет, свой столбец он переигрывает: взятого оставляет
+    дома, оставленного берёт обратно. Поэтому страница должна знать не
+    только тех, кто в составе, но и тех, кого можно позвать.
+
+    В королевской битве скамейки нет вовсе: там каждый сам за себя, и
+    боец вышел бы против собственного хозяина.
+    """
+    from bot.game.battle import BattleKind
+    from bot.squad_service import companions
+
+    if lobby.kind is not BattleKind.TEAM:
+        return []
+    held = set(lobby.parties.get(user_id, ()))
+    return [
+        fighter_line(npc, owner_id=user_id)
+        for _, npc in await companions(db, user_id)
+        if npc.user_id not in held
+    ]
 
 
 async def build_battle(
@@ -283,7 +318,12 @@ async def build_battle(
     shown = ([own] if own is not None else []) + others
     roster = await roster_of(db, shown)
     if own is not None:
-        body["lobby"] = lobby_payload(own, player.user_id, roster)
+        body["lobby"] = dict(
+            lobby_payload(own, player.user_id, roster),
+            # Кого ещё можно позвать в свой столбец. Только в своём
+            # сборе: чужим составом не распоряжаются
+            bench=await bench_of(db, own, player.user_id),
+        )
     body["lobbies"] = [
         lobby_payload(lobby, player.user_id, roster) for lobby in others
     ]
@@ -294,6 +334,7 @@ __all__ = [
     "battle_payload",
     "build_battle",
     "fighter_line",
+    "bench_of",
     "lobby_payload",
     "roster_of",
 ]

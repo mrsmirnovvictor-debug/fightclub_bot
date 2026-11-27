@@ -188,6 +188,80 @@ async def test_the_lineup_shows_the_fighters_a_man_brings_along(club):
     assert [one["name"] for one in held] == ["Громила"]
 
 
+async def test_the_owner_rethinks_his_own_column_before_the_gong(club):
+    """Бойца отряда можно оставить дома и позвать обратно, пока идёт сбор.
+
+    Снимок состава делался раз и навсегда, на записи: передумать было
+    нельзя — только выйти целиком и записаться заново, потеряв место.
+    Место бойца — его место, и освобождает он его у себя же.
+    """
+    client, battles, db = club
+    owner = await db.get_player(42)
+    npc = await a_fighter(db, owner, name="Громила")
+
+    _, mine = await act(client, 42, action="open", kind="team", size=3)
+    assert mine["lobby"]["total"] == 2
+    assert [one["name"] for one in mine["lobby"]["teams"][0]["members"][0]["squad"]] \
+        == ["Громила"]
+    # Скамейка пуста: он взят, и звать больше некого
+    assert mine["lobby"]["bench"] == []
+
+    # Оставили дома — место освободилось, а сам он оказался на скамейке
+    status, mine = await act(client, 42, action="bench", npc=npc.user_id)
+    assert status == 200, mine
+    assert mine["lobby"]["total"] == 1
+    assert mine["lobby"]["teams"][0]["members"][0]["squad"] == []
+    assert [one["name"] for one in mine["lobby"]["bench"]] == ["Громила"]
+
+    # И позвали обратно
+    status, mine = await act(client, 42, action="take", npc=npc.user_id)
+    assert status == 200, mine
+    assert mine["lobby"]["total"] == 2
+    assert [one["name"] for one in mine["lobby"]["teams"][0]["members"][0]["squad"]] \
+        == ["Громила"]
+    assert mine["lobby"]["bench"] == []
+
+
+async def test_a_mans_fighter_is_his_own_to_move(club):
+    """Чужим бойцом не распоряжаются, и дважды одного не берут."""
+    client, battles, db = club
+    owner = await db.get_player(42)
+    npc = await a_fighter(db, owner, name="Громила")
+
+    await act(client, 42, action="open", kind="team", size=3)
+    lobby = battles.lobby_of_user(42)
+    await act(client, 43, action="join", lobby_id=lobby.id, team=BLUE)
+
+    # Сосед по сбору тронуть его не может: служба смотрит на номер
+    status, error = await act(client, 43, action="bench", npc=npc.user_id)
+    assert status == 409 and "и нет" in error["error"], error
+
+    # И дважды одного не берут
+    status, error = await act(client, 42, action="take", npc=npc.user_id)
+    assert status == 409 and "уже в составе" in error["error"], error
+
+    # А кого нет в отряде — не позвать вовсе
+    status, error = await act(client, 42, action="take", npc=-999)
+    assert status == 409 and "в бой не выйдет" in error["error"], error
+
+
+async def test_a_full_side_takes_nobody_else(club):
+    """Позвать бойца некуда, если сторона уже занята целиком."""
+    client, battles, db = club
+    owner = await db.get_player(42)
+    npc = await a_fighter(db, owner, name="Громила")
+
+    # Сторона на двоих: хозяин и его боец заняли её целиком
+    await act(client, 42, action="open", kind="team", size=2)
+    _, mine = await act(client, 42, action="bench", npc=npc.user_id)
+    assert mine["lobby"]["teams"][0]["free"] == 1
+
+    lobby = battles.lobby_of_user(42)
+    await act(client, 44, action="join", lobby_id=lobby.id, team=RED)
+    status, error = await act(client, 42, action="take", npc=npc.user_id)
+    assert status == 409 and "полном составе" in error["error"], error
+
+
 async def test_nobody_brings_a_fighter_to_the_royale(club):
     """В мясорубке бойцов отряда нет: там каждый сам за себя.
 

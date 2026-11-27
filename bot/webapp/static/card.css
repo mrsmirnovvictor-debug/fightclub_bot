@@ -21,13 +21,24 @@
      темнее: те же, что в тёмной, на белом не читаются */
   --cyan: #1f6fc4;
   --violet: #6b45c0;
-  /* Цифры показателей — моноширинные, с поджатой разрядкой. Семейство
-     берём из того, что уже стоит в системе: своя гарнитура значила бы
-     ещё один запрос в сеть перед тем, как боец увидит свои цифры, и
-     прыжок вёрстки, когда она доедет. Моноширинные знаки к тому же
-     одинаковой ширины — столбец чисел не пляшет от строки к строке */
-  --digits: ui-monospace, "SF Mono", "SFMono-Regular", "Menlo",
-            "Roboto Mono", "DejaVu Sans Mono", monospace;
+  /* Цифры показателей. Семейство берём из того, что уже стоит в
+     системе: своя гарнитура значила бы ещё один запрос в сеть перед
+     тем, как боец увидит свои цифры, и прыжок вёрстки, когда она
+     доедет.
+
+     Прежде это была моноширинная гарнитура — ради того, чтобы столбец
+     чисел не плясал от строки к строке. Платили за это шириной:
+     моноширинный знак заметно шире обычного, «12 (2 + 10)» в узкой
+     коробке упиралось в край, а разряд в «1 306» приходилось поджимать
+     отрицательной разрядкой. Теперь это тот же системный шрифт, что и
+     весь текст, а ровность столбца даёт `tabular-nums` — цифры в нём
+     одной ширины, и только цифры. Поэтому шрифт узкий, а столбец
+     по-прежнему ровный.
+
+     Сам по себе этой переменной мало: `tabular-nums` включается
+     объявлением `font-variant-numeric` рядом с ней. Где считают
+     столбцом — оно стоит */
+  --digits: inherit;
   /* Фон рамки бойца. Не из темы: машины сняты в студии на ровном сером,
      и рамка обязана быть того же серого — иначе полоса машины висит
      заплаткой на фоне другого цвета. Цвет снят с самих фотографий, и по
@@ -834,22 +845,33 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   min-width: 58px;
   text-align: right;
   font-family: var(--digits);
+  font-variant-numeric: tabular-nums;
   font-weight: 700;
   font-size: 13.5px;
-  word-spacing: -0.2em;
 }
 .up-value.added { color: var(--hp-green); }
-/* Владение оружием: строки те же, что у раздачи очков, плюс знак
-   рекомендации. Рекомендованное классу подсвечено, но не выделено
-   рамкой: это подсказка, а не запрет на остальное */
-.mastery-row.advised .row-name,
-.mastery-row.advised .up-name { color: var(--accent); }
+/* Владение оружием: строки те же, что у раздачи очков (во всплывашке) и
+   что в атаке с защитой (на экране), плюс знак рекомендации.
+   Рекомендованное классу подсвечено, но не выделено рамкой: это
+   подсказка, а не запрет на остальное */
+.mastery-row.advised .up-name,
+.hero-line.advised .hero-line-name { color: var(--accent); }
 .mastery-row.advised .up-name::after,
-.mastery-row.advised .row-name::after {
+.hero-line.advised .hero-line-name::after {
   content: " ★";
   font-size: 11px;
   opacity: 0.8;
 }
+
+/* Два столбца владения — такая же пара, как атака с защитой, но с
+   кнопкой под каждым. Столбцы разной длины (четыре вида и три навыка),
+   и без этого кнопки встали бы на разной высоте: список растягивается
+   на весь столбец, кнопка прижимается к низу */
+.hero-mastery .hero-split > div {
+  display: flex;
+  flex-direction: column;
+}
+.mastery-list { flex: 1 1 auto; }
 .up-buttons {
   display: flex;
   gap: 8px;
@@ -1455,9 +1477,47 @@ body.dark .bar-tab.active .bar-icon {
 }
 .lineup-name { overflow-wrap: anywhere; }
 /* Боец отряда — та же строка, только приглушённая: он дерётся наравне
-   с человеком, но кнопок не жмёт и в бой его привели */
-.lineup-row.npc { color: var(--muted); }
+   с человеком, но кнопок не жмёт и в бой его привели.
+
+   Зовётся она `hired`, а не `npc`: `npc` в аппе уже занято
+   нарисованным барменом, и тот `position: absolute`. Строка состава
+   подхватывала его правила и уезжала из столбца совсем — место на
+   стороне считалось, а имени в списке не было */
+.lineup-row.hired { color: var(--muted); }
 .lineup-empty { margin: 0; color: var(--muted); font-size: 13px; }
+/* Оставленный дома — та же строка, ещё тише и в рамке по пунктиру: он
+   не в составе, но позвать его можно, пока на стороне есть место */
+.lineup-row.benched { opacity: 0.65; }
+/* Крестик и плюс у своего бойца. Кружок маленький: строк в столбце до
+   десяти, и кнопка в сорок пикселей заняла бы его целиком. Палец сюда
+   попадает — вокруг знака пустое поле той же кнопки */
+.lineup-hand {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.lineup-hand.off { color: var(--muted); }
+.lineup-hand[disabled] { opacity: 0.4; cursor: not-allowed; }
+.lineup-hand:active { transform: scale(0.92); }
+body.dark .lineup-hand { border-color: rgba(255, 255, 255, 0.22); }
+
+/* Форма сбора под кнопкой «Создать бой»: отбита от неё, чтобы было
+   видно, что это её содержимое, а не следующий блок раздела */
+.fight-form { margin-top: 12px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lineup-hand:active { transform: none; }
+}
 /* Значок карточки в составе меньше: строк в столбце до десяти, и
    кружок в 26 пикселей занимал бы половину ширины */
 .lineup-row .fighter-info { width: 22px; height: 22px; font-size: 12px; }
@@ -4949,9 +5009,9 @@ body.dark .wallet-pick { border-color: rgba(150, 200, 255, 0.18); }
 
 .wallet-pick-money {
   font-family: var(--digits);
+  font-variant-numeric: tabular-nums;
   font-size: 13.5px;
   font-weight: 700;
-  word-spacing: -0.2em;
 }
 .wallet-pick.on .wallet-pick-money { color: var(--accent); }
 /* Сумма и скидка в одной строке: скидка — про цену, и место ей рядом
@@ -7298,14 +7358,16 @@ body.dark .hero-rating.prize {
 
 .hero-elo {
   font-family: var(--digits);
+  font-variant-numeric: tabular-nums;
   font-size: 21px;
   font-weight: 700;
   line-height: 1;
-  letter-spacing: 0.02em;
-  /* Пробел у моноширинных знаков той же ширины, что и цифра, и разряд
-     в «1 195» разваливал число надвое. Поджимаем — разряд остаётся
-     виден, а число читается числом */
-  word-spacing: -0.3em;
+  letter-spacing: 0.01em;
+  /* Разряд в «1 306» отбивают пробелом, и у моноширинных знаков он был
+     шириной с цифру — число разваливалось надвое, приходилось поджимать
+     на треть кегля. В обычном шрифте пробел узкий сам, и поджимать его
+     почти не нужно */
+  word-spacing: -0.08em;
   color: var(--gold);
 }
 
@@ -7426,10 +7488,11 @@ body.dark .hero-sub.guard {
 
 .hero-line-value {
   font-family: var(--digits);
+  font-variant-numeric: tabular-nums;
   font-weight: 700;
   font-size: 12.5px;
   letter-spacing: 0.01em;
-  word-spacing: -0.2em;
+  word-spacing: -0.05em;
   white-space: nowrap;
 }
 
@@ -7538,6 +7601,7 @@ body.dark .hero-split > div + div {
 .hero-born span {
   display: block;
   font-family: var(--digits);
+  font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
 }
 

@@ -1802,11 +1802,6 @@ function masteryRows(card) {
   return held ? held.families.concat(held.holds) : [];
 }
 
-function masteryFree(card) {
-  const held = card.mastery;
-  return held ? held.free.family + held.free.hold : 0;
-}
-
 function masteryDraftIn(pool, card) {
   // Сколько из заявки уходит в этот пул: пулы считаются порознь, и
   // «+» в видах не должен гаснуть из-за разложенных хватов
@@ -1820,40 +1815,73 @@ function masteryLeft(pool, card) {
   return free - masteryDraftIn(pool, card);
 }
 
-/** Что вложено, строками: направление, значение и знак рекомендации. */
+// Столбец на пул: что в нём раздают, куда это пишется на экране, какой
+// кнопкой открывается и как подписана всплывашка. Пулы и прежде
+// считались порознь, но на экране стояли одним списком под одной
+// кнопкой: два счёта складывались в одно число, и по нему нельзя было
+// понять, чего именно свободно
+const MASTERY_POOLS = {
+  family: {
+    key: "families",
+    list: "mastery-families",
+    button: "mastery-up-family",
+    label: "Владение",
+    title: "Владение оружием",
+    note: "Очки вида оружия. Навыки боя считаются отдельно",
+  },
+  hold: {
+    key: "holds",
+    list: "mastery-holds",
+    button: "mastery-up-hold",
+    label: "Навыки",
+    title: "Навыки боя",
+    note: "Очки навыков боя. Владение оружием считается отдельно",
+  },
+};
+
+/** Какой пул сейчас раздают. Всплывашка на экране одна, и столбец, из
+ *  которого в неё вошли, должен пережить перерисовку её строк */
+let masteryPool = "family";
+
+/** Что вложено, строками: направление, значение и знак рекомендации.
+ *
+ * Строки те же, что в атаке с защитой: подпись слева, число справа и
+ * моноширинные цифры. Прежде это был общий `row` на весь апп — в узком
+ * столбце он подпись с числом не разводил вовсе. Значка направления в
+ * строке нет: семь картинок в двух столбцах читались раньше слов, а
+ * выбирают тут по словам.
+ */
 function paintMastery(card) {
-  const box = el("mastery");
   const panel = el("hero-mastery");
-  if (!box || !panel) return;
+  if (!panel) return;
   // Городским раздавать нечего: оружие приходит вместе с ними
   panel.classList.toggle("hidden", !card.mastery || !card.is_self);
-  box.textContent = "";
-  if (!card.mastery) return;
 
-  masteryRows(card).forEach((one) => {
-    const row = document.createElement("div");
-    row.className = "row mastery-row" + (one.advised ? " advised" : "");
-    const name = document.createElement("span");
-    name.className = "row-name";
-    name.textContent = one.emoji + " " + one.title;
-    const value = document.createElement("span");
-    value.className = "row-value";
-    value.textContent = one.level;
-    row.append(name, value);
-    box.appendChild(row);
+  Object.entries(MASTERY_POOLS).forEach(([pool, how]) => {
+    const box = el(how.list);
+    const btn = el(how.button);
+    if (box) {
+      box.textContent = "";
+      ((card.mastery || {})[how.key] || []).forEach((one) => {
+        const line = heroLine(one.title, one.level);
+        if (one.advised) line.classList.add("advised");
+        box.appendChild(line);
+      });
+    }
+    if (!btn) return;
+    const free = ((card.mastery || {}).free || {})[pool] || 0;
+    btn.classList.toggle("hidden", free <= 0 || !card.mastery || !card.is_self);
+    btn.textContent = how.label + " (" + free + ")";
   });
-
-  const btn = el("mastery-up");
-  if (!btn) return;
-  const free = masteryFree(card);
-  btn.classList.toggle("hidden", free <= 0 || !card.is_self);
-  btn.textContent = "Владение (" + free + ")";
 }
 
-function openMastery() {
-  if (!cardData || masteryFree(cardData) <= 0) return;
+function openMastery(pool) {
+  if (!cardData || !cardData.mastery) return;
+  if (masteryLeft(pool, cardData) <= 0) return;
+  masteryPool = pool;
   masteryDraft = {};
-  openSheet("Владение оружием", "Очки вида и хвата считаются порознь", true);
+  const how = MASTERY_POOLS[pool];
+  openSheet(how.title, how.note, true);
   paintMasterySheet();
 }
 
@@ -1862,21 +1890,20 @@ function paintMasterySheet() {
   if (!box || !cardData) return;
   box.textContent = "";
 
-  [["family", "Вид оружия", "families"], ["hold", "Тип владения", "holds"]]
-    .forEach(([pool, title, key]) => {
-      const head = document.createElement("p");
-      head.className = "up-free";
-      head.textContent =
-        title + " · свободных: " + masteryLeft(pool, cardData)
-        + " из " + ((cardData.mastery.free || {})[pool] || 0);
-      box.appendChild(head);
-      const rows = document.createElement("ul");
-      rows.className = "rows";
-      (cardData.mastery[key] || []).forEach((one) => {
-        rows.appendChild(masteryStep(one, pool));
-      });
-      box.appendChild(rows);
-    });
+  const pool = masteryPool;
+  const how = MASTERY_POOLS[pool];
+  const head = document.createElement("p");
+  head.className = "up-free";
+  head.textContent =
+    "Свободных очков: " + masteryLeft(pool, cardData)
+    + " из " + ((cardData.mastery.free || {})[pool] || 0);
+  box.appendChild(head);
+  const rows = document.createElement("ul");
+  rows.className = "rows";
+  (cardData.mastery[how.key] || []).forEach((one) => {
+    rows.appendChild(masteryStep(one, pool));
+  });
+  box.appendChild(rows);
 
   const buttons = document.createElement("div");
   buttons.className = "up-buttons";
@@ -1905,7 +1932,7 @@ function masteryStep(one, pool) {
 
   const label = document.createElement("span");
   label.className = "up-name";
-  label.textContent = one.emoji + " " + one.title;
+  label.textContent = one.title;
 
   const value = document.createElement("span");
   value.className = "up-value";
@@ -1965,9 +1992,12 @@ async function applyMastery() {
     closeSheet();
     render(data.card, true);
     haptic((feedback) => feedback.notificationOccurred("success"));
-    popup("🎯 Владение выросло", "Вложено очков: " + spent + ".");
+    popup(
+      "🎯 " + MASTERY_POOLS[masteryPool].title + ": рост",
+      "Вложено очков: " + spent + "."
+    );
   } catch (error) {
-    popup("Владение", error.message);
+    popup(MASTERY_POOLS[masteryPool].title, error.message);
   } finally {
     busy = false;
   }
@@ -4366,8 +4396,11 @@ function renderFights(data) {
     el("fights-note").textContent = data.can_fight
       ? "Брось вызов или прими чужой."
       : "Здоровье не то — сначала отдышись.";
-    body.appendChild(openForm(data));
+    // Чужие вызовы — над формой: принять готовый бой быстрее, чем
+    // собрать свой, и то, что уже ждёт, не должно лежать под
+    // длинной формой, до которой ещё докрутить
     if (data.challenges.length) body.appendChild(challengeList(data));
+    body.appendChild(openForm(data));
   }
   renderTraining(data);
 }
@@ -6329,8 +6362,11 @@ function renderBattle(data) {
     el("battle-note").textContent = data.can_fight
       ? "Собери состав или влезь в чужой."
       : "Здоровье не то — сначала отдышись.";
-    body.appendChild(battleOpenForm(data));
+    // Чужие сборы — над кнопкой: влезть в готовый состав быстрее, чем
+    // собрать свой, и то, что уже ждёт гонга, не должно лежать под
+    // формой на пять вопросов
     data.lobbies.forEach((lobby) => body.appendChild(battleLobby(lobby, false)));
+    body.appendChild(battleOpenBlock(data));
   }
 }
 
@@ -6346,6 +6382,34 @@ const battleForm = {
   wait: 5,
 };
 
+/** Открыта ли форма сбора. Пока закрыта — на экране одна кнопка.
+ *
+ * Форма на пять вопросов стояла развёрнутой всегда и занимала экран
+ * целиком, а чужие сборы лежали под ней. Между тем собирают свой бой
+ * реже, чем влезают в чужой: сначала кнопка, форма — по нажатию.
+ */
+let battleFormOpen = false;
+
+/** Свой сбор: кнопка «Создать бой», а под ней — форма, если открыта. */
+function battleOpenBlock(data) {
+  const box = document.createElement("div");
+  box.className = "fight-open";
+
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "btn neon wide" + (battleFormOpen ? " secondary" : "");
+  open.textContent = battleFormOpen ? "Свернуть" : "➕ Создать бой";
+  open.disabled = !data.can_fight && !battleFormOpen;
+  open.addEventListener("click", () => {
+    battleFormOpen = !battleFormOpen;
+    renderBattle(battleData);
+  });
+  box.appendChild(open);
+
+  if (battleFormOpen) box.appendChild(battleOpenForm(data));
+  return box;
+}
+
 /** Форма сбора: четыре вопроса и одна кнопка.
 
     Раньше тут стояли четыре готовые кнопки — «командный на 2», «на 5»
@@ -6353,7 +6417,7 @@ const battleForm = {
     игрока: оружие, уровни и срок сбора. Теперь спрашиваем. */
 function battleOpenForm(data) {
   const box = document.createElement("div");
-  box.className = "fight-open";
+  box.className = "fight-form";
 
   const line = document.createElement("p");
   line.className = "fight-line";
@@ -6491,11 +6555,25 @@ function lineupSide(lobby, team, mine) {
   const rows = document.createElement("div");
   rows.className = "lineup-rows";
   team.members.forEach((one) => {
+    const own = one.user_id === viewerId();
     rows.appendChild(lineupRow(one, false));
     // Боец отряда стоит строкой под хозяином: в бою он дерётся
-    // наравне с человеком и место на стороне занимает своё
-    (one.squad || []).forEach((npc) => rows.appendChild(lineupRow(npc, true)));
+    // наравне с человеком и место на стороне занимает своё. В своей
+    // строке у него крестик — пока гонга нет, хозяин переигрывает
+    // свой столбец, и место бойца освобождает у себя же
+    (one.squad || []).forEach((npc) => {
+      rows.appendChild(lineupRow(npc, true, own ? "bench" : null));
+    });
   });
+  // Кого хозяин не взял — строкой ниже и с плюсом. Скамейка приезжает
+  // только со своим сбором, и только пока на стороне есть место
+  if (mine || lobby.joined) {
+    (lobby.bench || []).forEach((npc) => {
+      if (npc.owner_id !== viewerId()) return;
+      if (mySide(lobby) !== team.team) return;
+      rows.appendChild(lineupRow(npc, true, team.free > 0 ? "take" : "full"));
+    });
+  }
   if (!team.members.length) {
     const empty = document.createElement("p");
     empty.className = "lineup-empty";
@@ -6518,10 +6596,34 @@ function lineupSide(lobby, team, mine) {
   return col;
 }
 
-/** Строка состава: кто это, какого уровня и его карточка под значком. */
-function lineupRow(one, npc) {
+/** Чей это экран. Номер приезжает с карточкой, и до неё состава нет. */
+function viewerId() {
+  return (cardData && cardData.user_id) || 0;
+}
+
+/** На какой стороне стоит смотрящий: по ней и решают, где его скамейка. */
+function mySide(lobby) {
+  const me = viewerId();
+  const found = (lobby.teams || []).find(
+    (team) => (team.members || []).some((one) => one.user_id === me)
+  );
+  return found ? found.team : null;
+}
+
+/** Строка состава: кто это, какого уровня и его карточка под значком.
+ *
+ * `act` — что с этой строкой делает хозяин: `bench` увести бойца
+ * домой, `take` позвать обратно, `full` позвать некуда. Кнопка стоит
+ * только у своих бойцов: чужим составом не распоряжаются.
+ */
+function lineupRow(one, npc, act) {
   const row = document.createElement("p");
-  row.className = "lineup-row" + (npc ? " npc" : "");
+  // Не `npc`: это имя в аппе уже занято — им зовётся нарисованный
+  // бармен, и он `position: absolute`. Строка состава его правила
+  // подхватывала и уезжала из столбца совсем: место на стороне
+  // считалось, а имени в списке не было
+  row.className = "lineup-row" + (npc ? " hired" : "")
+    + (act === "take" || act === "full" ? " benched" : "");
   const said = document.createElement("span");
   said.className = "lineup-name";
   said.textContent =
@@ -6529,7 +6631,27 @@ function lineupRow(one, npc) {
     + (one.level ? " [" + one.level + "]" : "");
   row.appendChild(said);
   row.appendChild(rivalInfo(one));
+  if (act) row.appendChild(lineupHand(one, act));
   return row;
+}
+
+/** Крестик или плюс у своего бойца: увести домой или позвать обратно. */
+function lineupHand(one, act) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "lineup-hand" + (act === "bench" ? " off" : "");
+  btn.textContent = act === "bench" ? "✕" : "＋";
+  btn.title = act === "bench" ? "Оставить дома" : "Взять в бой";
+  if (act === "full") {
+    btn.disabled = true;
+    btn.title = "На этой стороне мест больше нет";
+    return btn;
+  }
+  btn.addEventListener("click", () => battleAction({
+    action: act === "bench" ? "bench" : "take",
+    npc: one.user_id,
+  }));
+  return btn;
 }
 
 /** Обратный отсчёт до гонга: часы и полоса под ними.
@@ -7534,7 +7656,15 @@ function ratingRow(record) {
     side.appendChild(said);
   }
   box.append(head, side);
-  return box;
+
+  // Тот же ряд, что на своём экране: отступ снизу живёт у ряда, а не у
+  // коробки — на карточке в нём стоит ещё и награда за вход, и отступ
+  // у одной из коробок развалил бы ряд. Голой коробкой рейтинг
+  // оставался без отступа вовсе, и характеристики липли к нему
+  const row = document.createElement("div");
+  row.className = "hero-rating-row";
+  row.appendChild(box);
+  return row;
 }
 
 /** Все коробки бойца разом: характеристики, бои, атака, защита, модификаторы.
@@ -22880,7 +23010,9 @@ watchInteriors();
 
 // Раздачу очков открывает кнопка под характеристиками
 el("hero-up").addEventListener("click", openUpgrade);
-el("mastery-up").addEventListener("click", openMastery);
+Object.entries(MASTERY_POOLS).forEach(([pool, how]) => {
+  el(how.button).addEventListener("click", () => openMastery(pool));
+});
 
 // Нарисованные иконки подменяют эмодзи, если приехали
 dressTabs();

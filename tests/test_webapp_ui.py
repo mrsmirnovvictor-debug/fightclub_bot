@@ -2585,12 +2585,15 @@ async def test_the_character_sheet_stands_in_boxes(server):
         # Заголовки набраны прописными через `text-transform`, и
         # браузер отдаёт их такими же: сверяем слова, а не регистр
         heads = await page.locator("#hero-stats .hero-sub").all_inner_texts()
-        # Владение оружием стоит сразу за раздачей очков: обе коробки о
-        # том, что боец выбрал сам, — и только ниже начинается бой
+        # Владение стоит сразу за раздачей очков: обе коробки о том, что
+        # боец выбрал сам, — и только ниже начинается бой. Столбцов у
+        # владения два, как у атаки с защитой: вид оружия и навык боя —
+        # разные очки, и раздаются они порознь
         assert [one.lower() for one in heads] == [
             "характеристики",
             "бои",
             "владение оружием",
+            "навыки боя",
             "атака",
             "защита",
             "модификаторы",
@@ -2603,6 +2606,58 @@ async def test_the_character_sheet_stands_in_boxes(server):
         assert "Место рождения" in born
         assert card["birthplace"] in born
         assert card["birthday"] in born
+        await browser.close()
+
+
+async def test_the_figures_are_narrow_but_the_column_stays_even(server):
+    """Цифры — обычным шрифтом с табличными знаками, а не моноширинным.
+
+    Моноширинная гарнитура стояла ради ровного столбца, и платили за неё
+    шириной: «15 (14 + 1)» в узкой коробке упиралось в край. Табличные
+    знаки дают ту же ровность в обычном шрифте — он у́же.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-stats .hero-line-value")
+
+        value = page.locator("#hero-stats .hero-line-value").first
+        assert await value.evaluate(
+            "(o) => getComputedStyle(o).fontVariantNumeric"
+        ) == "tabular-nums"
+        # Семейство то же, что у текста вокруг: своей гарнитуры у цифр
+        # больше нет, и моноширинной в том числе
+        same = await page.evaluate(
+            "() => { const o = document.querySelector('#hero-stats .hero-line-value');"
+            "  return [getComputedStyle(o).fontFamily,"
+            "          getComputedStyle(document.body).fontFamily]; }"
+        )
+        assert same[0] == same[1], same
+
+        # И оно у́же прежнего: меряем ту же строку тем же кеглем в обоих
+        # шрифтах. Ровность столбца тут не проверить — `tabular-nums`
+        # опирается на таблицу признаков самого шрифта, а в этом
+        # браузере системный шрифт подменён запасным, у которого её
+        # может не быть вовсе. Объявление проверено выше, остальное —
+        # дело устройства
+        pair = await page.evaluate(
+            """() => {
+                const probe = document.createElement('span');
+                probe.style.cssText =
+                    'position:fixed;font-weight:700;font-size:12.5px;'
+                    + 'font-variant-numeric:tabular-nums';
+                probe.textContent = '15 (14 + 1) 1306';
+                document.body.appendChild(probe);
+                const now = probe.getBoundingClientRect().width;
+                probe.style.fontFamily = 'ui-monospace, "SF Mono", Menlo, monospace';
+                const was = probe.getBoundingClientRect().width;
+                probe.remove();
+                return [now, was];
+            }"""
+        )
+        assert pair[0] < pair[1], pair
         await browser.close()
 
 
@@ -3231,15 +3286,32 @@ async def test_the_card_of_a_stranger_is_laid_out_like_your_own(server):
         theirs = await sheet.evaluate(
             "(o) => [...o.querySelectorAll('.hero-sub')].map((one) => one.textContent)"
         )
-        # Коробки те же и в том же порядке — кроме владения оружием:
-        # очки раздают только свои, и в чужой карточке этой коробке
-        # нечего делать
-        assert theirs == [one for one in mine if one != "Владение оружием"]
-        assert "Владение оружием" in mine, "на своём экране коробка есть"
+        # Коробки те же и в том же порядке — кроме владения: очки
+        # раздают только свои, и в чужой карточке этим столбцам нечего
+        # делать. Берём их с экрана, а не списком: столбцов у владения
+        # два, и забыть один из них в проверке было бы слишком легко
+        own_only = await page.evaluate(
+            "() => [...document.querySelectorAll('#hero-mastery .hero-sub')]"
+            "        .map((o) => o.textContent)"
+        )
+        assert own_only == ["Владение оружием", "Навыки боя"], own_only
+        assert theirs == [one for one in mine if one not in own_only]
         # Шкала опыта, строка рейтинга и подпись о рождении — тоже
         assert await sheet.locator(".xp-panel .xp-level-number").inner_text() == "7"
         assert await sheet.locator(".hero-rating .hero-elo").count() == 1
         assert "Место рождения" in await sheet.locator(".hero-born").inner_text()
+
+        # Рейтинг стоит тем же рядом, что на своём экране: отступ снизу
+        # живёт у ряда, а не у коробки — голой коробкой рейтинг
+        # оставался без отступа вовсе, и характеристики липли к нему
+        assert await sheet.locator(".hero-rating-row > .hero-rating").count() == 1
+        gap = await page.evaluate(
+            "() => { const r = document.querySelector('#sheet-list .hero-rating');"
+            "  const d = document.querySelector('#sheet-list .hero-duo');"
+            "  return d.getBoundingClientRect().top"
+            "         - r.getBoundingClientRect().bottom; }"
+        )
+        assert gap >= 10, gap
 
         # Место в недельном рейтинге знает только своя карточка: чужую
         # отдают без него, и выдумывать его здесь нечего
@@ -3856,10 +3928,12 @@ async def test_free_points_are_handed_out_right_on_the_hero_screen(server):
 
 
 async def test_the_mastery_sheet_keeps_the_two_pools_apart(server):
-    """Владение раздают той же всплывашкой, но пулы в ней считаются порознь.
+    """Владение и навыки боя раздают порознь: своя кнопка, своя всплывашка.
 
-    Это главное, что экран обязан показать: очко вида и очко хвата —
-    разные очки, и разложенные мечи не должны гасить «плюс» у щитов.
+    Это главное, что экран обязан показать: очко вида и очко навыка —
+    разные очки. Прежде оба пула стояли одним списком под одной
+    кнопкой, и два счёта складывались в одно число, по которому нельзя
+    было понять, чего именно свободно.
     """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
@@ -3880,36 +3954,37 @@ async def test_the_mastery_sheet_keeps_the_two_pools_apart(server):
         await page.route("**/api/mastery", mastery)
         await page.wait_for_selector("#hero:not(.hidden)")
 
-        opens = page.locator("#mastery-up")
-        assert await opens.inner_text() == "Владение (10)", "5 вида и 5 хвата"
-        # Что вложено, видно и без всплывашки — строками в карточке
-        block = await page.locator("#hero-mastery").inner_text()
-        assert "Мечи" in block and "Щиты" in block
-        await opens.click()
+        # Своя кнопка у каждого столбца, и на ней счёт только своего пула
+        families = page.locator("#mastery-up-family")
+        holds = page.locator("#mastery-up-hold")
+        assert await families.inner_text() == "Владение (5)"
+        assert await holds.inner_text() == "Навыки (5)"
 
+        # Что вложено, видно и без всплывашки — строками в столбцах, и
+        # вид с навыком стоят каждый в своём
+        shown = await page.locator("#mastery-families").inner_text()
+        assert "Мечи" in shown and "Щиты" not in shown
+        shown = await page.locator("#mastery-holds").inner_text()
+        assert "Щиты" in shown and "Мечи" not in shown
+
+        await families.click()
         box = page.locator("#sheet-list")
         await page.wait_for_selector("#sheet:not(.hidden)")
+        assert "Владение оружием" in await page.locator("#sheet-title").inner_text()
         text = await box.inner_text()
-        assert "Вид оружия · свободных: 5 из 5" in text
-        assert "Тип владения · свободных: 5 из 5" in text
+        assert "Свободных очков: 5 из 5" in text
+        # В окне только свой пул: навыки боя раздают из своего
+        assert "Мечи" in text and "Щиты" not in text
 
         save = box.get_by_role("button", name="Сохранить")
         assert await save.is_disabled(), "пока ничего не разложено"
 
-        # Четыре вида, потом три хвата: порядок тот же, что в карточке
         plus = box.locator(".up-row .step:last-child")
-        assert await plus.count() == 7
+        assert await plus.count() == 4, "четыре вида оружия"
         for _ in range(5):
             await plus.nth(3).click()  # мечи
-        text = await box.inner_text()
-        assert "Вид оружия · свободных: 0 из 5" in text
-        assert "Тип владения · свободных: 5 из 5" in text, "хваты не тронуты"
-        # Вид разложен весь — плюсы видов погасли, плюсы хватов живы
-        assert await plus.nth(0).is_disabled()
-        assert await plus.nth(4).is_enabled()
-
-        await plus.nth(6).click()  # щиты
-        assert "Тип владения · свободных: 4 из 5" in await box.inner_text()
+        assert "Свободных очков: 0 из 5" in await box.inner_text()
+        assert await plus.nth(0).is_disabled(), "вид разложен весь"
 
         asked = []
 
@@ -3920,11 +3995,57 @@ async def test_the_mastery_sheet_keeps_the_two_pools_apart(server):
         page.on("dialog", agree)
         await save.click()
         await page.wait_for_timeout(150)
-        assert asked and "+5 · Мечи" in asked[0] and "+1 · Щиты" in asked[0]
+        assert asked and "+5 · Мечи" in asked[0]
         await page.wait_for_timeout(250)
 
-        assert sent == [{"swords": 5, "shield": 1}]
+        # Ушёл только свой пул: хваты в заявке не участвовали
+        assert sent == [{"swords": 5}]
         assert await page.locator("#sheet").is_hidden()
+
+        # Вторая кнопка открывает своё окно, и очки в нём свои
+        await holds.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert "Навыки боя" in await page.locator("#sheet-title").inner_text()
+        text = await box.inner_text()
+        assert "Свободных очков: 5 из 5" in text, "вид его не тронул"
+        assert "Щиты" in text and "Мечи" not in text
+        assert await box.locator(".up-row .step:last-child").count() == 3
+        await browser.close()
+
+
+async def test_the_mastery_columns_read_like_attack_and_guard(server):
+    """Владение стоит парой столбцов, тем же шрифтом и без значков.
+
+    Прежде это был один список на семь строк общим `row` — в узком
+    столбце он подпись с числом не разводил вовсе, а семь картинок
+    читались раньше слов, по которым тут и выбирают.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        heads = await page.locator("#hero-mastery .hero-sub").all_inner_texts()
+        assert [one.lower() for one in heads] == ["владение оружием", "навыки боя"]
+
+        # Строка та же, что в атаке с защитой, а не общая строка аппа
+        assert await page.locator("#hero-mastery .hero-line").count() == 7
+        assert await page.locator("#hero-mastery .row").count() == 0
+
+        # Значков направления в строке нет
+        shown = await page.locator("#hero-mastery").inner_text()
+        for mark in ("🔪", "🏏", "🔨", "⚔", "🗡", "🪓", "🛡"):
+            assert mark not in shown, mark
+
+        # Кнопки стоят под столбцами и на одной высоте: столбцы разной
+        # длины, и без этого одна висела бы выше другой
+        low = await page.locator("#mastery-up-family").bounding_box()
+        high = await page.locator("#mastery-up-hold").bounding_box()
+        assert abs(low["y"] - high["y"]) < 2, (low["y"], high["y"])
+        rows = await page.locator("#hero-mastery .hero-line").last.bounding_box()
+        assert low["y"] >= rows["y"], "кнопка под строками, а не над ними"
         await browser.close()
 
 
@@ -6517,14 +6638,117 @@ async def test_the_group_log_reads_from_the_top_down(server):
 
 
 async def test_the_squad_section_offers_both_kinds_of_group_fight(server):
-    """Оба боя стоят первой строкой формы: выбрать можно любой."""
+    """Оба боя стоят первой строкой формы: выбрать можно любой.
+
+    Сама форма до нажатия свёрнута: собирают свой бой реже, чем влезают
+    в чужой, и пять вопросов не должны занимать экран, пока их никто не
+    задавал.
+    """
     async with async_playwright() as pw:
         browser, page = await open_squad(pw, server)
+
+        assert "Собери состав" in await page.locator("#battle-note").inner_text()
+        # Сперва одна кнопка, и формы на экране нет вовсе
+        assert await page.locator("#battle-body .fight-form").count() == 0
+        body = await page.locator("#battle-body").inner_text()
+        assert "Королевская битва" not in body
+        await page.get_by_role("button", name="Создать бой").click()
 
         body = await page.locator("#battle-body").inner_text()
         assert "Командный бой" in body and "Королевская битва" in body
         assert "Собрать состав" in body
-        assert "Собери состав" in await page.locator("#battle-note").inner_text()
+        await browser.close()
+
+
+async def test_a_squad_fighter_really_stands_in_the_column(server):
+    """Боец отряда виден в столбце, а не только посчитан в местах.
+
+    Строка звалась `npc`, а это имя в аппе уже занято нарисованным
+    барменом — и тот `position: absolute`. Строка подхватывала его
+    правила и уезжала из столбца совсем: сторона показывала «2/3» при
+    одном имени в списке, и бойца будто не было.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, a_lineup())
+
+        # Ищем по имени, а не по классу: класс и был тем, что сломалось,
+        # и проверка на него одна прошла бы мимо следующего такого же
+        # совпадения имён
+        row = page.locator("#battle-body .lineup-row", has_text="Громила")
+        assert await row.count() == 1
+        assert await row.is_visible(), "строка на экране, а не уехала из него"
+
+        # Стоит она внутри своего столбца, а не поверх карточки
+        col = await page.locator("#battle-body .lineup-side").first.bounding_box()
+        box = await row.bounding_box()
+        assert col["x"] <= box["x"] and box["x"] < col["x"] + col["width"]
+        assert col["y"] <= box["y"] and box["y"] < col["y"] + col["height"]
+        # И занимает своё место в потоке: `absolute` его из него вынимал
+        assert await row.evaluate("(o) => getComputedStyle(o).position") == "static"
+        await browser.close()
+
+
+async def test_the_owner_benches_and_takes_back_his_own_fighter(server):
+    """Свой столбец хозяин переигрывает, пока гонга нет.
+
+    Снимок состава делался раз и навсегда, на записи, и передумать было
+    нельзя — только выйти целиком и записаться заново, потеряв место.
+    Место бойца — его место, и освобождает он его у себя же. Чужого
+    бойца не трогает никто.
+    """
+    body = a_lineup()
+    body["lobby"]["bench"] = [
+        {"user_id": -102, "name": "Клещ", "level": 3, "emoji": "🗡",
+         "fclass": "Ассасин", "owner_id": 42},
+    ]
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, body)
+
+        async def battle(route):
+            if route.request.method == "POST":
+                sent.append(json.loads(route.request.post_data))
+            await route.fulfill(
+                status=200, content_type="application/json", body=json.dumps(body)
+            )
+
+        await page.route("**/api/battle", battle)
+        await page.evaluate("stopWatchingBattle()")
+
+        # Взятый — с крестиком, оставленный дома — с плюсом и тише
+        taken = page.locator("#battle-body .lineup-row.hired:not(.benched)")
+        benched = page.locator("#battle-body .lineup-row.hired.benched")
+        assert "Громила" in await taken.inner_text()
+        assert "Клещ" in await benched.inner_text()
+        # Плюс погашен: сторона в фикстуре занята целиком
+        assert await benched.locator(".lineup-hand").is_disabled()
+
+        await taken.locator(".lineup-hand").click()
+        await page.wait_for_timeout(200)
+        assert sent == [{"action": "bench", "npc": -101}], sent
+
+        # У чужого бойца кнопки нет вовсе: распоряжаются только своим
+        theirs = page.locator("#battle-body .lineup-side").nth(1)
+        assert await theirs.locator(".lineup-hand").count() == 0
+        await browser.close()
+
+
+async def test_what_already_waits_stands_above_the_create_button(server):
+    """Чужие сборы — над кнопкой «Создать бой», а не под формой.
+
+    Влезть в готовый состав быстрее, чем собрать свой, и то, что уже
+    ждёт гонга, не должно лежать под формой на пять вопросов.
+    """
+    theirs = a_lineup(mine=False, joined=False)
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, theirs)
+
+        lobby = await page.locator("#battle-body .fight-card").bounding_box()
+        create = await page.get_by_role(
+            "button", name="Создать бой"
+        ).bounding_box()
+        assert lobby["y"] + lobby["height"] <= create["y"] + 1
         await browser.close()
 
 
@@ -10256,6 +10480,13 @@ async def test_the_squad_section_says_it_is_empty(server):
 
         await page.locator("#hero-tabs .hero-act", has_text="Отряды").click()
         await page.wait_for_selector("#hero-squad:not(.hidden)")
+        # Состав приезжает своим запросом, а раздел показывают сразу:
+        # ждём не раздел, а ответ — иначе проверка читает пустую
+        # записку в тот миг, пока отряд ещё едет
+        await page.wait_for_function(
+            "() => (document.getElementById('squad-note') || {}).textContent",
+            timeout=5_000,
+        )
         body = await page.locator("#hero-squad").inner_text()
         assert "пока нет бойцов" in body, body
         # И горит только он: раздел, а не окно
@@ -14073,6 +14304,8 @@ async def test_the_battle_form_asks_four_questions(server, db):
         await page.wait_for_selector("#hero:not(.hidden)")
         await open_screen(page, "club")
         await page.evaluate("pickClubSection('battle')")
+        # Форма живёт под кнопкой «Создать бой» — сперва открываем её
+        await page.get_by_role("button", name="Создать бой").click()
         await page.wait_for_selector("#battle-body .form-row")
         await page.evaluate("stopWatchingBattle()")
 
@@ -22833,6 +23066,35 @@ async def test_the_info_button_opens_the_rival_before_the_fight(server):
         assert "Марла [7]" in await page.locator("#sheet-title").inner_text()
         # Кнопка «Принять вызов» при этом не нажалась: бой не начался
         assert await page.locator(".fight-round").count() == 0
+        await browser.close()
+
+
+async def test_a_waiting_challenge_stands_above_the_ring_form(server):
+    """Чужой вызов — над формой выхода на ринг, а не под ней.
+
+    Принять готовый бой быстрее, чем собрать свой, и то, что уже ждёт,
+    не должно лежать под формой, до которой ещё докрутить.
+    """
+    ring = json.loads(json.dumps(EMPTY_RING))
+    ring["challenges"] = [
+        {
+            "id": 7,
+            "mode": {"code": "fist", "title": "кулачный бой", "emoji": "🥊"},
+            "mine": False,
+            "personal": False,
+            "in_app": True,
+            "challenger": {
+                "user_id": 43, "name": "Марла", "level": 7,
+                "emoji": "🗡", "fclass": "Ассасин",
+            },
+        }
+    ]
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, ring)
+
+        call = await page.locator("#fights-body .fight-card").bounding_box()
+        form = await page.locator("#fights-body .fight-open").bounding_box()
+        assert call["y"] + call["height"] <= form["y"] + 1, (call, form)
         await browser.close()
 
 
