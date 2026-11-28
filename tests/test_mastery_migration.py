@@ -19,7 +19,7 @@ from bot import chores
 from bot.game.equipment import Slot
 from bot.game.health import now_ts
 from bot.game.mastery import HoldType, WeaponFamily
-from bot.mastery_service import needed_for, plan_for, settle_worn
+from bot.mastery_service import invest, needed_for, plan_for, settle_worn
 from tests.test_robbery import make_player
 
 SLASHING = WeaponFamily.SLASHING.value
@@ -27,6 +27,18 @@ PIERCING = WeaponFamily.PIERCING.value
 CHOPPING = WeaponFamily.CHOPPING.value
 OFFHAND = HoldType.OFFHAND.value
 SHIELD = HoldType.SHIELD.value
+
+
+async def without_the_reset(db):
+    """Прогнать разовые работы, не задев сброса владения.
+
+    Сброс идёт после вкладывания минимума и стирает вложенное — на
+    живой базе это и нужно, там вкладывание прошло двумя днями раньше.
+    А проверки ниже про саму прежнюю работу, поэтому сброс помечаем
+    сделанным: отметка и проверка у разовых работ — один запрос.
+    """
+    await db.mark_chore(chores.MASTERY_RESET, now_ts())
+    return await chores.run(db, now_ts())
 
 
 async def armed(db, user_id: int, level: int, **hands: str):
@@ -95,7 +107,7 @@ async def test_the_minimum_for_what_is_worn_is_invested(db):
     """
     await armed(db, 71, 12, weapon="katana", offhand="knife")
 
-    done = await chores.run(db, now_ts())
+    done = await without_the_reset(db)
 
     assert any("владение по надетому" in line for line in done), done
     saved = await db.get_player(71)
@@ -110,7 +122,7 @@ async def test_a_shield_asks_only_for_its_hold(db):
     """Щиту вид не назначают: он требует хвата и ничего больше."""
     await armed(db, 72, 10, weapon="katana", offhand="riot_shield")
 
-    await chores.run(db, now_ts())
+    await without_the_reset(db)
 
     saved = await db.get_player(72)
     assert saved.mastery == {SLASHING: 8}
@@ -121,7 +133,7 @@ async def test_the_migration_undresses_nobody(db):
     """Ни одна вещь не снята и не пропала: правила спрашивают при надевании."""
     await armed(db, 73, 10, weapon="katana", offhand="knife")
 
-    await chores.run(db, now_ts())
+    await without_the_reset(db)
 
     worn = {
         owned.slot: owned.code
@@ -134,10 +146,10 @@ async def test_the_migration_undresses_nobody(db):
 async def test_a_second_run_invests_nothing_more(db):
     """Бот перезапускается часто, и второй заход ничего не добавляет."""
     await armed(db, 74, 10, weapon="katana")
-    await chores.run(db, now_ts())
+    await without_the_reset(db)
     before = await db.get_player(74)
 
-    assert await chores.run(db, now_ts()) == []
+    assert await without_the_reset(db) == []
 
     # И само правило идемпотентно, без отметки о работе: считает заново
     again, short = await settle_worn(db, before, [("katana", "weapon")])
@@ -156,7 +168,7 @@ async def test_what_does_not_fit_stays_short_and_goes_to_the_log(db, caplog):
     await armed(db, 75, 9, weapon="viking_axe", offhand="knife")
 
     with caplog.at_level(logging.WARNING, logger="bot.chores"):
-        done = await chores.run(db, now_ts())
+        done = await without_the_reset(db)
 
     saved = await db.get_player(75)
     # Самое дорогое закрыто, на второе направление очков не осталось
@@ -177,7 +189,7 @@ async def test_a_townsman_is_left_alone(db):
     owned.slot = Slot.WEAPON
     await db.save_gear(owned)
 
-    await chores.run(db, now_ts())
+    await without_the_reset(db)
 
     assert (await db.get_player(-77)).mastery == {}
 
@@ -195,6 +207,64 @@ async def test_the_backpack_is_not_paid_for(db):
 
     assert await db.worn_in_hands() == {76: [("katana", "weapon")]}
 
-    await chores.run(db, now_ts())
+    await without_the_reset(db)
 
     assert (await db.get_player(76)).mastery == {SLASHING: 8}
+
+
+# ---------- сброс после переезда видов ----------
+
+
+async def test_the_reset_empties_both_pools_and_returns_the_points(db):
+    """Сброс владения: вложенное снято, очки снова по уровню.
+
+    Виды оружия переехали на тип урона, и прежние коды стали ничьими:
+    делить вложенное между новыми видами пришлось бы гаданием, а у
+    воина с танком вид сменился целиком. Поэтому раскладывают заново —
+    и запас для этого не начисляют, а считают от уровня.
+    """
+    one = await armed(db, 81, 9, weapon="katana")
+    await invest(db, one, SLASHING, 8)
+    await invest(db, one, SHIELD, 1)
+    assert (await db.get_player(81)).mastery == {SLASHING: 8}
+
+    done = await chores.run(db, now_ts())
+
+    assert any("владение сброшено" in line for line in done), done
+    saved = await db.get_player(81)
+    assert saved.mastery == {} and saved.holds == {}
+    assert saved.mastery_free == 9 and saved.holds_free == 9
+
+
+async def test_the_reset_does_not_undress_anyone(db):
+    """Оружие остаётся в руках: владение спрашивают при надевании."""
+    await armed(db, 82, 10, weapon="katana", offhand="knife")
+
+    await chores.run(db, now_ts())
+
+    worn = {
+        owned.slot: owned.code
+        for owned in await db.list_gear(82)
+        if owned.slot is not None
+    }
+    assert worn == {Slot.WEAPON: "katana", Slot.OFFHAND: "knife"}
+
+
+async def test_the_reset_runs_once_and_not_again(db):
+    """Второй заход не трогает то, что боец успел разложить заново."""
+    one = await armed(db, 83, 7, weapon="katana")
+    await chores.run(db, now_ts())
+
+    await invest(db, one, CHOPPING, 5)
+    assert await chores.run(db, now_ts()) == []
+    assert (await db.get_player(83)).mastery == {CHOPPING: 5}
+
+
+async def test_a_townsman_has_nothing_to_reset(db):
+    """Городского сброс не касается: очков владения у него не бывает."""
+    npc = make_player(-91, "Охрана", level=9)
+    await db.save_player(npc)
+
+    await chores.run(db, now_ts())
+
+    assert (await db.get_player(-91)).mastery == {}

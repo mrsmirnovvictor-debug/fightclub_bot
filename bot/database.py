@@ -7268,6 +7268,34 @@ class Database:
             logger.info("Боец %s сдал задание %s", user_id, code)
         return cursor.rowcount > 0
 
+    async def wipe_mastery(self) -> int:
+        """Обнулить оба пула владения у всех бойцов. Возвращает, скольких задело.
+
+        Нужно разовой работе по живой базе: виды оружия переехали на тип
+        урона, и прежние коды (`swords`, `hammers_axes`) теперь ничьи.
+        Разбор их и так отбрасывает, то есть вложенное уже пропало, —
+        но строки в базе остались, и чистим их здесь, чтобы в колонке не
+        лежало то, чего в игре нет.
+
+        Очки от этого не теряются: запас считается от уровня, и пустая
+        строка означает «всё свободно». Снимаем одним запросом, как
+        журнал заданий: сброс идёт всем сразу, и перебор по игрокам
+        держал бы базу в полуразобранном виде ровно столько, сколько
+        идёт перебор.
+        """
+        async with self.conn.execute(
+            f"SELECT COUNT(*) AS n FROM players "
+            f"WHERE {HUMANS} AND (mastery != '' OR holds != '')"
+        ) as cursor:
+            row = await cursor.fetchone()
+        touched = int(row["n"]) if row else 0
+        await self.conn.execute(
+            f"UPDATE players SET mastery = '', holds = '' WHERE {HUMANS}"
+        )
+        await self.conn.commit()
+        logger.info("Владение сброшено: бойцов с вложенным было %s", touched)
+        return touched
+
     async def clear_quests(self) -> int:
         """Стереть журнал заданий у всех. Возвращает, сколько записей сняли.
 
