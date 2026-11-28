@@ -750,7 +750,9 @@ def test_shop_marks_what_is_locked_owned_and_affordable():
     assert goods["knuckles"]["affordable"] is True
     assert goods["bat"]["unlocked"] is False  # бита — с 6 уровня
     assert goods["bat"]["level_required"] == 6
-    assert [c["code"] for c in goods["bat"]["suits"]] == ["warrior"]
+    # Бита дробящая, и предложена она обоим, кому дробящее к руке: танку
+    # по виду, воину — потому что рубящая лестница пока дырявая
+    assert [c["code"] for c in goods["bat"]["suits"]] == ["warrior", "tank"]
     # Требования показываются и в лавке. Уровень и сила у трубы уже
     # есть, а очков владения в дубинах боец не вкладывал — и эта строка
     # стоит красной отдельно от роста
