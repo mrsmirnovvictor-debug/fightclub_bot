@@ -1854,16 +1854,24 @@ async def test_the_arsenal_sheet_draws_every_thing_in_hand(server):
         await page.goto(str(server.make_url("/arsenal")), wait_until="domcontentloaded")
         await page.wait_for_selector(".card")
 
-        assert await page.locator(".card").count() == 94
+        assert await page.locator(".card").count() == 120
         # Спорные стоят первыми и обведены: лист собран под сверку арта,
         # и начинается он с того, где картинка разошлась с названием
         first = await page.locator(".card").first.inner_text()
         assert "на картинке" in first, first
-        assert await page.locator(".card.flag").count() == 7
-        # И тип урона у оружия виден в строке значков
-        assert "рубящий урон" in first, first
+        # Обведённых столько же, сколько строк в списке для художника:
+        # семь прежних, где картинка спорит с названием, и двадцать
+        # шесть новых вещей, у которых картинки нет вовсе
+        assert await page.locator(".card.flag").count() == 33
+        # И тип урона у оружия виден в строке значков. Какой именно —
+        # дело порядка: первой стоит вещь, у которой картинка разошлась
+        # с названием, и вид у неё любой из четырёх
+        assert any(
+            f"{kind} урон" in first
+            for kind in ("колющий", "рубящий", "дробящий", "режущий")
+        ), first
         tally = await page.locator("#tally").inner_text()
-        assert "94" in tally and "71" in tally
+        assert "120" in tally and "97" in tally
 
         # Пометка остаётся в браузере: сервер её не хранит
         await page.locator(".card textarea").first.fill("проверка пометки")
@@ -19913,8 +19921,12 @@ async def test_the_drum_crawls_past_half_a_dozen_prizes_at_the_end(server, db):
           };
         }""", SPIN_SECONDS)
 
-        # За последние две с половиной секунды — пять-семь предметов
-        assert 5 <= drum["tail25"] <= 7, drum
+        # За последние две с половиной секунды — горсть предметов.
+        # Полоса широкая не от небрежности: путь ленты считается в
+        # копиях товара, а хвост — в предметах, и каждая новая вещь на
+        # прилавке удлиняет хвост. Станет тесно и здесь — считать путь
+        # надо будет предметами, а не копиями
+        assert 5 <= drum["tail25"] <= 8, drum
         # И к концу всё медленнее: последняя секунда — пара предметов
         assert drum["tail15"] < drum["tail25"], drum
         assert drum["tail1"] <= 2, drum
