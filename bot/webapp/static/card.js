@@ -813,9 +813,22 @@ function armingNote(item) {
   const note = document.createElement("div");
   note.className = "thing-arming";
   const parts = [];
-  if (item.arming.family_title) parts.push(item.arming.family_title);
-  else if (item.arming.hold_title) parts.push(item.arming.hold_title);
-  if (item.arming.hand_title) parts.push(item.arming.hand_title);
+  if (item.arming.family_title) {
+    // Вид и тип урона — одно и то же, и читают их вместе: «Мечи,
+    // режущий урон». Вид отвечает на «во что вкладывать очки», тип
+    // урона — на «чем это бьёт»
+    parts.push(
+      item.arming.damage_kind
+        ? item.arming.family_title + ", " + item.arming.damage_kind + " урон"
+        : item.arming.family_title
+    );
+  } else if (item.arming.hold_title) {
+    parts.push(item.arming.hold_title);
+  }
+  // Вес словом: «тяжёлое» объясняет, почему рядом ничего не встанет,
+  // а «обе руки» одно этого не говорит
+  if (item.arming.heavy) parts.push("тяжёлое, обе руки");
+  else if (item.arming.hand_title) parts.push(item.arming.hand_title);
   parts.push("владение " + item.arming.mastery);
   note.textContent = item.arming.emoji + " " + parts.join(" · ");
   return note;

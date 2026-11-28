@@ -108,6 +108,30 @@ def test_a_townsman_gets_no_mastery_block_at_all():
 # ---------- строка вещи ----------
 
 
+def test_the_item_line_names_the_damage_kind_and_the_weight():
+    """В строке вещи стоят тип урона и вес — то, чем она бьёт и как.
+
+    Вид и тип урона это одно и то же, и читают их вместе. Вес нужен
+    словом: «тяжёлое» объясняет, почему рядом с вещью не встанет ни щит,
+    ни второе оружие, — «обе руки» одно этого не говорит.
+    """
+    heavy = arming_payload(CATALOGUE["viking_axe"])
+    assert heavy["damage_kind"] == "рубящий"
+    assert heavy["family_title"] == "Топоры и секиры"
+    assert heavy["heavy"] is True
+    assert heavy["hand_title"] == "обе руки"
+
+    light = arming_payload(CATALOGUE["knife"])
+    assert light["damage_kind"] == "колющий"
+    assert light["heavy"] is False
+    assert light["hand_title"] == "любая рука"
+
+    # У щита вида нет, значит и типа урона нет: он не бьёт
+    shield = arming_payload(CATALOGUE["set_sport_shield"])
+    assert shield["damage_kind"] == "" and shield["family_title"] == ""
+    assert shield["hold_title"] == "Щиты"
+
+
 def test_an_item_card_names_the_family_the_hand_and_the_threshold():
     """Чем берут вещь: вид, хват и требуемое владение — всё в строке.
 

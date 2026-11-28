@@ -325,6 +325,11 @@ def arming_payload(item: Item) -> dict:
     Это свойство вещи, а не бойца, поэтому строка одна и та же на
     прилавке, в рюкзаке и на рынке. Сколько у бойца вложено, говорят
     требования (`mastery_rows`) — здесь только сама вещь.
+
+    Тип урона едет вместе с видом: вид и тип урона это одно и то же, и
+    в карточке вещи игрок читает именно его — «рубящий», а не
+    «chopping». Вес приезжает словом, а не признаком: «тяжёлое, обе
+    руки» говорит и о весе, и о том, что рядом с ним ничего не встанет.
     """
     if not item.mastery_required:
         return {}
@@ -336,11 +341,13 @@ def arming_payload(item: Item) -> dict:
     return {
         "family": item.family,
         "family_title": family.title if family else "",
+        "damage_kind": family.damage if family else "",
         "emoji": family.emoji if family else HoldType(hold).emoji,
         # Хват есть только у оружия. Щит держат второй рукой всегда, и
         # «основная рука» в его строке была бы прямой неправдой
         "hand": item.hand.value if item.is_weapon else "",
         "hand_title": HAND_TITLES[item.hand] if item.is_weapon else "",
+        "heavy": bool(item.two_handed),
         "hold": hold,
         "hold_title": HoldType(hold).title if hold else "",
         "mastery": item.mastery_required,
