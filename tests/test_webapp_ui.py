@@ -1854,7 +1854,7 @@ async def test_the_arsenal_sheet_draws_every_thing_in_hand(server):
         await page.goto(str(server.make_url("/arsenal")), wait_until="domcontentloaded")
         await page.wait_for_selector(".card")
 
-        assert await page.locator(".card").count() == 120
+        assert await page.locator(".card").count() == 116
         # Лист начинается с каталога, а не с недостач: первый вид по
         # правилам — колющее, и первой стоит его младшая вещь
         # Заголовки групп набраны прописными в вёрстке, поэтому сверяем
@@ -1867,17 +1867,17 @@ async def test_the_arsenal_sheet_draws_every_thing_in_hand(server):
         first = await page.locator(".card").first.inner_text()
         assert "колющий урон" in first, first
         # Обведённых столько же, сколько строк в списке для художника:
-        # семь прежних, где картинка спорит с названием, и двадцать
-        # шесть новых вещей, у которых картинки нет вовсе
-        assert await page.locator(".card.flag").count() == 33
+        # семь прежних, где картинка спорит с названием, и двадцать две
+        # новые вещи, у которых картинки нет вовсе
+        assert await page.locator(".card.flag").count() == 29
         # И они собираются одним нажатием: лист для сверки арта никуда
         # не делся, он просто больше не застилает собой весь арсенал
         await page.get_by_role("button", name="Нужен арт").click()
         await page.wait_for_timeout(120)
-        assert await page.locator(".card").count() == 33
+        assert await page.locator(".card").count() == 29
         await page.get_by_role("button", name="Нужен арт").click()
         await page.wait_for_timeout(120)
-        assert await page.locator(".card").count() == 120
+        assert await page.locator(".card").count() == 116
         # А линию набора видно по второму переключателю
         await page.get_by_role("button", name="По наборам").click()
         await page.wait_for_timeout(120)
@@ -1888,7 +1888,7 @@ async def test_the_arsenal_sheet_draws_every_thing_in_hand(server):
         await page.get_by_role("button", name="По наборам").click()
         await page.wait_for_timeout(120)
         tally = await page.locator("#tally").inner_text()
-        assert "120" in tally and "97" in tally
+        assert "116" in tally and "93" in tally
 
         # Пометка остаётся в браузере: сервер её не хранит
         await page.locator(".card textarea").first.fill("проверка пометки")

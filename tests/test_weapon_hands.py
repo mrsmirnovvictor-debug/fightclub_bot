@@ -443,8 +443,10 @@ def test_every_set_has_something_for_both_hands():
 
     У трикстера двуручного нет и быть не может: колющего двуручного не
     бывает (`bot/content/arming.py`), и отдача колющего — парный хват.
-    Поэтому в его наборах вторым оружием стоит второе лёгкое: пару
-    собирают из двух вещей набора, и обе считаются в его лестницу.
+    Второй вещи в его наборах поэтому нет вовсе: пару он собирает из
+    двух одинаковых — покупает своё оружие второй раз и берёт во
+    вторую руку, и набор считает их двумя вещами. Проверяет это
+    `test_a_trickster_pairs_two_copies_of_his_own_weapon`.
     """
     from bot.game.equipment import CATALOGUE, SET_TITLES
 
@@ -463,7 +465,6 @@ def test_every_set_has_something_for_both_hands():
         assert light, f"{where}: нечем взять одну руку — всё оружие двуручное"
         if light[0].family == PIERCING:
             assert not heavy, f"{where}: колющего двуручного не бывает"
-            assert len(light) >= 2, f"{where}: трикстеру нечем собрать пару"
             continue
         assert heavy, f"{where}: нет двуручного"
 
@@ -520,3 +521,48 @@ def test_the_name_of_a_weapon_tells_its_weight():
 
     assert seen_heavy >= 10, f"тяжёлых по имени нашлось {seen_heavy}"
     assert seen_light >= 20, f"лёгких по имени нашлось {seen_light}"
+
+
+async def test_a_trickster_pairs_two_copies_of_his_own_weapon(db):
+    """Пару собирают из двух одинаковых вещей, а не из особой «парной».
+
+    Отдача колющего — парный хват, и собирается он просто: боец покупает
+    то же оружие второй раз и берёт его во вторую руку. Отдельной
+    «парной» вещи для этого не нужно — ни в правилах, ни в каталоге, ни
+    на картинке: в руках у него два одинаковых ножа, и рисовать для
+    этого второй нож незачем.
+
+    Платит он за это дважды: деньгами за вторую вещь и очками навыка
+    «Второе оружие», без которого вторая рука не открывается вовсе.
+    """
+    from bot.game.equipment import CATALOGUE
+
+    player = Player(
+        user_id=7,
+        nickname="Шулер",
+        class_code="rogue",
+        level=9,
+        mastery={PIERCING: 9},
+        holds={OFFHAND: 9},
+        **Stats(strength=20, agility=25, intuition=20, endurance=20).as_dict(),
+    )
+    await db.save_player(player)
+
+    first = await give(db, player, "set_cardsharp_weapon")
+    second = await give(db, player, "set_cardsharp_weapon")
+    assert first.id != second.id, "две покупки — две вещи в рюкзаке"
+
+    await equip(db, player, first.id)
+    await equip(db, player, second.id, Slot.OFFHAND)
+
+    assert player.gear_in_slot(Slot.WEAPON).code == "set_cardsharp_weapon"
+    assert player.gear_in_slot(Slot.OFFHAND).code == "set_cardsharp_weapon"
+
+    # И обе руки бьют: вторая приносит своё оружие целиком
+    equipment = player.equipment
+    assert equipment.second_weapon is not None
+    assert len(equipment.weapons) == 2
+    assert equipment.weapon_damages[0] == equipment.weapon_damages[1]
+    # Набор считает их двумя вещами, а не одной
+    assert equipment.kit_worn("cardsharp") == 2
+    assert CATALOGUE["set_cardsharp_weapon"].slots == (Slot.WEAPON, Slot.OFFHAND)
