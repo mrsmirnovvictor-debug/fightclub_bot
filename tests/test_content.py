@@ -194,44 +194,70 @@ def test_items_never_hand_out_endurance():
 def test_every_weapon_adds_damage_and_it_grows_with_the_tier():
     """Лестница ступеней — про лавку клуба: у мага своя цена и свой отсчёт.
 
-    Исключений в лестнице нет: всё, что лежит на прилавке, в неё встаёт.
-    Вещи с ручными числами торгуются не здесь — их выдают.
+    Лестниц две, по весу: одноручное сравнивается с одноручным,
+    двуручное с двуручным. Двуручное стоит на половину выше своей
+    ступени (`test_two_handed_weapons_are_half_again_stronger`), и в
+    одной лестнице с одноручным оно перекрывало бы следующую ступень:
+    двуручный меч третьего уровня бьёт как одноручный четвёртого, и это
+    не промах, а правило хвата.
+
+    Внутри своего веса исключений нет: всё, что лежит на прилавке, в
+    лестницу встаёт. Вещи с ручными числами торгуются не здесь — их
+    выдают.
     """
     weapons = [item for item in SHOWCASE if item.is_weapon]
     assert weapons
-    by_level: dict[int, list[float]] = {}
-    for item in weapons:
-        assert item.damage_min > 0 and item.damage_max >= item.damage_min
-        by_level.setdefault(item.level_required, []).append(
-            (item.damage_min + item.damage_max) / 2
-        )
-    levels = sorted(by_level)
-    for lower, upper in zip(levels, levels[1:]):
-        assert max(by_level[lower]) < min(by_level[upper]), (
-            f"оружие {upper} уровня не сильнее оружия {lower}"
-        )
+    for heavy in (False, True):
+        by_level: dict[int, list[float]] = {}
+        for item in weapons:
+            if item.two_handed is not heavy:
+                continue
+            assert item.damage_min > 0 and item.damage_max >= item.damage_min
+            by_level.setdefault(item.level_required, []).append(
+                (item.damage_min + item.damage_max) / 2
+            )
+        assert by_level, "вес без оружия вовсе"
+        levels = sorted(by_level)
+        for lower, upper in zip(levels, levels[1:]):
+            assert max(by_level[lower]) < min(by_level[upper]), (
+                f"{'двуручное' if heavy else 'одноручное'}: "
+                f"оружие {upper} уровня не сильнее оружия {lower}"
+            )
 
 
 def test_weapon_spread_matches_the_character_of_its_class():
-    """У ассасина оружие рвано́е, у танка ровное, у воина с трикстером середина."""
+    """У ассасина оружие рвано́е, у танка ровное, у воина с трикстером середина.
+
+    Сравнивается одноручное с одноручным: двуручное стоит на половину
+    выше ступени, и средний урон у него другой по правилу хвата. Прежде
+    в ступенях стояли кувалды — тогда они были одноручными по весу.
+    """
     def spread(code: str) -> float:
         item = CATALOGUE[code]
         return (item.damage_max - item.damage_min) / (item.damage_min + item.damage_max)
 
     for tier in (
         ("pipe", "switchblade", "awl", "crowbar"),
-        ("pit_fighter_baton", "cardsharp_cane", "assassin_stiletto", "bouncer_sledge"),
-        ("bat", "machete", "stiletto", "sledge"),
+        ("pit_fighter_baton", "cardsharp_cane", "assassin_stiletto", "set_boxer_weapon"),
+        ("bat", "machete", "stiletto", ""),
         ("fire_axe", "balisong", "ice_pick", "chain"),
         ("cleaver", "razor", "needle", "pry_bar"),
     ):
-        warrior, rogue, assassin, tank = (spread(code) for code in tier)
-        assert assassin > warrior > tank, tier
-        assert assassin > rogue > tank, tier
-        # среднее у всех четверых одно: разводим разброс, а не силу
+        codes = [code for code in tier if code]
+        for code in codes:
+            assert not CATALOGUE[code].two_handed, code
+        warrior, rogue, assassin = (spread(code) for code in codes[:3])
+        assert assassin > warrior, tier
+        assert assassin > rogue, tier
+        # Ровного танковского на ступени может и не быть: у дробящего
+        # ровный разброс ушёл кувалдам, а они теперь двуручные
+        if len(codes) == 4:
+            tank = spread(codes[3])
+            assert warrior > tank and rogue > tank, tier
+        # среднее у всех на ступени одно: разводим разброс, а не силу
         averages = {
             (CATALOGUE[code].damage_min + CATALOGUE[code].damage_max) / 2
-            for code in tier
+            for code in codes
         }
         assert len(averages) == 1, f"{tier}: средний урон разъехался — {averages}"
 
@@ -406,11 +432,19 @@ def flat_cap(level: int) -> int:
 
 
 def test_flat_bonuses_grow_by_the_ladder():
-    """Плоские прибавки не обгоняют свой уровень."""
+    """Плоские прибавки не обгоняют свой уровень.
+
+    У двуручного потолок на половину выше: прибавки у него по тому же
+    правилу, что и урон, — половина сверху против обычного оружия
+    ступени (`test_two_handed_weapons_are_half_again_stronger`).
+    """
     for item in SHOWCASE:
+        cap = flat_cap(item.level_required)
+        if item.two_handed:
+            cap = round(cap * 1.5)
         for stat in ("strength", "agility", "intuition"):
             value = getattr(item, stat)
-            assert value <= flat_cap(item.level_required), (
+            assert value <= cap, (
                 f"{item.title}: +{value} к {stat} на {item.level_required} уровне"
             )
 
@@ -688,12 +722,20 @@ def test_a_set_weapon_alone_does_not_beat_the_club_one():
     shares = lambda item: (  # noqa: E731
         item.accuracy, item.dodge, item.crit, item.anticrit, item.counter
     )
+    # Двуручное в соседи не берём: оно на половину выше ступени по
+    # правилу хвата, и мерить им сетовое одноручное нечем
     club: dict[int, list] = {}
     for item in SHOWCASE:
-        if item.is_weapon and not item.kit:
+        if item.is_weapon and not item.kit and not item.two_handed:
             club.setdefault(item.level_required, []).append(item)
 
     for item in SET_WEAPONS:
+        # Двуручное оружие набора мерится не здесь: у армейского и у
+        # героя основное оружие занимает обе руки, и оно на половину
+        # выше ступени по правилу хвата. Вес спрашиваем у каталога:
+        # в `SET_WEAPONS` лежат вещи до разметки, и хвата у них ещё нет
+        if CATALOGUE[item.code].two_handed:
+            continue
         level = item.level_required
         rivals = club[level]
         if level > 3:
@@ -710,16 +752,29 @@ def test_a_set_weapon_alone_does_not_beat_the_club_one():
                 max(shares(one)) for one in rivals
             ), f"{item.code}: доля не ниже клубной"
 
-    # Средний урон внутри ступени у всех четверых один: разводим разброс
+    # Средний урон внутри ступени один: разводим разброс, а не силу.
+    # Двуручные основные — армейская кувалда и секира героя — и тут
+    # считаются порознь: их ступень на половину выше
     for level in (3, 5, 7, 9):
-        tier = [item for item in SET_WEAPONS if item.level_required == level]
+        tier = [
+            item
+            for item in SET_WEAPONS
+            if item.level_required == level and not CATALOGUE[item.code].two_handed
+        ]
         assert len({middle(item) for item in tier}) == 1, level
         spread = {
             item.for_classes[0]: (item.damage_max - item.damage_min)
             for item in tier
         }
-        assert spread["assassin"] > spread["warrior"] > spread["tank"], level
-        assert spread["assassin"] > spread["rogue"] > spread["tank"], level
+        # На ступени может не хватать класса: у воина девятая вещь
+        # двуручная, у танка седьмая, и обе ушли в свою лестницу
+        for middling in ("warrior", "rogue"):
+            if middling not in spread:
+                continue
+            if "assassin" in spread:
+                assert spread["assassin"] > spread[middling], level
+            if "tank" in spread:
+                assert spread[middling] > spread["tank"], level
 
 
 def test_every_thing_of_a_set_knows_its_set():
@@ -1033,7 +1088,13 @@ def test_fan_weapons_are_worth_their_price():
     def average(item):
         return (item.damage_min + item.damage_max) / 2
 
-    club = max(average(item) for item in SHOWCASE if item.is_weapon)
+    # Сравнение по весу: фанатские четыре одноручные, и мерить их
+    # двуручной секирой клуба нечем
+    club = max(
+        average(item)
+        for item in SHOWCASE
+        if item.is_weapon and not item.two_handed
+    )
     fan = [item for item in fan_items() if item.is_weapon]
     assert len(fan) == 4
     for item in fan:

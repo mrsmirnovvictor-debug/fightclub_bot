@@ -819,8 +819,10 @@ SET_WEAPONS: tuple[Item, ...] = (
         WARRIOR, 5, 180, Stats(strength=15),
         strength=1, damage_min=5, damage_max=9, accuracy=0.11, anticrit=0.08,
     ),
+    # Нож-кастет, а не кастет: так его нарисовали, и название идёт за
+    # картинкой. Вид от этого не меняется — и нож, и кастет колют
     _weapon(
-        'croupier', 'Кастет крупье', '🔩', 'кастетом крупье',
+        'croupier', 'Нож-кастет крупье', '🔩', 'ножом-кастетом крупье',
         ROGUE, 5, 180, Stats(agility=15),
         agility=1, damage_min=5, damage_max=9, dodge=0.11, anticrit=0.06,
     ),
@@ -833,7 +835,7 @@ SET_WEAPONS: tuple[Item, ...] = (
     _weapon(
         'army', 'Кувалда со звездой', '🔨', 'кувалдой со звездой',
         TANK, 7, 300, Stats(endurance=20),
-        strength=2, damage_min=11, damage_max=14, accuracy=0.24, anticrit=0.24,
+        strength=3, damage_min=16, damage_max=21, accuracy=0.24, anticrit=0.24,
     ),
     _weapon(
         'fighter', 'Стальной топор', '🪓', 'стальным топором',
@@ -859,7 +861,7 @@ SET_WEAPONS: tuple[Item, ...] = (
     _weapon(
         'hero', 'Секира героя', '🪓', 'секирой героя',
         WARRIOR, 9, 500, Stats(strength=25, endurance=20),
-        strength=4, damage_min=17, damage_max=25, accuracy=0.38, anticrit=0.34,
+        strength=6, damage_min=26, damage_max=38, accuracy=0.38, anticrit=0.34,
     ),
     _weapon(
         'cardsharp', 'Кинжал с пикой', '🗡', 'кинжалом с пикой',
@@ -878,7 +880,7 @@ SET_WEAPONS: tuple[Item, ...] = (
 #
 # У каждого набора теперь два ответа на вопрос «чем бить»: одноручным,
 # рядом с которым встаёт щит или второе оружие, и двуручным, которое
-# занимает обе руки и бьёт за них обе (`TWO_HANDED_DAMAGE`). Прежде
+# занимает обе руки и бьёт за них обе. Прежде
 # ответ был один, и выбор хвата упирался в лавку: воин в наборе героя
 # брал щит героя и шёл с прилавочным тесаком, потому что секира героя
 # двуручная, а другого оружия в наборе не было.
@@ -958,33 +960,33 @@ SET_HANDS: tuple[Item, ...] = (
     _hand(
         'avenger', 'heavy', 'Кувалда с фениксом', '🔨', 'кувалдой с фениксом',
         TANK, 3, 120, Stats(endurance=12),
-        strength=1, damage_min=3, damage_max=4, anticrit=0.05,
+        strength=2, damage_min=4, damage_max=6, anticrit=0.05,
     ),
     _hand(
         'sport', 'heavy', 'Серебристо-синяя секира', '🪓', 'серебристо-синей секирой',
         WARRIOR, 3, 120, Stats(strength=12),
-        strength=1, damage_min=2, damage_max=5, accuracy=0.05,
+        strength=2, damage_min=3, damage_max=8, accuracy=0.05,
     ),
     _hand(
         'mercenary', 'heavy', 'Двуручный меч с волком', '⚔️', 'двуручным мечом с волком',
         ASSASSIN, 3, 120, Stats(intuition=12),
-        intuition=1, damage_min=1, damage_max=6, crit=0.05,
+        intuition=2, damage_min=2, damage_max=9, crit=0.05,
     ),
     # ---------- 5 ступень ----------
     _hand(
         'boxer', 'heavy', 'Бронзовая кувалда', '🔨', 'бронзовой кувалдой',
         TANK, 5, 180, Stats(endurance=15),
-        strength=1, damage_min=6, damage_max=8, accuracy=0.11, anticrit=0.11,
+        strength=2, damage_min=9, damage_max=12, accuracy=0.11, anticrit=0.11,
     ),
     _hand(
         'biker', 'heavy', 'Секира с крылатым черепом', '🪓', 'секирой с крылатым черепом',
         WARRIOR, 5, 180, Stats(strength=15),
-        strength=1, damage_min=5, damage_max=9, accuracy=0.11, anticrit=0.08,
+        strength=2, damage_min=8, damage_max=14, accuracy=0.11, anticrit=0.08,
     ),
     _hand(
         'strangler', 'heavy', 'Палаш душителя', '⚔️', 'палашом душителя',
         ASSASSIN, 5, 180, Stats(intuition=15),
-        intuition=1, damage_min=3, damage_max=11, accuracy=0.11, crit=0.08,
+        intuition=2, damage_min=4, damage_max=16, accuracy=0.11, crit=0.08,
     ),
     # ---------- 7 ступень ----------
     _hand(
@@ -995,18 +997,18 @@ SET_HANDS: tuple[Item, ...] = (
     _hand(
         'fighter', 'heavy', 'Стальная секира', '🪓', 'стальной секирой',
         WARRIOR, 7, 300, Stats(strength=20),
-        strength=2, damage_min=9, damage_max=16, accuracy=0.24, anticrit=0.2,
+        strength=3, damage_min=14, damage_max=24, accuracy=0.24, anticrit=0.2,
     ),
     _hand(
         'camouflage', 'heavy', 'Двуручная сабля со змеёй', '⚔️', 'двуручной саблей со змеёй',
         ASSASSIN, 7, 300, Stats(intuition=20),
-        intuition=2, damage_min=5, damage_max=20, accuracy=0.24, crit=0.2,
+        intuition=3, damage_min=8, damage_max=30, accuracy=0.24, crit=0.2,
     ),
     # ---------- 9 ступень ----------
     _hand(
         'bouncer', 'heavy', 'Кувалда с бульдогом', '🔨', 'кувалдой с бульдогом',
         TANK, 9, 500, Stats(endurance=25),
-        strength=4, damage_min=19, damage_max=23, accuracy=0.38, anticrit=0.38,
+        strength=6, damage_min=28, damage_max=34, accuracy=0.38, anticrit=0.38,
     ),
     _hand(
         'hero', 'pair', 'Топор героя', '🪓', 'топором героя',
@@ -1016,7 +1018,7 @@ SET_HANDS: tuple[Item, ...] = (
     _hand(
         'killer', 'heavy', 'Двуручный рубиновый меч', '⚔️', 'двуручным рубиновым мечом',
         ASSASSIN, 9, 500, Stats(intuition=25),
-        intuition=4, damage_min=11, damage_max=31, accuracy=0.38, crit=0.34,
+        intuition=6, damage_min=16, damage_max=46, accuracy=0.38, crit=0.34,
     ),
 )
 
@@ -1076,7 +1078,14 @@ def _ladder(
     requires: Stats,
     **gives: int | float,
 ) -> Item:
-    """Вещь достроенной ступени: картинка по коду, остальное как у соседей."""
+    """Вещь достроенной ступени: картинка по коду, остальное как у соседей.
+
+    Адрес картинки не пишется вовсе — он считается от кода вещи, и файл
+    лежит в общей папке `items/` под своим именем. Прилавочное оружие
+    постарше лежит в `weapons/` с именами из генератора, но это
+    наследство, а не правило: новые вещи зовут файл по коду
+    (`test_new_items_take_their_picture_from_their_code`).
+    """
     return Item(
         code,
         title,
@@ -1084,7 +1093,6 @@ def _ladder(
         icon,
         kind=ItemKind.WEAPON,
         instrumental=instrumental,
-        image=f"{WEAPON_ART}/{code}.jpeg",
         level_required=level,
         requires=requires,
         price=price,
@@ -1113,7 +1121,7 @@ LADDER_WEAPONS: tuple[Item, ...] = (
     _ladder(
         "woodsman_axe", "Секира дровосека", "🪓", "секирой дровосека",
         WARRIOR, 6, 180, Stats(strength=16),
-        strength=2, damage_min=7, damage_max=11, accuracy=0.22, anticrit=0.18,
+        strength=3, damage_min=10, damage_max=16, accuracy=0.22, anticrit=0.18,
     ),
     _ladder(
         "battle_axe", "Боевой топор", "🪓", "боевым топором",
@@ -1134,7 +1142,7 @@ LADDER_WEAPONS: tuple[Item, ...] = (
     _ladder(
         "twohand_sabre", "Двуручная сабля", "⚔", "двуручной саблей",
         ASSASSIN, 6, 180, Stats(intuition=16),
-        intuition=2, damage_min=5, damage_max=13, accuracy=0.22, crit=0.18,
+        intuition=3, damage_min=8, damage_max=20, accuracy=0.22, crit=0.18,
     ),
     _ladder(
         "broadsword", "Палаш", "⚔", "палашом",
@@ -2505,8 +2513,8 @@ ITEMS: tuple[Item, ...] = tuple(
         kind=ItemKind.WEAPON,
         image=f"{WEAPON_ART}/Sledgehammer_game_inventory_icon_202608280138.jpeg",
         instrumental="кувалдой",
-        damage_min=8,
-        damage_max=10,
+        damage_min=12,
+        damage_max=15,
         accuracy=0.22,
         anticrit=0.22,
         level_required=6,
@@ -2813,9 +2821,9 @@ ITEMS: tuple[Item, ...] = tuple(
         kind=ItemKind.WEAPON,
         image=f"{WEAPON_ART}/Two-handed_sword_game_icon_202608280159.jpeg",
         instrumental="двуручным мечом",
-        strength=3,
-        damage_min=15,
-        damage_max=19,
+        strength=4,
+        damage_min=22,
+        damage_max=28,
         level_required=8,
         requires=Stats(strength=20),
         price=270,
@@ -2860,9 +2868,9 @@ ITEMS: tuple[Item, ...] = tuple(
         kind=ItemKind.WEAPON,
         image=f"{WEAPON_ART}/Viking_battle_axe_game_icon_202608280222.jpeg",
         instrumental="секирой",
-        strength=4,
-        damage_min=17,
-        damage_max=25,
+        strength=6,
+        damage_min=26,
+        damage_max=38,
         accuracy=0.43,
         anticrit=0.39,
         level_required=9,
@@ -2915,9 +2923,9 @@ ITEMS: tuple[Item, ...] = tuple(
         kind=ItemKind.WEAPON,
         image=f"{WEAPON_ART}/Splitting_axe_game_inventory_icon_202608280223.jpeg",
         instrumental="колуном",
-        strength=3,
-        damage_min=19,
-        damage_max=23,
+        strength=4,
+        damage_min=28,
+        damage_max=34,
         accuracy=0.43,
         anticrit=0.43,
         level_required=9,
@@ -3291,8 +3299,8 @@ ITEMS: tuple[Item, ...] = tuple(
         "🔨",
         kind=ItemKind.WEAPON,
         instrumental="кувалдой",
-        damage_min=6,
-        damage_max=8,
+        damage_min=9,
+        damage_max=12,
         accuracy=0.15,
         anticrit=0.15,
         level_required=5,

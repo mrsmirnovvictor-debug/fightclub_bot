@@ -582,7 +582,11 @@ def test_the_trophy_tops_the_ladder_without_breaking_it():
     двадцать пять, кибернетика двенадцатой — тридцать. По пятой части
     за ступень, и ни одна не обесценивает предыдущую.
     """
-    shop = [one for one in SHOWCASE if one.is_weapon]
+    # Лестница призов считается по одноручному: двуручное стоит на
+    # половину выше своей ступени по правилу хвата, и мерить им трофей
+    # нечем. Сам трофей одноручный, его двуручные братья лежат на
+    # кибернетической полке и в эту лестницу не входят
+    shop = [one for one in SHOWCASE if one.is_weapon and not one.two_handed]
     top = max(one.level_required for one in shop)
     club = max(
         (one.damage_min + one.damage_max) / 2

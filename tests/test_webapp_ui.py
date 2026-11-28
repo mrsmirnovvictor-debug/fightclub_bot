@@ -1866,15 +1866,15 @@ async def test_the_arsenal_sheet_draws_every_thing_in_hand(server):
         assert heads[-2:] == ["щит", "огнестрел"], heads
         first = await page.locator(".card").first.inner_text()
         assert "колющий урон" in first, first
-        # Обведённых столько же, сколько строк в списке для художника:
-        # семь прежних, где картинка спорит с названием, и двадцать две
-        # новые вещи, у которых картинки нет вовсе
-        assert await page.locator(".card.flag").count() == 29
-        # И они собираются одним нажатием: лист для сверки арта никуда
-        # не делся, он просто больше не застилает собой весь арсенал
+        assert "на картинке" not in first, first
+        # Обведённых нет вовсе: арт догнал каталог, и список для
+        # художника пуст. Кнопка на месте — ею отбирают, когда каталог и
+        # арт снова разойдутся, — и сейчас она не оставляет ничего
+        assert await page.locator(".card.flag").count() == 0
         await page.get_by_role("button", name="Нужен арт").click()
         await page.wait_for_timeout(120)
-        assert await page.locator(".card").count() == 29
+        assert await page.locator(".card").count() == 0
+        assert "ничего не попало" in await page.locator(".empty").inner_text()
         await page.get_by_role("button", name="Нужен арт").click()
         await page.wait_for_timeout(120)
         assert await page.locator(".card").count() == 116
