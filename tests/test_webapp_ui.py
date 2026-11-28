@@ -4048,7 +4048,7 @@ async def test_the_mastery_sheet_keeps_the_two_pools_apart(server):
         await page.wait_for_timeout(250)
 
         # Ушёл только свой пул: хваты в заявке не участвовали
-        assert sent == [{"swords": 5}]
+        assert sent == [{"slashing": 5}]
         assert await page.locator("#sheet").is_hidden()
 
         # Вторая кнопка открывает своё окно, и очки в нём свои
@@ -4120,7 +4120,7 @@ async def test_a_weapon_in_the_bag_says_what_holds_it_and_what_is_missing(server
     куда идти.
     """
     player = make_player()
-    player.mastery = {"knives_knuckles": 4}
+    player.mastery = {"piercing": 4}
     player.gear = [
         OwnedItem(item=CATALOGUE["greatsword"], id=7),
         OwnedItem(item=CATALOGUE["knife"], id=8),
@@ -4147,7 +4147,7 @@ async def test_a_weapon_in_the_bag_says_what_holds_it_and_what_is_missing(server
         # Вложенное закрывает строку владения: в ножах у бойца четыре очка
         light = page.locator("#bag-list .thing", has_text="Нож").first
         text = await light.inner_text()
-        assert "Ножи и кастеты · любая рука · владение 4" in text, text
+        assert "Ножи и кинжалы · любая рука · владение 4" in text, text
         assert "Нужно" not in text, text
         await browser.close()
 

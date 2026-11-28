@@ -811,6 +811,11 @@ async def test_the_fatigue_counts_waves_not_swings(bot, db):
     """
     service = make_service(bot, db)
     players, session = await gather(service, db, 4, size=4)
+    # Здоровье отряду подпираем: проверка про шкалу усталости, а не про
+    # живучесть. Без подпорки она падала всякий раз, когда правка
+    # каталога меняла оружие городских, — упавший боец пропускает
+    # размен, и волна выходит короче
+    toughen(session)
 
     for _ in range(2):  # две полные волны — восемь разменов
         await storm(service, session, players)

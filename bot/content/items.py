@@ -1821,7 +1821,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=3,
         requires=Stats(strength=6),
         price=80,
-        for_classes=(WARRIOR,),
+        for_classes=(WARRIOR, ROGUE),
     ),
     Item(
         "leather_jacket",
@@ -1943,7 +1943,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=4,
         requires=Stats(strength=12),
         price=150,
-        for_classes=(WARRIOR,),
+        for_classes=(WARRIOR, TANK),
     ),
     Item(
         "switchblade",
@@ -1979,7 +1979,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=4,
         requires=Stats(intuition=12),
         price=150,
-        for_classes=(ASSASSIN,),
+        for_classes=(ASSASSIN, ROGUE),
     ),
     Item(
         "crowbar",
@@ -2177,7 +2177,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=6,
         requires=Stats(strength=16),
         price=180,
-        for_classes=(WARRIOR,),
+        for_classes=(WARRIOR, TANK),
     ),
     Item(
         "machete",
@@ -2195,7 +2195,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=6,
         requires=Stats(agility=16),
         price=180,
-        for_classes=(ROGUE,),
+        for_classes=(ROGUE, ASSASSIN),
     ),
     Item(
         "stiletto",
@@ -2213,7 +2213,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=6,
         requires=Stats(intuition=16),
         price=180,
-        for_classes=(ASSASSIN,),
+        for_classes=(ASSASSIN, ROGUE),
     ),
     Item(
         "sledge",
@@ -2359,7 +2359,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=7,
         requires=Stats(intuition=18),
         price=240,
-        for_classes=(ASSASSIN,),
+        for_classes=(ASSASSIN, ROGUE),
     ),
     Item(
         "chain",
@@ -2488,7 +2488,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=8,
         requires=Stats(intuition=20),
         price=300,
-        for_classes=(ASSASSIN,),
+        for_classes=(ASSASSIN, ROGUE),
     ),
     Item(
         "pry_bar",
@@ -2521,7 +2521,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=8,
         requires=Stats(strength=18),
         price=260,
-        for_classes=(WARRIOR, ROGUE),
+        for_classes=(WARRIOR, ROGUE, ASSASSIN),
     ),
     Item(
         "greatsword",
@@ -2537,7 +2537,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=8,
         requires=Stats(strength=20),
         price=270,
-        for_classes=(WARRIOR, TANK),
+        for_classes=(WARRIOR, TANK, ASSASSIN),
     ),
     Item(
         "kevlar_tee",
@@ -2605,7 +2605,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=9,
         requires=Stats(agility=22),
         price=400,
-        for_classes=(ROGUE,),
+        for_classes=(ROGUE, TANK),
     ),
     Item(
         "shiv",
@@ -2623,7 +2623,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=9,
         requires=Stats(intuition=22),
         price=400,
-        for_classes=(ASSASSIN,),
+        for_classes=(ASSASSIN, ROGUE),
     ),
     Item(
         "splitting_axe",
@@ -2641,7 +2641,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=9,
         requires=Stats(endurance=24),
         price=400,
-        for_classes=(TANK,),
+        for_classes=(TANK, WARRIOR),
     ),
     # ---------- награды: их не покупают, их выдают ----------
     # Стилету не нашлось ступени на прилавке: на пятом уровне оружия нет
@@ -2664,7 +2664,7 @@ ITEMS: tuple[Item, ...] = tuple(
         accuracy=0.15,
         level_required=5,
         reward=True,
-        for_classes=(ASSASSIN,),
+        for_classes=(ASSASSIN, ROGUE),
     ),
     # Кувалда Босса Казино. Не товар и не награда игроку: её носит один
     # боец на весь клуб, и купить её нельзя. Числа нарочно не похожи на
@@ -2864,7 +2864,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=1,
         requires=Stats(intuition=7),
         reward=True,
-        for_classes=(ASSASSIN,),
+        for_classes=(ASSASSIN, ROGUE),
     ),
     # ---------- стенд: вещи с ручными числами ----------
     # Их числа нарочно выше потолка — на них руками проверяют, как эффекты
@@ -3074,7 +3074,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=5,
         requires=Stats(strength=14),
         price=170,
-        for_classes=(WARRIOR,),
+        for_classes=(WARRIOR, TANK),
     ),
     Item(
         "pit_fighter_jacket",
@@ -3359,7 +3359,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=10,
         requires=Stats(strength=24),
         price=1500,
-        for_classes=(WARRIOR,),
+        for_classes=(WARRIOR, TANK),
         shelf=FAN_SHELF,
     ),
     Item(
@@ -3553,7 +3553,7 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=10,
         requires=Stats(intuition=20),
         price=1500,
-        for_classes=(ASSASSIN,),
+        for_classes=(ASSASSIN, ROGUE),
         shelf=FAN_SHELF,
     ),
     Item(

@@ -41,6 +41,19 @@ def developed_stats(fclass: FighterClass, level: int) -> Stats:
     return stats
 
 
+def advised_families(class_code: str):
+    """Какие виды оружия рекомендованы этому классу.
+
+    Обёртка над `advice_for` ради одного места: эталонная сборка
+    спрашивает это на каждый слот, и тянуть сюда весь модуль правил
+    владения незачем.
+    """
+    from bot.game.mastery import advice_for
+
+    families, _ = advice_for(class_code)
+    return families
+
+
 def best_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
     """Лучшее, что боец этого класса мог купить к своему уровню.
 
@@ -65,6 +78,11 @@ def best_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
         mine = [item for item in options if fclass.code in item.for_classes] or options
         if slot is Slot.WEAPON:
             mine = [item for item in mine if not item.two_handed] or mine
+            # Своё семейство вперёд: вещь бывает предложена двум классам
+            # (бита — и воину, и танку), и без этого отбора эталонный
+            # трикстер брал гладиус, а эталон обязан драться своим видом
+            own = {one.value for one in advised_families(fclass.code)}
+            mine = [item for item in mine if item.family in own] or mine
         if mine:
             kit[slot] = max(mine, key=lambda item: (item.level_required, item.price))
     weapon = kit.get(Slot.WEAPON)
