@@ -136,9 +136,12 @@
 <body>
 <div class="wrap">
   <h1>Арсенал клуба</h1>
-  <p class="lede">Всё, что боец берёт в руки: оружие, щиты и единственный огнестрел.
-    Картинки — прямо из бакета, числа и наборы — из каталога этого выката.
-    Пометки остаются в этом браузере; кнопка сверху собирает их одним текстом.</p>
+  <p class="lede">Всё, что боец берёт в руки: оружие по видам, потом щиты и
+    единственный огнестрел. Картинки — прямо из бакета, числа и наборы — из
+    каталога этого выката. Рамкой обведено то, где картинки нет или она спорит
+    с названием; кнопка «Нужен арт» оставляет на листе только их, «По наборам»
+    перекладывает лист линиями наборов. Пометки остаются в этом браузере;
+    кнопка сверху собирает их одним текстом.</p>
   <ul class="tally" id="tally"></ul>
 
   <div class="bar">
@@ -165,7 +168,7 @@
   const notes = new Map();
   const fields = new Map();
   const KINDS = ["Оружие", "Щит", "Огнестрел"];
-  const state = { kind: "", flagged: false, text: "" };
+  const state = { kind: "", flagged: false, text: "", bySet: false };
   let ITEMS = [];
   let stamp = 0;
 
@@ -218,7 +221,7 @@
   const flagChip = document.createElement("button");
   flagChip.type = "button";
   flagChip.className = "chip warn";
-  flagChip.textContent = "Картинка спорит";
+  flagChip.textContent = "Нужен арт";
   flagChip.setAttribute("aria-pressed", "false");
   flagChip.addEventListener("click", () => {
     state.flagged = !state.flagged;
@@ -227,9 +230,27 @@
   });
   chips.appendChild(flagChip);
 
+  // Два взгляда на один арсенал. По видам — чтобы судить, похожи ли
+  // топоры на топоры: вещи вида стоят рядом, от младшей ступени к
+  // старшей. По наборам — чтобы судить линию: у набора свой стиль, и
+  // его видно только тогда, когда вещи набора лежат вместе
+  const setChip = document.createElement("button");
+  setChip.type = "button";
+  setChip.className = "chip";
+  setChip.textContent = "По наборам";
+  setChip.setAttribute("aria-pressed", "false");
+  setChip.addEventListener("click", () => {
+    state.bySet = !state.bySet;
+    paintChips();
+    render();
+  });
+  chips.appendChild(setChip);
+
   function paintChips() {
     [...chips.children].forEach((b) => {
-      const on = b === flagChip ? state.flagged : state.kind === b.textContent;
+      let on = state.kind === b.textContent;
+      if (b === flagChip) on = state.flagged;
+      if (b === setChip) on = state.bySet;
       b.setAttribute("aria-pressed", on ? "true" : "false");
     });
   }
@@ -440,7 +461,9 @@
     }
     const groups = new Map();
     shown.forEach((one) => {
-      const head = one.set ? "Набор «" + one.set + "»" : "Без набора · " + one.kind;
+      const head = state.bySet
+        ? (one.set ? "Набор «" + one.set + "»" : "Без набора · " + one.kind)
+        : (one.family || one.kind);
       if (!groups.has(head)) groups.set(head, []);
       groups.get(head).push(one);
     });
@@ -452,7 +475,7 @@
       const sub = document.createElement("p");
       const apart = rows.filter((one) => one.drawn).length;
       sub.textContent = rows.length + " " + plural(rows.length, "вещь", "вещи", "вещей")
-        + (apart ? " · картинка спорит с названием: " + apart : "");
+        + (apart ? " · нужен арт: " + apart : "");
       const grid = document.createElement("div");
       grid.className = "grid";
       rows.forEach((one) => grid.appendChild(card(one)));
@@ -469,7 +492,7 @@
       ["оружие", counts.weapons],
       ["щиты", counts.shields],
       ["в наборах", counts.in_sets],
-      ["картинка спорит", counts.drawn_apart],
+      ["нужен арт", counts.drawn_apart],
     ].forEach(([label, n]) => {
       const li = document.createElement("li");
       const b = document.createElement("b");

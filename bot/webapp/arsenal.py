@@ -100,6 +100,9 @@ def item_row(item: Item) -> dict:
         "icon": item.icon,
         "kind": KIND_TITLES[item.kind],
         "family": WeaponFamily(item.family).title if item.family else "",
+        # Код вида — для порядка на листе: подпись сортировать нельзя,
+        # она про чтение, а не про последовательность правил
+        "family_code": item.family,
         "damage_kind": WeaponFamily(item.family).damage if item.family else "",
         "heavy": bool(item.two_handed),
         # Хват — про оружие. Щит держат второй рукой всегда, и «основная
@@ -153,24 +156,44 @@ def item_row(item: Item) -> dict:
     }
 
 
-def arsenal_payload() -> dict:
-    """Весь арсенал: сперва наборы с переименованным, потом остальное.
+# Порядок видов на листе — тот же, в каком их читают правила: колющее,
+# рубящее, дробящее, режущее. Щиты и огнестрел вида не имеют и идут
+# после всего оружия
+FAMILY_ORDER: dict[str, int] = {
+    family.value: number for number, family in enumerate(WeaponFamily)
+}
 
-    Порядок — рабочий, под сверку арта: вещи, у которых картинка
-    разошлась с названием, стоят первыми, дальше остальные наборы, и
-    только потом всё, что вне наборов. Внутри — по уровню.
+# Сперва оружие, потом щиты, последним огнестрел: он в клубе один, и
+# место ему в конце, а не вперемешку со щитами своей ступени
+KIND_ORDER: tuple[ItemKind, ...] = (ItemKind.WEAPON, ItemKind.SHIELD, ItemKind.FIREARM)
+
+
+def arsenal_payload() -> dict:
+    """Весь арсенал по видам: оружие по семействам и ступеням, потом щиты.
+
+    Порядок — каталожный, а не разборочный. Прежде первыми стояли
+    вещи, у которых картинка разошлась с названием, и это было удобно,
+    пока их было семь. Когда их стало тридцать три — а у двадцати
+    шести картинки нет вовсе, — первые экраны листа превратились в
+    стену пустых рамок, и сверять арт по нему стало нельзя: того, что
+    нарисовано, не видно.
+
+    Теперь лист идёт как каталог: всё оружие по видам (колющее,
+    рубящее, дробящее, режущее), внутри вида по ступеням, дальше щиты и
+    огнестрел. Спорное и ненарисованное помечено рамкой у карточки и
+    собирается одним нажатием по кнопке отбора — выбор остался, а
+    по умолчанию виден весь арсенал.
 
     Тип урона приезжает строкой у каждой вещи: вид и тип урона это одно
     и то же, и на листе сверки видно, чем вещь бьёт, а не только как
     она зовётся.
     """
     rows = [item_row(item) for item in CATALOGUE.values() if item.kind in IN_HANDS]
+    ranks = {KIND_TITLES[kind]: number for number, kind in enumerate(KIND_ORDER)}
     rows.sort(
         key=lambda row: (
-            row["kind"] != "Оружие",
-            not row["drawn"],
-            row["set"] == "",
-            row["set"],
+            ranks[row["kind"]],
+            FAMILY_ORDER.get(row["family_code"], len(FAMILY_ORDER)),
             row["level"],
             row["title"],
         )
@@ -187,4 +210,11 @@ def arsenal_payload() -> dict:
     }
 
 
-__all__ = ["DRAWN_INSTEAD", "IN_HANDS", "arsenal_payload", "item_row"]
+__all__ = [
+    "DRAWN_INSTEAD",
+    "FAMILY_ORDER",
+    "IN_HANDS",
+    "KIND_ORDER",
+    "arsenal_payload",
+    "item_row",
+]

@@ -1855,21 +1855,38 @@ async def test_the_arsenal_sheet_draws_every_thing_in_hand(server):
         await page.wait_for_selector(".card")
 
         assert await page.locator(".card").count() == 120
-        # Спорные стоят первыми и обведены: лист собран под сверку арта,
-        # и начинается он с того, где картинка разошлась с названием
+        # Лист начинается с каталога, а не с недостач: первый вид по
+        # правилам — колющее, и первой стоит его младшая вещь
+        # Заголовки групп набраны прописными в вёрстке, поэтому сверяем
+        # их в нижнем регистре: проверяется порядок, а не начертание
+        heads = [
+            head.lower() for head in await page.locator(".group h2").all_inner_texts()
+        ]
+        assert heads[:2] == ["ножи и кастеты", "топоры и секиры"], heads
+        assert heads[-2:] == ["щит", "огнестрел"], heads
         first = await page.locator(".card").first.inner_text()
-        assert "на картинке" in first, first
+        assert "колющий урон" in first, first
         # Обведённых столько же, сколько строк в списке для художника:
         # семь прежних, где картинка спорит с названием, и двадцать
         # шесть новых вещей, у которых картинки нет вовсе
         assert await page.locator(".card.flag").count() == 33
-        # И тип урона у оружия виден в строке значков. Какой именно —
-        # дело порядка: первой стоит вещь, у которой картинка разошлась
-        # с названием, и вид у неё любой из четырёх
-        assert any(
-            f"{kind} урон" in first
-            for kind in ("колющий", "рубящий", "дробящий", "режущий")
-        ), first
+        # И они собираются одним нажатием: лист для сверки арта никуда
+        # не делся, он просто больше не застилает собой весь арсенал
+        await page.get_by_role("button", name="Нужен арт").click()
+        await page.wait_for_timeout(120)
+        assert await page.locator(".card").count() == 33
+        await page.get_by_role("button", name="Нужен арт").click()
+        await page.wait_for_timeout(120)
+        assert await page.locator(".card").count() == 120
+        # А линию набора видно по второму переключателю
+        await page.get_by_role("button", name="По наборам").click()
+        await page.wait_for_timeout(120)
+        lines = [
+            head.lower() for head in await page.locator(".group h2").all_inner_texts()
+        ]
+        assert any(head.startswith("набор «") for head in lines), lines
+        await page.get_by_role("button", name="По наборам").click()
+        await page.wait_for_timeout(120)
         tally = await page.locator("#tally").inner_text()
         assert "120" in tally and "97" in tally
 

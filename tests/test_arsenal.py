@@ -70,10 +70,13 @@ def test_every_row_carries_its_picture_and_its_numbers():
 
 
 def test_the_rows_say_where_the_picture_argues_with_the_name():
-    """Где картинка спорит с названием, лист об этом говорит прямо.
+    """Где картинки нет или она спорит с названием, лист говорит прямо.
 
-    Лист для того и сделан: пока арт не догнал каталог, сверять надо
-    именно эти вещи — и стоят они первыми.
+    Лист для того и сделан: пока арт не догнал каталог, по этим строкам
+    рисуют. Наверх они больше не поднимаются — их тридцать три, и у
+    двадцати шести картинки нет вовсе, так что лист из них одних и
+    состоял бы в начале. Отбирают их кнопкой, а строка остаётся у
+    каждой вещи.
     """
     rows = {row["code"]: row for row in arsenal_payload()["items"]}
 
@@ -81,9 +84,42 @@ def test_the_rows_say_where_the_picture_argues_with_the_name():
     for code, drawn in DRAWN_INSTEAD.items():
         assert rows[code]["drawn"] == drawn
         assert rows[code]["title"].lower() != drawn, "иначе спора нет"
-    # И они идут первыми
-    first = [row["code"] for row in arsenal_payload()["items"][: len(DRAWN_INSTEAD)]]
-    assert set(first) == set(DRAWN_INSTEAD)
+    # У остальных строка пустая: пометка — про расхождение, а не про всё
+    quiet = [row for row in rows.values() if row["code"] not in DRAWN_INSTEAD]
+    assert quiet and not any(row["drawn"] for row in quiet)
+
+
+def test_the_sheet_runs_in_the_order_of_the_catalogue():
+    """Лист идёт как каталог: оружие по видам и ступеням, потом щиты.
+
+    Порядок правил — колющее, рубящее, дробящее, режущее, — и внутри
+    вида от младшей ступени к старшей: так видно, похожи ли топоры на
+    топоры и растёт ли линия от младшего к старшему. Щиты идут после
+    всего оружия, огнестрел последним: он в клубе один.
+    """
+    from bot.webapp.arsenal import FAMILY_ORDER
+
+    rows = arsenal_payload()["items"]
+    heads: list[str] = []
+    for row in rows:
+        head = row["family"] or row["kind"]
+        if not heads or heads[-1] != head:
+            heads.append(head)
+    assert heads == [
+        "Ножи и кастеты",
+        "Топоры и секиры",
+        "Дубины и молоты",
+        "Мечи",
+        "Щит",
+        "Огнестрел",
+    ], heads
+
+    # Внутри вида ступени не убывают
+    for family in FAMILY_ORDER:
+        mine = [row for row in rows if row["family_code"] == family]
+        assert mine, family
+        levels = [row["level"] for row in mine]
+        assert levels == sorted(levels), family
 
 
 def test_every_weapon_says_what_kind_of_damage_it_deals():
