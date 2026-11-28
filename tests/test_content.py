@@ -1253,14 +1253,24 @@ def test_a_set_weapon_matches_the_family_of_its_class():
             assert item.family in [one.value for one in advised], item.code
 
 
-def test_the_hero_sword_is_the_two_handed_example():
-    """Меч героя остался мечом и взялся обеими руками.
+def test_the_hero_weapon_is_the_two_handed_example_of_its_class():
+    """Оружие героя — секира: двуручное рубящее, как и положено воину.
 
-    Арт и название у него прежние — перерисовывать не пришлось, — а
-    двуручный хват дал ранний пример этого типа владения.
+    Он переехал дважды. Сперва был длинным мечом и стал двуручным —
+    ранним примером этого навыка; потом виды разъехались по типу удара,
+    рубящее досталось воину, и меч в воинском наборе стал секирой.
+    Двуручный хват при этом остался: секира двуручна всегда.
     """
+    from bot.game.mastery import WeaponFamily
+
     hero = CATALOGUE["set_hero_weapon"]
 
-    assert hero.title == "Длинный меч героя"
+    assert hero.title == "Секира героя"
     assert hero.two_handed
-    assert hero.family == "swords"
+    assert hero.family == WeaponFamily.CHOPPING.value
+    # И это не единственное двуручное в игре: у каждого вида, где
+    # тяжёлое бывает, оно есть
+    heavy = {
+        item.family for item in CATALOGUE.values() if item.is_weapon and item.two_handed
+    }
+    assert heavy == {one.value for one in WeaponFamily if one.heavy_allowed}

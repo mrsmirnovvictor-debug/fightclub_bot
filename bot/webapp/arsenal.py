@@ -30,21 +30,26 @@ KIND_TITLES: dict[ItemKind, str] = {
     ItemKind.FIREARM: "Огнестрел",
 }
 
-# Чем вещь была до перехода на семейства. Картинка в бакете осталась
-# прежней, и на ней — прежнее оружие: пока арт не перерисован, лист
-# должен говорить, что именно разошлось с названием. Список закрытый и
-# правится руками: это память об одной правке каталога, а не правило
-WAS_CALLED: dict[str, str] = {
-    "set_plut_weapon": "Булава с маской шута",
-    "set_mercenary_weapon": "Кукри с волком",
-    "set_boxer_weapon": "Бронзовый кастет",
-    "set_biker_weapon": "Топор с крылатым черепом",
-    "set_croupier_weapon": "Трость с рулеткой",
-    "set_strangler_weapon": "Цепь с рукоятями",
-    "set_fighter_weapon": "Стальной кастет",
-    "set_camouflage_weapon": "Нож со змеёй",
-    "set_bouncer_weapon": "Дубинка с бульдогом",
-    "set_killer_weapon": "Рубиновый кинжал",
+# Что нарисовано на картинке, когда это расходится с названием вещи.
+# Лист для того и сделан: пока арт не догнал каталог, он обязан
+# говорить, что именно разошлось. Список закрытый и правится руками —
+# это память о том, где картинка отстала, а не правило.
+#
+# Воинские четыре разошлись после того, как виды разъехались по типу
+# удара: дробящее ушло танку, рубящее воину, и булавы с мечом стали
+# топорами и секирой — а нарисованы ещё булавы и меч. Ассасинские три
+# разошлись иначе: арт перерисован, но художник назвал вещи по-своему —
+# рапира, палаш и миланский меч, — и тут решают, кого переименовать.
+DRAWN_INSTEAD: dict[str, str] = {
+    # воинские: на картинке прежний вид оружия
+    "set_sport_weapon": "серебристо-синяя бита",
+    "set_biker_weapon": "булава с крылатым черепом",
+    "set_fighter_weapon": "стальная булава",
+    "set_hero_weapon": "двуручный длинный меч",
+    # ассасинские: арт новый, но зовётся иначе, чем вещь
+    "set_mercenary_weapon": "рапира с волком",
+    "set_strangler_weapon": "венецианский палаш",
+    "set_killer_weapon": "миланский меч",
 }
 
 
@@ -58,6 +63,8 @@ def item_row(item: Item) -> dict:
         "icon": item.icon,
         "kind": KIND_TITLES[item.kind],
         "family": WeaponFamily(item.family).title if item.family else "",
+        "damage_kind": WeaponFamily(item.family).damage if item.family else "",
+        "heavy": bool(item.two_handed),
         # Хват — про оружие. Щит держат второй рукой всегда, и «основная
         # рука» в его строке была бы прямой неправдой
         "hand": "" if item.kind is ItemKind.SHIELD else HAND_TITLES[item.hand],
@@ -105,7 +112,7 @@ def item_row(item: Item) -> dict:
         "retired": bool(item.retired),
         "shots": item.shots,
         "two_handed": bool(item.two_handed),
-        "was": WAS_CALLED.get(item.code, ""),
+        "drawn": DRAWN_INSTEAD.get(item.code, ""),
     }
 
 
@@ -115,12 +122,16 @@ def arsenal_payload() -> dict:
     Порядок — рабочий, под сверку арта: вещи, у которых картинка
     разошлась с названием, стоят первыми, дальше остальные наборы, и
     только потом всё, что вне наборов. Внутри — по уровню.
+
+    Тип урона приезжает строкой у каждой вещи: вид и тип урона это одно
+    и то же, и на листе сверки видно, чем вещь бьёт, а не только как
+    она зовётся.
     """
     rows = [item_row(item) for item in CATALOGUE.values() if item.kind in IN_HANDS]
     rows.sort(
         key=lambda row: (
             row["kind"] != "Оружие",
-            not row["was"],
+            not row["drawn"],
             row["set"] == "",
             row["set"],
             row["level"],
@@ -134,9 +145,9 @@ def arsenal_payload() -> dict:
             "weapons": sum(1 for row in rows if row["kind"] == "Оружие"),
             "shields": sum(1 for row in rows if row["kind"] == "Щит"),
             "in_sets": sum(1 for row in rows if row["set"]),
-            "renamed": sum(1 for row in rows if row["was"]),
+            "drawn_apart": sum(1 for row in rows if row["drawn"]),
         },
     }
 
 
-__all__ = ["IN_HANDS", "WAS_CALLED", "arsenal_payload", "item_row"]
+__all__ = ["DRAWN_INSTEAD", "IN_HANDS", "arsenal_payload", "item_row"]

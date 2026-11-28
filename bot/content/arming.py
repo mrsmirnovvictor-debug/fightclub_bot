@@ -1,27 +1,31 @@
-"""Чем и как берут: вид оружия и хват у каждой вещи в руках.
+"""Чем и как берут: вид оружия и вес у каждой вещи в руках.
 
 Правила владения — в `bot.game.mastery`, сами вещи — в
-`bot.content.items`. Здесь таблица между ними: какому оружию какое
-семейство и какой рукой его держат. Таблица, а не поле у каждой вещи, —
-потому что размечать пришлось весь каталог разом, и таблицу видно
-целиком: в ней сразу заметно, что у ассасина вся энергетическая линейка
-собрана из кинжалов, а у трикстера нет ни одного меча.
+`bot.content.items`. Здесь таблица между ними: какому оружию какой вид
+и какой вес. Таблица, а не поле у каждой вещи, — потому что размечать
+пришлось весь каталог разом, и таблицу видно целиком: в ней сразу
+заметно, что рубящего на весь класс воина семь вещей, а дробящего
+двадцать шесть.
 
-**Семейств четыре, и в них сведено всё.** Цепи, трости, зонты, ломы и
-посохи — дубины и булавы: ими машут. Тесак, секира и колун — молоты и
-топоры: они тяжёлые. Длинные клинки — мечи, короткие и кастеты — ножи.
-Пятое семейство под экзотику завести было можно, но первая версия от
-него только раздулась бы: пятый столбец на экране и пятый пул очков
-ради трёх тростей.
+**Вид — это тип урона.** Колющее (ножи, кинжалы, кастеты, трости) —
+трикстеру, рубящее (топоры, секиры) — воину, дробящее (дубины, молоты)
+— танку, режущее (мечи) — ассасину. Прежде топоры лежали вместе с
+молотами у танка, а дубины — у воина; теперь они разъехались по типу
+удара, и это главная правка этой таблицы.
 
-**Огнестрелу владение не требуется.** Он вне четырёх семейств, и
-стрелять — это не держать: своё владение ему заведут, когда огнестрела
-станет больше одного.
+**Вес решает хват.** Лёгкое берут любой рукой: им можно взять второе
+оружие или оставить руку под щит. Тяжёлое — секиры, кувалды, посох,
+двуручные мечи — занимает обе руки, и рядом с ним не встаёт ни щит, ни
+второе оружие. Третьего веса нет: «одноручное, но в пару не годится»
+пришлось бы объяснять в каждой карточке, а объяснить это нечем.
 
-**Хват — это про вещь.** `OFFHAND` значит «годится и во вторую руку», а
-не «только во вторую»: нож остаётся ножом в любой руке. Двуручных в
-первой версии двое — те, чьё название само об этом говорит; остальным
-тяжёлым оружием хват решают вместе с балансом двуручного урона.
+**У колющих тяжёлых не бывает.** Двуручного ножа в клубе нет, и
+отдача колющего — парный хват, за который платят очками навыка
+«Второе оружие». Проверка держит это правило на всём каталоге.
+
+**Огнестрелу владение не требуется.** Он вне четырёх видов, и стрелять
+— это не держать: своё владение ему заведут, когда огнестрела станет
+больше одного.
 """
 
 from __future__ import annotations
@@ -29,123 +33,150 @@ from __future__ import annotations
 from bot.game.gear import WeaponHand
 from bot.game.mastery import WeaponFamily
 
-KNIVES = WeaponFamily.KNIVES.value
-CLUBS = WeaponFamily.CLUBS.value
-HAMMERS = WeaponFamily.HAMMERS.value
-SWORDS = WeaponFamily.SWORDS.value
+PIERCING = WeaponFamily.PIERCING.value
+CHOPPING = WeaponFamily.CHOPPING.value
+CRUSHING = WeaponFamily.CRUSHING.value
+SLASHING = WeaponFamily.SLASHING.value
 
-# Код вещи → семейство. Хват по умолчанию основной; кто берётся и второй
-# рукой, перечислен ниже отдельно, а двуручные — своим списком
+# Код вещи → вид оружия. Вес перечислен ниже отдельным списком: тяжёлых
+# меньше, и списком их видно наперечёт
 FAMILIES: dict[str, str] = {
-    # ---------- ножи и кастеты ----------
-    "hidden_blade": KNIVES,
-    "knuckles": KNIVES,
-    "awl": KNIVES,
-    "knife": KNIVES,
-    "switchblade": KNIVES,
-    "assassin_stiletto": KNIVES,
-    "stiletto": KNIVES,
-    "balisong": KNIVES,
-    "ice_pick": KNIVES,
-    "needle": KNIVES,
-    "razor": KNIVES,
-    "shiv": KNIVES,
-    "fan_assassin_knife": KNIVES,
-    "vcpd_stun_device": KNIVES,
-    "set_lovkach_weapon": KNIVES,
-    "set_cardsharp_weapon": KNIVES,
-    "set_plut_weapon": KNIVES,
-    "set_croupier_weapon": KNIVES,
-    "assassin_energy_dagger": KNIVES,
-    "assassin_energy_karambit": KNIVES,
-    "assassin_energy_push_dagger": KNIVES,
-    "trickster_energy_hookblade": KNIVES,
-    "trickster_energy_sickle": KNIVES,
-    # ---------- дубины и булавы ----------
-    "chief_baton": CLUBS,
-    "crowbar": CLUBS,
-    "pipe": CLUBS,
-    "cardsharp_cane": CLUBS,
-    "pit_fighter_baton": CLUBS,
-    "bat": CLUBS,
-    "chain": CLUBS,
-    "pry_bar": CLUBS,
-    "nail_bat": CLUBS,
-    "fan_boss_bat": CLUBS,
-    "fan_rogue_umbrella": CLUBS,
-    "fan_warrior_bat": CLUBS,
-    "vcpd_baton": CLUBS,
-    "set_sport_weapon": CLUBS,
-    "set_biker_weapon": CLUBS,
-    "set_fighter_weapon": CLUBS,
-    "trickster_energy_baton": CLUBS,
-    "trickster_energy_staff": CLUBS,
-    "warrior_energy_mace": CLUBS,
-    # ---------- молоты и топоры ----------
-    "bouncer_sledge": HAMMERS,
-    "sledge": HAMMERS,
-    "fire_axe": HAMMERS,
-    "cleaver": HAMMERS,
-    "splitting_axe": HAMMERS,
-    "viking_axe": HAMMERS,
-    "boss_sledge": HAMMERS,
-    "set_avenger_weapon": HAMMERS,
-    "set_boxer_weapon": HAMMERS,
-    "set_army_weapon": HAMMERS,
-    "set_bouncer_weapon": HAMMERS,
-    "tank_energy_cleaver": HAMMERS,
-    "tank_energy_greataxe": HAMMERS,
-    "tank_energy_hammer": HAMMERS,
-    "tank_energy_maul": HAMMERS,
-    "warrior_energy_axe": HAMMERS,
-    # ---------- мечи ----------
-    "lightsaber": SWORDS,
-    "machete": SWORDS,
-    "katana": SWORDS,
-    "greatsword": SWORDS,
-    "military_sword": SWORDS,
-    "assassin_energy_wakizashi": SWORDS,
-    "warrior_energy_sabre": SWORDS,
-    "warrior_energy_sword": SWORDS,
-    "set_mercenary_weapon": SWORDS,
-    "set_strangler_weapon": SWORDS,
-    "set_camouflage_weapon": SWORDS,
-    "set_killer_weapon": SWORDS,
-    "set_hero_weapon": SWORDS,
+    # ---------- колющее: ножи, кинжалы, кастеты, трости ----------
+    "hidden_blade": PIERCING,
+    "knuckles": PIERCING,
+    "awl": PIERCING,
+    "knife": PIERCING,
+    "switchblade": PIERCING,
+    "assassin_stiletto": PIERCING,
+    "stiletto": PIERCING,
+    "balisong": PIERCING,
+    "ice_pick": PIERCING,
+    "needle": PIERCING,
+    "razor": PIERCING,
+    "shiv": PIERCING,
+    "fan_assassin_knife": PIERCING,
+    "vcpd_stun_device": PIERCING,
+    # Трость и зонт — сюда же, как сказано в постановке: ими колют, а не
+    # машут, и у трикстера это его оружие по виду и по повадке
+    "cardsharp_cane": PIERCING,
+    "fan_rogue_umbrella": PIERCING,
+    "set_lovkach_weapon": PIERCING,
+    "set_cardsharp_weapon": PIERCING,
+    "set_plut_weapon": PIERCING,
+    "set_croupier_weapon": PIERCING,
+    "assassin_energy_dagger": PIERCING,
+    "assassin_energy_karambit": PIERCING,
+    "assassin_energy_push_dagger": PIERCING,
+    "trickster_energy_hookblade": PIERCING,
+    "trickster_energy_sickle": PIERCING,
+    # ---------- рубящее: топоры и секиры ----------
+    "fire_axe": CHOPPING,
+    "cleaver": CHOPPING,
+    "splitting_axe": CHOPPING,
+    "viking_axe": CHOPPING,
+    "warrior_energy_axe": CHOPPING,
+    "tank_energy_cleaver": CHOPPING,
+    "tank_energy_greataxe": CHOPPING,
+    # Воинские наборы: рубящее своего класса. Топор байкера и стальной
+    # топор звались булавами, пока воину советовали дубины, а меч героя
+    # — мечом: виды разъехались по типу удара, и они вернулись к топорам
+    "set_sport_weapon": CHOPPING,
+    "set_biker_weapon": CHOPPING,
+    "set_fighter_weapon": CHOPPING,
+    "set_hero_weapon": CHOPPING,
+    # ---------- дробящее: дубины и молоты ----------
+    "chief_baton": CRUSHING,
+    "crowbar": CRUSHING,
+    "pipe": CRUSHING,
+    "pit_fighter_baton": CRUSHING,
+    "bat": CRUSHING,
+    "chain": CRUSHING,
+    "pry_bar": CRUSHING,
+    "nail_bat": CRUSHING,
+    "fan_boss_bat": CRUSHING,
+    "fan_warrior_bat": CRUSHING,
+    "vcpd_baton": CRUSHING,
+    "bouncer_sledge": CRUSHING,
+    "sledge": CRUSHING,
+    "boss_sledge": CRUSHING,
+    "set_avenger_weapon": CRUSHING,
+    "set_boxer_weapon": CRUSHING,
+    "set_army_weapon": CRUSHING,
+    "set_bouncer_weapon": CRUSHING,
+    "trickster_energy_baton": CRUSHING,
+    "trickster_energy_staff": CRUSHING,
+    "tank_energy_hammer": CRUSHING,
+    "tank_energy_maul": CRUSHING,
+    "warrior_energy_mace": CRUSHING,
+    # ---------- режущее: мечи ----------
+    "lightsaber": SLASHING,
+    "machete": SLASHING,
+    "katana": SLASHING,
+    "greatsword": SLASHING,
+    "military_sword": SLASHING,
+    "assassin_energy_wakizashi": SLASHING,
+    "warrior_energy_sabre": SLASHING,
+    "warrior_energy_sword": SLASHING,
+    "set_mercenary_weapon": SLASHING,
+    "set_strangler_weapon": SLASHING,
+    "set_camouflage_weapon": SLASHING,
+    "set_killer_weapon": SLASHING,
 }
 
-# Кто берётся и второй рукой. Это всё лёгкое: короткий клинок, кастет,
-# заточка. Тяжёлым второй руки не положено — ею его не удержать, и
-# парная кувалда была бы не сборкой, а шуткой
-OFFHAND_READY: frozenset[str] = frozenset(
-    code for code, family in FAMILIES.items() if family == KNIVES
+# Тяжёлое: занимает обе руки. Секиры по постановке двуручны всегда,
+# кувалды и колун — по весу, посох — потому что его держат двумя
+# руками, двуручные мечи — по названию. Остальное лёгкое, и лёгкое
+# годится в любую руку
+HEAVY: frozenset[str] = frozenset(
+    {
+        # рубящее
+        "viking_axe",
+        "splitting_axe",
+        "tank_energy_greataxe",
+        # дробящее
+        "sledge",
+        "bouncer_sledge",
+        "boss_sledge",
+        "set_army_weapon",
+        "tank_energy_maul",
+        "trickster_energy_staff",
+        # режущее
+        "greatsword",
+        "set_hero_weapon",
+    }
 )
-
-# Двуручные. Пока их двое, и обоих выдаёт собственное название:
-# двуручный меч и длинный меч героя. Остальному тяжёлому оружию хват
-# назначают вместе с балансом двуручного урона — иначе кувалда просто
-# лишилась бы щита, ничего не получив взамен
-TWO_HANDED: frozenset[str] = frozenset({"greatsword", "set_hero_weapon"})
 
 
 def family_of(code: str) -> str:
-    """Семейство этой вещи. Пусто — вида у неё нет."""
+    """Вид этой вещи. Пусто — вида у неё нет."""
     return FAMILIES.get(code, "")
 
 
 def hand_of(code: str) -> WeaponHand:
-    """Каким хватом берут эту вещь."""
-    if code in TWO_HANDED:
+    """Каким хватом берут эту вещь: обеими руками или любой.
+
+    Третьего ответа нет: тяжёлое — двуручное, всё остальное лёгкое, а
+    лёгкое по правилам годится и во вторую руку. `MAIN` остаётся
+    значением по умолчанию у вещей, которые в руки не берут вовсе.
+    """
+    if code in HEAVY:
         return WeaponHand.TWO_HANDED
-    if code in OFFHAND_READY:
-        return WeaponHand.OFFHAND
-    return WeaponHand.MAIN
+    return WeaponHand.OFFHAND
+
+
+def heavy(code: str) -> bool:
+    """Тяжёлая ли это вещь. Только для проверок и экранов."""
+    return code in HEAVY
 
 
 __all__ = [
+    "CHOPPING",
+    "CRUSHING",
     "FAMILIES",
-    "OFFHAND_READY",
-    "TWO_HANDED",
+    "HEAVY",
+    "PIERCING",
+    "SLASHING",
     "family_of",
     "hand_of",
+    "heavy",
 ]

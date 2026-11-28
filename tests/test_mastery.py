@@ -44,7 +44,7 @@ def test_the_first_level_already_has_a_point_in_each_pool():
     """
     assert points_at(1) == 1
     assert free_points(1, {}) == 1
-    assert free_points(1, {WeaponFamily.CLUBS.value: 1}) == 0
+    assert free_points(1, {WeaponFamily.CRUSHING.value: 1}) == 0
 
 
 def test_a_weapon_asks_for_mastery_equal_to_its_level():
@@ -66,19 +66,19 @@ def test_a_specialist_wears_his_level_and_a_scatterer_does_not():
     Седьмой уровень даёт семь очков. Вложил все в мечи — носит меч
     седьмого. Разложил поровну — носит по четвёртому, зато обе ветки.
     """
-    whole = {WeaponFamily.SWORDS.value: 7}
-    split = {WeaponFamily.SWORDS.value: 4, WeaponFamily.CLUBS.value: 3}
+    whole = {WeaponFamily.SLASHING.value: 7}
+    split = {WeaponFamily.SLASHING.value: 4, WeaponFamily.CRUSHING.value: 3}
 
     assert spent(whole) == spent(split) == points_at(7)
-    assert enough(whole[WeaponFamily.SWORDS.value], 7)
-    assert not enough(split[WeaponFamily.SWORDS.value], 7)
-    assert enough(split[WeaponFamily.SWORDS.value], 4)
-    assert enough(split[WeaponFamily.CLUBS.value], 3)
+    assert enough(whole[WeaponFamily.SLASHING.value], 7)
+    assert not enough(split[WeaponFamily.SLASHING.value], 7)
+    assert enough(split[WeaponFamily.SLASHING.value], 4)
+    assert enough(split[WeaponFamily.CRUSHING.value], 3)
 
 
 def test_nobody_spends_more_than_he_has():
     """Больше свободного остатка не вложить, и очки не берутся из воздуха."""
-    points = {WeaponFamily.HAMMERS.value: 3}
+    points = {WeaponFamily.CRUSHING.value: 3}
 
     assert free_points(5, points) == 2
     assert may_spend(5, points, 1) and may_spend(5, points, 2)
@@ -86,7 +86,7 @@ def test_nobody_spends_more_than_he_has():
     assert not may_spend(5, points, 0), "нулевое вложение — не вложение"
     assert not may_spend(5, points, -1)
     # Перебор в базе остатка не рождает: минус не бывает
-    assert free_points(5, {WeaponFamily.HAMMERS.value: 9}) == 0
+    assert free_points(5, {WeaponFamily.CRUSHING.value: 9}) == 0
 
 
 def test_the_two_pools_never_mix():
@@ -95,7 +95,7 @@ def test_the_two_pools_never_mix():
     Пул общий сделал бы выбор ложным: взял щит — остался без оружия
     своего уровня, и все ходили бы одинаково.
     """
-    families = {WeaponFamily.SWORDS.value: 7}
+    families = {WeaponFamily.SLASHING.value: 7}
     holds = {HoldType.SHIELD.value: 2}
 
     # Семь в мечах не мешают держать щит второго уровня и не помогают
@@ -129,12 +129,50 @@ def test_the_names_are_the_ones_the_task_asked_for():
     """Коды видов и хватов — те же, что в постановке и в базе.
 
     По ним считается всё остальное: разметка каталога, колонки базы и
-    поля экрана. Переименовать их молча нельзя — разойдётся с тем, что
-    уже вложено у игроков.
+    поля экрана. Код вида — это тип урона, а не перечень вещей: вещи
+    переезжают между видами (топоры ушли воину, молоты остались танку),
+    и код, который их перечисляет, такую правку не переживает.
     """
     assert [one.value for one in ALL_FAMILIES] == [
-        "knives_knuckles", "clubs_maces", "hammers_axes", "swords"
+        "piercing", "chopping", "crushing", "slashing"
     ]
     assert [one.value for one in ALL_HOLDS] == ["offhand", "two_handed", "shield"]
-    assert WeaponFamily.KNIVES.title == "Ножи и кастеты"
+    assert WeaponFamily.PIERCING.title == "Ножи и кинжалы"
     assert HoldType.TWO_HANDED.title == "Двуручное оружие"
+
+
+def test_each_family_is_a_damage_type_and_a_class():
+    """Четыре вида — четыре типа урона, и у каждого свой класс.
+
+    Это вся постановка одной проверкой: колющее трикстеру, рубящее
+    воину, дробящее танку, режущее ассасину. Прежде воину советовали
+    дубины, а танку топоры — теперь наоборот, и перепутать их заново
+    эта проверка не даст.
+    """
+    assert {one.damage for one in ALL_FAMILIES} == {
+        "колющий", "рубящий", "дробящий", "режущий"
+    }
+    assert WeaponFamily.PIERCING.damage == "колющий"
+    assert WeaponFamily.PIERCING.advised == ("rogue",)
+    assert WeaponFamily.CHOPPING.damage == "рубящий"
+    assert WeaponFamily.CHOPPING.advised == ("warrior",)
+    assert WeaponFamily.CRUSHING.damage == "дробящий"
+    assert WeaponFamily.CRUSHING.advised == ("tank",)
+    assert WeaponFamily.SLASHING.damage == "режущий"
+    assert WeaponFamily.SLASHING.advised == ("assassin",)
+
+
+def test_the_piercing_family_has_no_heavy_weapons():
+    """У колющих тяжёлого не бывает: двуручного ножа в клубе нет.
+
+    Отдача колющего — парный хват, и платят за него очками навыка
+    «Второе оружие». Поэтому трикстеру и двуручное не советуют: советом
+    было бы направление, в котором ему нечего взять.
+    """
+    assert not WeaponFamily.PIERCING.heavy_allowed
+    assert all(
+        one.heavy_allowed for one in ALL_FAMILIES if one is not WeaponFamily.PIERCING
+    )
+    assert "rogue" not in HoldType.TWO_HANDED.advised
+    # А парный хват ему советуют первым: это и есть его вторая рука
+    assert "rogue" in HoldType.OFFHAND.advised

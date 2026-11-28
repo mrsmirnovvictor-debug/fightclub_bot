@@ -167,10 +167,12 @@ def test_a_stranger_set_does_not_count():
 
 def test_things_outside_the_sets_have_no_kit():
     """Вещь без набора ничего не считает и ни во что не растёт."""
-    plain = worn(weapon="viking_axe", head="moto_helmet", offhand="riot_shield")
+    # Оружие берём лёгкое: секира двуручна, и щит рядом с ней в
+    # сборке живого бойца не стоял бы
+    plain = worn(weapon="fire_axe", head="moto_helmet", offhand="riot_shield")
     assert plain.kits == {}
     assert plain.kit_worn("") == 0
-    axe = CATALOGUE["viking_axe"]
+    axe = CATALOGUE["fire_axe"]
     assert plain.weapon_damage == (axe.damage_min, axe.damage_max)
     assert plain.accuracy == pytest.approx(axe.accuracy)
 

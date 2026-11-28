@@ -218,7 +218,7 @@ async def test_a_worn_saber_still_goes_back(store, db):
     # Меч второго уровня требует двух очков владения: без них боец его
     # просто не наденет, а проверка здесь про возврат, а не про владение
     owner = make_player()
-    owner.mastery = {WeaponFamily.SWORDS.value: 2}
+    owner.mastery = {WeaponFamily.SLASHING.value: 2}
     await db.save_player(owner)
     await store.grant(42, paid())
     player = await db.get_player(42)

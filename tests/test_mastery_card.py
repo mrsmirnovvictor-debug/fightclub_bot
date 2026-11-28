@@ -29,8 +29,8 @@ from bot.webapp.card import (
 from bot.webapp.server import create_app
 from tests.test_webapp import FakeBot, TOKEN, make_init_data
 
-SWORDS = WeaponFamily.SWORDS.value
-KNIVES = WeaponFamily.KNIVES.value
+SLASHING = WeaponFamily.SLASHING.value
+PIERCING = WeaponFamily.PIERCING.value
 SHIELD = HoldType.SHIELD.value
 TWO_HANDED = HoldType.TWO_HANDED.value
 
@@ -76,7 +76,7 @@ def test_the_card_shows_both_pools_and_marks_what_the_class_is_advised():
         one["code"] for one in block["families"] + block["holds"] if one["advised"]
     }
     # Ассасину советуют мечи, второе оружие и двуручный хват
-    assert advised == {SWORDS, HoldType.OFFHAND.value, TWO_HANDED}
+    assert advised == {SLASHING, HoldType.OFFHAND.value, TWO_HANDED}
     assert all(one["title"] for one in block["families"])
     # Значка направления в столбцах нет: подпись и число, как у атаки с
     # защитой. Поле, которое экран не читает, в ответе не шлём
@@ -87,13 +87,13 @@ async def test_what_is_invested_stands_in_the_card(db):
     """Вложенное видно в блоке, и остаток пула уменьшается на столько же."""
     player = a_fighter()
     await db.save_player(player)
-    await invest(db, player, SWORDS, 3)
+    await invest(db, player, SLASHING, 3)
     await invest(db, player, SHIELD, 1)
 
     block = mastery_payload(player)
     levels = {one["code"]: one["level"] for one in block["families"]}
 
-    assert levels[SWORDS] == 3 and levels[KNIVES] == 0
+    assert levels[SLASHING] == 3 and levels[PIERCING] == 0
     assert block["free"] == {"family": 2, "hold": 4}
 
 
@@ -117,15 +117,15 @@ def test_an_item_card_names_the_family_the_hand_and_the_threshold():
     sword = CATALOGUE["greatsword"]
     line = arming_payload(sword)
 
-    assert line["family"] == SWORDS
-    assert line["family_title"] == WeaponFamily.SWORDS.title
+    assert line["family"] == SLASHING
+    assert line["family_title"] == WeaponFamily.SLASHING.title
     assert line["hand"] == "two_handed" and line["hand_title"] == "обе руки"
     assert line["hold"] == TWO_HANDED
     assert line["mastery"] == sword.level_required
 
     # Лёгкое оружие годится в любую руку, и своего хвата в основной не просит
     knife = arming_payload(CATALOGUE["knife"])
-    assert knife["family"] == KNIVES and knife["hand_title"] == "любая рука"
+    assert knife["family"] == PIERCING and knife["hand_title"] == "любая рука"
     assert knife["hold"] == "" and knife["mastery"] == CATALOGUE["knife"].level_required
 
 
@@ -169,13 +169,13 @@ async def test_the_requirements_name_the_family_and_the_hold_apart(db):
     need = CATALOGUE["greatsword"].level_required
 
     assert rows["family"]["need"] == need and rows["family"]["have"] == 0
-    assert rows["family"]["title"] == WeaponFamily.SWORDS.title
+    assert rows["family"]["title"] == WeaponFamily.SLASHING.title
     assert not rows["family"]["ok"]
     assert rows["hold"]["need"] == need and not rows["hold"]["ok"]
     assert rows["hold"]["title"] == HoldType.TWO_HANDED.title
 
     # Вложили в вид — закрылась строка вида, строка хвата осталась
-    await invest(db, player, SWORDS, need)
+    await invest(db, player, SLASHING, need)
     rows = {one["code"]: one for one in code_rows(player, "greatsword")}
     assert rows["family"]["ok"] and rows["family"]["have"] == need
     assert not rows["hold"]["ok"]
@@ -218,18 +218,18 @@ async def test_the_mini_app_lays_out_the_points_and_returns_a_fresh_card(client,
     await db.save_player(a_fighter(level=5))
 
     response = await client.post(
-        "/api/mastery", json={SWORDS: 3, SHIELD: 2}, headers=headers()
+        "/api/mastery", json={SLASHING: 3, SHIELD: 2}, headers=headers()
     )
     body = await response.json()
 
     assert response.status == 200
-    assert body["spent"] == {SWORDS: 3, SHIELD: 2}
+    assert body["spent"] == {SLASHING: 3, SHIELD: 2}
     block = body["card"]["mastery"]
     assert block["free"] == {"family": 2, "hold": 3}
     levels = {one["code"]: one["level"] for one in block["families"]}
-    assert levels[SWORDS] == 3
+    assert levels[SLASHING] == 3
     saved = await db.get_player(42)
-    assert saved.mastery == {SWORDS: 3} and saved.holds == {SHIELD: 2}
+    assert saved.mastery == {SLASHING: 3} and saved.holds == {SHIELD: 2}
 
 
 async def test_the_mini_app_counts_the_two_pools_apart(client, db):
@@ -237,7 +237,7 @@ async def test_the_mini_app_counts_the_two_pools_apart(client, db):
     await db.save_player(a_fighter(level=2))
 
     response = await client.post(
-        "/api/mastery", json={SWORDS: 3, SHIELD: 1}, headers=headers()
+        "/api/mastery", json={SLASHING: 3, SHIELD: 1}, headers=headers()
     )
     body = await response.json()
 
@@ -247,18 +247,18 @@ async def test_the_mini_app_counts_the_two_pools_apart(client, db):
     assert saved.mastery == {} and saved.holds == {}, "заявка целиком не прошла"
 
     ok = await client.post(
-        "/api/mastery", json={SWORDS: 2, SHIELD: 2}, headers=headers()
+        "/api/mastery", json={SLASHING: 2, SHIELD: 2}, headers=headers()
     )
     assert ok.status == 200
     saved = await db.get_player(42)
-    assert saved.mastery == {SWORDS: 2} and saved.holds == {SHIELD: 2}
+    assert saved.mastery == {SLASHING: 2} and saved.holds == {SHIELD: 2}
 
 
 async def test_the_mini_app_refuses_a_nonsense_draft(client, db):
     """Чужой код, минус и пустая заявка меняют ровно ничего."""
     await db.save_player(a_fighter(level=5))
 
-    for draft in ({"лазерный меч": 1}, {SWORDS: -2}, {}, {SWORDS: "много"}):
+    for draft in ({"лазерный меч": 1}, {SLASHING: -2}, {}, {SLASHING: "много"}):
         response = await client.post(
             "/api/mastery", json=draft, headers=headers()
         )

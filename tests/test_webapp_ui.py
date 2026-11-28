@@ -1855,11 +1855,13 @@ async def test_the_arsenal_sheet_draws_every_thing_in_hand(server):
         await page.wait_for_selector(".card")
 
         assert await page.locator(".card").count() == 94
-        # Переименованные стоят первыми и обведены: лист собран под
-        # сверку арта, и начинается он с того, что разошлось
+        # Спорные стоят первыми и обведены: лист собран под сверку арта,
+        # и начинается он с того, где картинка разошлась с названием
         first = await page.locator(".card").first.inner_text()
-        assert "раньше звалась" in first, first
-        assert await page.locator(".card.flag").count() == 10
+        assert "на картинке" in first, first
+        assert await page.locator(".card.flag").count() == 7
+        # И тип урона у оружия виден в строке значков
+        assert "рубящий урон" in first, first
         tally = await page.locator("#tally").inner_text()
         assert "94" in tally and "71" in tally
 

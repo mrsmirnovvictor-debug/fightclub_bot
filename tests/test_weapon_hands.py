@@ -19,14 +19,14 @@ from bot.inventory_service import InventoryError, equip, unequip
 from bot.mastery_service import invest
 from bot.models import Player
 
-SWORDS = WeaponFamily.SWORDS.value
-KNIVES = WeaponFamily.KNIVES.value
+SLASHING = WeaponFamily.SLASHING.value
+PIERCING = WeaponFamily.PIERCING.value
 OFFHAND = HoldType.OFFHAND.value
 TWO_HANDED = HoldType.TWO_HANDED.value
 SHIELD = HoldType.SHIELD.value
 
 
-def a_weapon(code: str, hand: WeaponHand, level: int = 1, family: str = SWORDS) -> Item:
+def a_weapon(code: str, hand: WeaponHand, level: int = 1, family: str = SLASHING) -> Item:
     """Оружие нужного хвата: каталог к этому этапу ещё не размечен."""
     return Item(
         code,
@@ -48,7 +48,7 @@ def hands(monkeypatch) -> dict[str, Item]:
     """Три хвата и щит, подложенные в каталог на время теста."""
     kit = {
         "probe_main": a_weapon("probe_main", WeaponHand.MAIN),
-        "probe_second": a_weapon("probe_second", WeaponHand.OFFHAND, family=KNIVES),
+        "probe_second": a_weapon("probe_second", WeaponHand.OFFHAND, family=PIERCING),
         "probe_both": a_weapon("probe_both", WeaponHand.TWO_HANDED),
     }
     for code, item in kit.items():
@@ -69,7 +69,7 @@ async def a_fighter(db: Database) -> Player:
         nickname="Тайлер",
         class_code="assassin",
         level=10,
-        mastery={SWORDS: 1, KNIVES: 1},
+        mastery={SLASHING: 1, PIERCING: 1},
         holds={OFFHAND: 1, TWO_HANDED: 1, SHIELD: 2},
         **Stats(strength=20, agility=20, intuition=20, endurance=20).as_dict(),
     )
@@ -231,7 +231,7 @@ def test_the_threshold_is_the_level_of_the_thing(hands):
     assert hold_required(CATALOGUE["set_sport_shield"]) == HoldType.SHIELD.value
     # Хват зависит от клетки: лёгкое оружие в первой руке — обычное
     # оружие своего вида, во второй — уже «Второе оружие»
-    light = a_weapon("probe_light", WeaponHand.OFFHAND, level=3, family=KNIVES)
+    light = a_weapon("probe_light", WeaponHand.OFFHAND, level=3, family=PIERCING)
     assert hold_required(light, Slot.WEAPON) == ""
     assert hold_required(light, Slot.OFFHAND) == HoldType.OFFHAND.value
 
@@ -245,11 +245,11 @@ def test_the_gaps_in_mastery_are_named_one_by_one(hands):
     both = a_weapon("probe_heavy", WeaponHand.TWO_HANDED, level=5)
 
     assert missing_mastery(both, {}, {}) == ["family", "hold"]
-    assert missing_mastery(both, {SWORDS: 5}, {}) == ["hold"]
+    assert missing_mastery(both, {SLASHING: 5}, {}) == ["hold"]
     assert missing_mastery(both, {}, {HoldType.TWO_HANDED.value: 5}) == ["family"]
-    assert missing_mastery(both, {SWORDS: 5}, {HoldType.TWO_HANDED.value: 5}) == []
+    assert missing_mastery(both, {SLASHING: 5}, {HoldType.TWO_HANDED.value: 5}) == []
     # Чужой вид не помогает: владение мечами не держит молот
-    assert missing_mastery(both, {KNIVES: 9}, {HoldType.TWO_HANDED.value: 5}) == [
+    assert missing_mastery(both, {PIERCING: 9}, {HoldType.TWO_HANDED.value: 5}) == [
         "family"
     ]
 
@@ -277,7 +277,7 @@ async def test_without_the_mastery_the_weapon_stays_in_the_backpack(db, hands):
     assert player.gear_in_slot(Slot.WEAPON) is None
 
     # Вложили очко — и та же вещь надевается
-    await invest(db, player, SWORDS)
+    await invest(db, player, SLASHING)
     await equip(db, player, owned.id)
     assert player.gear_in_slot(Slot.WEAPON).code == "probe_main"
 
@@ -293,7 +293,7 @@ async def test_the_hold_is_asked_for_the_cell_it_goes_into(db, hands):
         nickname="Боб",
         class_code="rogue",
         level=10,
-        mastery={KNIVES: 1, SWORDS: 1},
+        mastery={PIERCING: 1, SLASHING: 1},
         **Stats(strength=20, agility=20, intuition=20, endurance=20).as_dict(),
     )
     await db.save_player(player)
@@ -342,21 +342,42 @@ def test_every_weapon_in_the_catalogue_knows_its_family():
 
 
 def test_heavy_weapons_do_not_fit_the_second_hand():
-    """Второй рукой берут только лёгкое: кувалда в ней не держится."""
+    """Вторая рука берёт лёгкое, и только его.
+
+    Вес решает хват, и третьего веса нет: кувалда, секира и двуручный
+    меч заняли обе руки, а бита с катаной стали лёгкими — ими дерутся и
+    в пару, и со щитом.
+    """
     from bot.game.equipment import CATALOGUE
 
-    for code in ("sledge", "viking_axe", "bat", "katana", "greatsword"):
+    for code in ("sledge", "viking_axe", "greatsword", "splitting_axe"):
         assert CATALOGUE[code].slots == (Slot.WEAPON,), code
-    for code in ("knife", "knuckles", "razor", "shiv"):
+    for code in ("knife", "knuckles", "razor", "shiv", "bat", "katana", "fire_axe"):
         assert CATALOGUE[code].slots == (Slot.WEAPON, Slot.OFFHAND), code
 
 
-def test_the_two_handed_are_named_by_the_table():
-    """Двуручных пока двое, и обоих выдаёт собственное название."""
-    from bot.content.arming import TWO_HANDED
-    from bot.game.equipment import CATALOGUE
+def test_the_heavy_are_named_by_the_table_and_never_pierce():
+    """Тяжёлое перечислено таблицей, и колющего среди него нет.
 
-    assert TWO_HANDED == {"greatsword", "set_hero_weapon"}
-    for code in TWO_HANDED:
+    Двуручного ножа в клубе не бывает: отдача колющего — парный хват.
+    Таблица правится руками, поэтому правило проверяется по ней, а не
+    по доброй воле того, кто вписывает новую вещь.
+    """
+    from bot.content.arming import HEAVY
+    from bot.game.equipment import CATALOGUE
+    from bot.game.mastery import WeaponFamily
+
+    assert HEAVY, "тяжёлого в каталоге не осталось вовсе"
+    for code in HEAVY:
         assert CATALOGUE[code].two_handed, code
-        assert CATALOGUE[code].family == SWORDS, code
+        assert CATALOGUE[code].family != PIERCING, code
+    # И наоборот: всё двуручное в каталоге перечислено в таблице
+    heavy_in_catalogue = {
+        item.code for item in CATALOGUE.values() if item.is_weapon and item.two_handed
+    }
+    assert heavy_in_catalogue == set(HEAVY)
+    # В каждом виде, где тяжёлое бывает, оно есть
+    heavy_families = {CATALOGUE[code].family for code in HEAVY}
+    assert heavy_families == {
+        one.value for one in WeaponFamily if one.heavy_allowed
+    }

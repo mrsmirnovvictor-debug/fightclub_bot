@@ -218,7 +218,7 @@
   const flagChip = document.createElement("button");
   flagChip.type = "button";
   flagChip.className = "chip warn";
-  flagChip.textContent = "Переименованные";
+  flagChip.textContent = "Картинка спорит";
   flagChip.setAttribute("aria-pressed", "false");
   flagChip.addEventListener("click", () => {
     state.flagged = !state.flagged;
@@ -301,7 +301,7 @@
 
   function card(one) {
     const box = document.createElement("article");
-    box.className = "card" + (one.was ? " flag" : "");
+    box.className = "card" + (one.drawn ? " flag" : "");
     if ((notes.get(one.code) || "").trim()) box.classList.add("marked");
 
     // Картинка — ссылкой: нажатие открывает файл бакета целиком, в
@@ -330,10 +330,10 @@
     name.textContent = one.title;
     body.appendChild(name);
 
-    if (one.was) {
+    if (one.drawn) {
       const was = document.createElement("p");
       was.className = "was";
-      was.textContent = "раньше звалась: " + one.was;
+      was.textContent = "на картинке: " + one.drawn;
       body.appendChild(was);
     }
 
@@ -347,6 +347,8 @@
     tags.appendChild(tag(one.kind));
     tags.appendChild(tag(one.level + " ур.", "lvl"));
     if (one.family) tags.appendChild(tag(one.family, "fam"));
+    if (one.damage_kind) tags.appendChild(tag(one.damage_kind + " урон"));
+    if (one.heavy) tags.appendChild(tag("тяжёлое", "hold"));
     if (one.hand) tags.appendChild(tag(one.hand));
     if (one.hold) tags.appendChild(tag(one.hold, "hold"));
     if (one.mastery) tags.appendChild(tag("владение " + one.mastery, "lvl"));
@@ -410,9 +412,9 @@
 
   function matches(one) {
     if (state.kind && one.kind !== state.kind) return false;
-    if (state.flagged && !one.was) return false;
+    if (state.flagged && !one.drawn) return false;
     if (!state.text) return true;
-    const hay = [one.title, one.was, one.code, one.set, one.family, one.hold, one.kind]
+    const hay = [one.title, one.drawn, one.code, one.set, one.family, one.hold, one.kind]
       .concat(one.classes).join(" ").toLowerCase();
     return hay.includes(state.text);
   }
@@ -448,9 +450,9 @@
       const h2 = document.createElement("h2");
       h2.textContent = head;
       const sub = document.createElement("p");
-      const renamed = rows.filter((one) => one.was).length;
+      const apart = rows.filter((one) => one.drawn).length;
       sub.textContent = rows.length + " " + plural(rows.length, "вещь", "вещи", "вещей")
-        + (renamed ? " · переименовано: " + renamed : "");
+        + (apart ? " · картинка спорит с названием: " + apart : "");
       const grid = document.createElement("div");
       grid.className = "grid";
       rows.forEach((one) => grid.appendChild(card(one)));
@@ -467,7 +469,7 @@
       ["оружие", counts.weapons],
       ["щиты", counts.shields],
       ["в наборах", counts.in_sets],
-      ["переименовано", counts.renamed],
+      ["картинка спорит", counts.drawn_apart],
     ].forEach(([label, n]) => {
       const li = document.createElement("li");
       const b = document.createElement("b");

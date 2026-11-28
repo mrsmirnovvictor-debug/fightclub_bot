@@ -13,8 +13,8 @@ from bot.game.mastery import HoldType, WeaponFamily, points_at
 from bot.mastery_service import MasteryError, invest, pool_of
 from bot.models import Player
 
-SWORDS = WeaponFamily.SWORDS.value
-CLUBS = WeaponFamily.CLUBS.value
+SLASHING = WeaponFamily.SLASHING.value
+CRUSHING = WeaponFamily.CRUSHING.value
 SHIELD = HoldType.SHIELD.value
 TWO_HANDED = HoldType.TWO_HANDED.value
 
@@ -52,7 +52,7 @@ async def test_a_level_jump_grants_both_pools_exactly_once(db):
     """Перескок через несколько уровней не теряет и не удваивает очки."""
     one = a_fighter(level=1)
     await db.save_player(one)
-    await invest(db, one, SWORDS)
+    await invest(db, one, SLASHING)
     assert one.mastery_free == 0
 
     # Крупная победа может поднять сразу несколько уровней
@@ -60,7 +60,7 @@ async def test_a_level_jump_grants_both_pools_exactly_once(db):
     await db.save_player(one)
 
     saved = await db.get_player(42)
-    assert saved.mastery_in(SWORDS) == 1
+    assert saved.mastery_in(SLASHING) == 1
     assert saved.mastery_free == 4, "четыре новых уровня — четыре очка"
     assert saved.holds_free == 5, "в хватах не вложено ничего"
 
@@ -70,11 +70,11 @@ async def test_a_point_goes_where_it_was_asked_and_stays_there(db):
     one = a_fighter(level=5)
     await db.save_player(one)
 
-    assert await invest(db, one, SWORDS, 3) == 3
+    assert await invest(db, one, SLASHING, 3) == 3
     assert await invest(db, one, SHIELD, 2) == 2
 
     saved = await db.get_player(42)
-    assert saved.mastery == {SWORDS: 3}
+    assert saved.mastery == {SLASHING: 3}
     assert saved.holds == {SHIELD: 2}
     assert saved.mastery_free == 2 and saved.holds_free == 3
 
@@ -83,16 +83,16 @@ async def test_nobody_spends_more_than_the_level_gave(db):
     """Больше свободного остатка не вложить, и отказ говорит сколько осталось."""
     one = a_fighter(level=3)
     await db.save_player(one)
-    await invest(db, one, SWORDS, 3)
+    await invest(db, one, SLASHING, 3)
 
     with pytest.raises(MasteryError) as oops:
-        await invest(db, one, CLUBS)
+        await invest(db, one, CRUSHING)
     assert "0" in str(oops.value)
 
     # И повторный запрос ничего не создаёт: остаток считается заново
     saved = await db.get_player(42)
     assert saved.mastery_free == 0
-    assert saved.mastery == {SWORDS: 3}
+    assert saved.mastery == {SLASHING: 3}
 
 
 async def test_the_two_pools_never_lend_each_other_a_point(db):
@@ -108,7 +108,7 @@ async def test_the_two_pools_never_lend_each_other_a_point(db):
     assert one.holds_free == 0
     assert one.mastery_free == 2, "вид не тронут"
     assert pool_of(TWO_HANDED) == "hold"
-    assert pool_of(SWORDS) == "family"
+    assert pool_of(SLASHING) == "family"
     assert pool_of("нет такого") == ""
 
 
@@ -117,7 +117,7 @@ async def test_a_nonsense_request_changes_nothing(db):
     one = a_fighter(level=5)
     await db.save_player(one)
 
-    for code, amount in ((SWORDS, 0), (SWORDS, -2), ("лазерный меч", 1)):
+    for code, amount in ((SLASHING, 0), (SLASHING, -2), ("лазерный меч", 1)):
         with pytest.raises(MasteryError):
             await invest(db, one, code, amount)
 
@@ -135,10 +135,19 @@ async def test_a_broken_line_in_the_base_does_not_break_the_card(db):
     await db.save_player(one)
     await db.conn.execute(
         "UPDATE players SET mastery = ?, holds = ? WHERE user_id = 42",
-        ("swords:3,лом:9,swords,clubs_maces:-1", "shield:x,two_handed:2"),
+        ("slashing:3,лом:9,slashing,crushing:-1", "shield:x,two_handed:2"),
     )
     await db.conn.commit()
 
     saved = await db.get_player(42)
-    assert saved.mastery == {SWORDS: 3}
+    assert saved.mastery == {SLASHING: 3}
     assert saved.holds == {TWO_HANDED: 2}
+
+    # Коды прежней версии — такой же мусор, как «лом»: виды переехали
+    # на тип урона, и строка «swords:7» теперь ничья
+    await db.conn.execute(
+        "UPDATE players SET mastery = ? WHERE user_id = 42",
+        ("swords:7,hammers_axes:3",),
+    )
+    await db.conn.commit()
+    assert (await db.get_player(42)).mastery == {}

@@ -12,7 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from bot.config import Config
 from bot.game.equipment import CATALOGUE, ItemKind
-from bot.webapp.arsenal import WAS_CALLED, arsenal_payload
+from bot.webapp.arsenal import DRAWN_INSTEAD, arsenal_payload
 from bot.webapp.server import STATIC_DIR, create_app
 from tests.test_webapp import FakeBot, TOKEN
 
@@ -69,21 +69,34 @@ def test_every_row_carries_its_picture_and_its_numbers():
             assert row["hold"] == "Щиты"
 
 
-def test_the_renamed_weapons_say_what_is_on_the_old_picture():
-    """У переименованных в листе стоит прежнее имя — то, что на картинке.
+def test_the_rows_say_where_the_picture_argues_with_the_name():
+    """Где картинка спорит с названием, лист об этом говорит прямо.
 
-    Пока арт не перерисован, лист обязан говорить, что именно
-    разошлось: иначе сверять не с чем.
+    Лист для того и сделан: пока арт не догнал каталог, сверять надо
+    именно эти вещи — и стоят они первыми.
     """
     rows = {row["code"]: row for row in arsenal_payload()["items"]}
 
-    assert set(WAS_CALLED) <= set(rows)
-    for code, was in WAS_CALLED.items():
-        assert rows[code]["was"] == was
-        assert rows[code]["title"] != was, "иначе переименования не было"
-    # И они идут первыми: лист собран под сверку арта
-    first = [row["code"] for row in arsenal_payload()["items"][: len(WAS_CALLED)]]
-    assert set(first) == set(WAS_CALLED)
+    assert set(DRAWN_INSTEAD) <= set(rows)
+    for code, drawn in DRAWN_INSTEAD.items():
+        assert rows[code]["drawn"] == drawn
+        assert rows[code]["title"].lower() != drawn, "иначе спора нет"
+    # И они идут первыми
+    first = [row["code"] for row in arsenal_payload()["items"][: len(DRAWN_INSTEAD)]]
+    assert set(first) == set(DRAWN_INSTEAD)
+
+
+def test_every_weapon_says_what_kind_of_damage_it_deals():
+    """Тип урона есть у каждого оружия: вид и тип урона это одно и то же."""
+    kinds = {"колющий", "рубящий", "дробящий", "режущий"}
+    for row in arsenal_payload()["items"]:
+        if row["kind"] == "Оружие":
+            assert row["damage_kind"] in kinds, row["code"]
+            # Тяжёлое — двуручное, и у колющих его не бывает
+            if row["heavy"]:
+                assert row["damage_kind"] != "колющий", row["code"]
+        else:
+            assert row["damage_kind"] == "", row["code"]
 
 
 def test_the_counts_add_up():
@@ -95,7 +108,7 @@ def test_the_counts_add_up():
     assert counts["all"] == len(rows)
     assert counts["weapons"] == sum(1 for row in rows if row["kind"] == "Оружие")
     assert counts["shields"] == sum(1 for row in rows if row["kind"] == "Щит")
-    assert counts["renamed"] == len(WAS_CALLED)
+    assert counts["drawn_apart"] == len(DRAWN_INSTEAD)
 
 
 async def test_the_page_and_the_payload_are_served_to_anyone(client):

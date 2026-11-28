@@ -22,9 +22,9 @@ from bot.game.mastery import HoldType, WeaponFamily
 from bot.mastery_service import needed_for, plan_for, settle_worn
 from tests.test_robbery import make_player
 
-SWORDS = WeaponFamily.SWORDS.value
-KNIVES = WeaponFamily.KNIVES.value
-HAMMERS = WeaponFamily.HAMMERS.value
+SLASHING = WeaponFamily.SLASHING.value
+PIERCING = WeaponFamily.PIERCING.value
+CHOPPING = WeaponFamily.CHOPPING.value
 OFFHAND = HoldType.OFFHAND.value
 SHIELD = HoldType.SHIELD.value
 
@@ -45,8 +45,8 @@ async def armed(db, user_id: int, level: int, **hands: str):
 
 def test_the_cell_decides_whether_a_hold_is_needed():
     """Нож в основной руке требует вида, во второй — ещё и хвата."""
-    assert needed_for([("knife", "weapon")]) == ({KNIVES: 4}, {})
-    assert needed_for([("knife", "offhand")]) == ({KNIVES: 4}, {OFFHAND: 4})
+    assert needed_for([("knife", "weapon")]) == ({PIERCING: 4}, {})
+    assert needed_for([("knife", "offhand")]) == ({PIERCING: 4}, {OFFHAND: 4})
     # Щит — хват без вида, где бы он ни лежал
     assert needed_for([("riot_shield", "offhand")]) == ({}, {SHIELD: 8})
     # Одежда и огнестрел владения не требуют
@@ -64,7 +64,7 @@ def test_the_same_direction_asks_for_the_maximum_and_not_the_sum():
         [("katana", "weapon"), ("machete", "offhand")]
     )
 
-    assert families == {SWORDS: 8}, "катана восьмого, мачете шестого"
+    assert families == {SLASHING: 8}, "катана восьмого, мачете шестого"
 
 
 def test_only_whole_thresholds_are_invested():
@@ -74,13 +74,13 @@ def test_only_whole_thresholds_are_invested():
     закопать его в направление, которое всё равно не открылось.
     """
     # На девятый порог девяти очков хватает, на второе направление нет
-    assert plan_for(9, {}, {HAMMERS: 9, KNIVES: 4}) == {HAMMERS: 9}
+    assert plan_for(9, {}, {CHOPPING: 9, PIERCING: 4}) == {CHOPPING: 9}
     # Самое дорогое не влезло — меньшее за ним всё равно кладём
-    assert plan_for(5, {}, {HAMMERS: 9, KNIVES: 4}) == {KNIVES: 4}
+    assert plan_for(5, {}, {CHOPPING: 9, PIERCING: 4}) == {PIERCING: 4}
     # Вложенное зачитывается: доложить нужно только недостающее
-    assert plan_for(9, {SWORDS: 6}, {SWORDS: 8}) == {SWORDS: 2}
+    assert plan_for(9, {SLASHING: 6}, {SLASHING: 8}) == {SLASHING: 2}
     # И второй раз докладывать нечего
-    assert plan_for(9, {SWORDS: 8}, {SWORDS: 8}) == {}
+    assert plan_for(9, {SLASHING: 8}, {SLASHING: 8}) == {}
 
 
 # ---------- работа по живой базе ----------
@@ -99,7 +99,7 @@ async def test_the_minimum_for_what_is_worn_is_invested(db):
 
     assert any("владение по надетому" in line for line in done), done
     saved = await db.get_player(71)
-    assert saved.mastery == {SWORDS: 8, KNIVES: 4}
+    assert saved.mastery == {SLASHING: 8, PIERCING: 4}
     assert saved.holds == {OFFHAND: 4}
     # Остаток считается от уровня: в видах не осталось ничего, в хватах
     # ушли четыре очка из двенадцати
@@ -113,7 +113,7 @@ async def test_a_shield_asks_only_for_its_hold(db):
     await chores.run(db, now_ts())
 
     saved = await db.get_player(72)
-    assert saved.mastery == {SWORDS: 8}
+    assert saved.mastery == {SLASHING: 8}
     assert saved.holds == {SHIELD: 8}
 
 
@@ -142,7 +142,7 @@ async def test_a_second_run_invests_nothing_more(db):
     # И само правило идемпотентно, без отметки о работе: считает заново
     again, short = await settle_worn(db, before, [("katana", "weapon")])
     assert again == {} and short == []
-    assert (await db.get_player(74)).mastery == {SWORDS: 8}
+    assert (await db.get_player(74)).mastery == {SLASHING: 8}
 
 
 async def test_what_does_not_fit_stays_short_and_goes_to_the_log(db, caplog):
@@ -160,11 +160,11 @@ async def test_what_does_not_fit_stays_short_and_goes_to_the_log(db, caplog):
 
     saved = await db.get_player(75)
     # Самое дорогое закрыто, на второе направление очков не осталось
-    assert saved.mastery == {HAMMERS: 9}
+    assert saved.mastery == {CHOPPING: 9}
     assert saved.mastery_free == 0
     assert any("не хватило у 1" in line for line in done), done
     assert "не хватает очков под надетое" in caplog.text
-    assert "Ножи и кастеты" in caplog.text
+    assert "Ножи и кинжалы" in caplog.text
     # Нож при этом в руке и остался
     assert any(one.code == "knife" and one.slot for one in await db.list_gear(75))
 
@@ -197,4 +197,4 @@ async def test_the_backpack_is_not_paid_for(db):
 
     await chores.run(db, now_ts())
 
-    assert (await db.get_player(76)).mastery == {SWORDS: 8}
+    assert (await db.get_player(76)).mastery == {SLASHING: 8}
