@@ -2243,7 +2243,10 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=4,
         requires=Stats(strength=12),
         price=150,
-        for_classes=(WARRIOR, TANK),
+        # Дробящее — вид танка. Воину дубины предлагали, пока его
+        # рубящая лестница была дырявой: своего оружия у него не было
+        # до седьмого уровня. Теперь она сплошная с четвёртого
+        for_classes=(TANK,),
     ),
     Item(
         "switchblade",
@@ -2477,7 +2480,10 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=6,
         requires=Stats(strength=16),
         price=180,
-        for_classes=(WARRIOR, TANK),
+        # Дробящее — вид танка. Воину дубины предлагали, пока его
+        # рубящая лестница была дырявой: своего оружия у него не было
+        # до седьмого уровня. Теперь она сплошная с четвёртого
+        for_classes=(TANK,),
     ),
     Item(
         "machete",
@@ -3374,7 +3380,10 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=5,
         requires=Stats(strength=14),
         price=170,
-        for_classes=(WARRIOR, TANK),
+        # Дробящее — вид танка. Воину дубины предлагали, пока его
+        # рубящая лестница была дырявой: своего оружия у него не было
+        # до седьмого уровня. Теперь она сплошная с четвёртого
+        for_classes=(TANK,),
     ),
     Item(
         "pit_fighter_jacket",

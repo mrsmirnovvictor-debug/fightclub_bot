@@ -4155,7 +4155,7 @@ async def test_a_weapon_in_the_bag_says_what_holds_it_and_what_is_missing(server
         # Вложенное закрывает строку владения: в ножах у бойца четыре очка
         light = page.locator("#bag-list .thing", has_text="Нож").first
         text = await light.inner_text()
-        assert "Ножи и кинжалы, колющий урон · любая рука · владение 4" in text, text
+        assert "Ножи и кастеты, колющий урон · любая рука · владение 4" in text, text
         assert "Нужно" not in text, text
         await browser.close()
 

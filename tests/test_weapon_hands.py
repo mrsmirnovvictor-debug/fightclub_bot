@@ -475,3 +475,48 @@ def test_every_set_has_something_for_both_hands():
             continue
         with_shield = [one for one in kits.get(item.kit, ()) if not one.two_handed]
         assert with_shield, f"{SET_TITLES.get(item.kit, item.kit)}: щит не с чем надеть"
+
+
+def test_the_name_of_a_weapon_tells_its_weight():
+    """Как вещь зовётся, так её и держат: секира двуручна, топор — нет.
+
+    Постановка названа словами, а не кодами: «секиры — новое оружие,
+    всегда двуручное», «топор можно одевать со щитом», «тяжёлые дубины
+    и молоты — двуручные». Слово в названии — это обещание игроку,
+    которое он читает раньше любой карточки, и держать его должна
+    проверка, а не память того, кто вписывает новую вещь: вес живёт
+    отдельной таблицей (`bot/content/arming.py`), и разойтись с именем
+    ему ничего не мешает.
+
+    Обратное не проверяется: тяжёлое может зваться и колуном, и
+    посохом, и палашом. Правило тут одностороннее — названное секирой
+    обязано быть двуручным, названное топором обязано быть лёгким, а
+    как назвать двуручное, решает тот, кто его придумывает.
+    """
+    from bot.game.equipment import CATALOGUE
+
+    # Кувалда Босса — названная оговорка, и причина записана рядом с
+    # таблицей веса: её носят двое городских вместе со щитом, игроку она
+    # не достаётся, а двуручный множитель ломал её собственное правило
+    EXCUSED = {"boss_sledge"}
+
+    HEAVY_WORDS = ("секира", "кувалда", "двуручн")
+    LIGHT_WORDS = ("топор", "молот", "нож", "кастет", "кинжал", "трост")
+
+    seen_heavy = seen_light = 0
+    for item in CATALOGUE.values():
+        if not item.is_weapon or item.code in EXCUSED:
+            continue
+        name = item.title.lower()
+        heavy_name = [word for word in HEAVY_WORDS if word in name]
+        light_name = [word for word in LIGHT_WORDS if word in name]
+        if heavy_name:
+            seen_heavy += 1
+            assert item.two_handed, f"{item.title}: названа тяжёлой, а лёгкая"
+            continue
+        if light_name:
+            seen_light += 1
+            assert not item.two_handed, f"{item.title}: названо лёгким, а двуручное"
+
+    assert seen_heavy >= 10, f"тяжёлых по имени нашлось {seen_heavy}"
+    assert seen_light >= 20, f"лёгких по имени нашлось {seen_light}"

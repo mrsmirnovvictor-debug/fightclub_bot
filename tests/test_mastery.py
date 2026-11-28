@@ -137,7 +137,7 @@ def test_the_names_are_the_ones_the_task_asked_for():
         "piercing", "chopping", "crushing", "slashing"
     ]
     assert [one.value for one in ALL_HOLDS] == ["offhand", "two_handed", "shield"]
-    assert WeaponFamily.PIERCING.title == "Ножи и кинжалы"
+    assert WeaponFamily.PIERCING.title == "Ножи и кастеты"
     assert HoldType.TWO_HANDED.title == "Двуручное оружие"
 
 
