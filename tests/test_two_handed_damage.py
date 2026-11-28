@@ -71,9 +71,9 @@ def test_the_doll_shows_the_damage_the_fighter_really_deals():
     equipment = worn("greatsword")
     shown = equipment.grown(equipment.weapon)
 
-    assert shown.damage_min == 23 and shown.damage_max == 29
-    assert equipment.weapon_damage == (23, 29)
-    assert equipment.weapon_damage_max() == 29
+    assert shown.damage_min == 36 and shown.damage_max == 46
+    assert equipment.weapon_damage == (36, 46)
+    assert equipment.weapon_damage_max() == 46
 
 
 def test_the_hold_and_the_set_multiply_one_after_another():
@@ -163,21 +163,34 @@ def test_the_hold_reaches_the_health_of_the_other_fighter():
     assert hits["двуручное"] > hits["одноручное"], hits
 
 
-def test_the_three_holds_make_a_ladder_and_not_one_right_answer():
-    """Лестница хватов: щит — двуручное — парно, и в этом порядке.
+def test_the_two_top_holds_hit_the_same_and_the_shield_trades_that_for_cover():
+    """Двуручное и парно бьют одинаково, щит не бьёт вовсе — зато прикрывает.
 
-    Это и есть весь баланс хватов одним правилом. Щит не прибавляет
-    урона вовсе, зато прикрывает; двуручное прибавляет множителем
-    (`TWO_HANDED_DAMAGE`); парно бьёт больше всех, но стоит двух вещей
-    в руках и очков обоих пулов, и щита при нём нет.
+    Это весь баланс хватов одним правилом. Двуручное занимает обе руки
+    и отдаёт за это множителем (`TWO_HANDED_DAMAGE`); парный хват бьёт
+    дважды, и второй удар приносит своё оружие целиком, а силу долей
+    (`OFFHAND_STRENGTH_SHARE`). Числа подобраны так, чтобы за ход эти
+    два хвата выбивали одно и то же: секира по постановке «должна
+    компенсировать урон от двух оружий в среднем».
 
-    Пока второй удар приносил полный урон от силы, лестницы не было:
-    парно давало почти вдвое против пятой части у двуручного, и выбор
-    хвата был выбором только на словах. Проверяется здесь порядок, а не
-    числа: числа — решение владельца, а порядок — обещание игроку.
+    Сравнивается одна и та же вещь, взятая двумя руками, с ней же плюс
+    второе оружие в пару. Так проверяется правило, а не содержимое: в
+    каталоге лестница тяжёлого рваная — у дробящего двуручное кончается
+    на шестом уровне, — и тест, который брал бы «самое крупное
+    тяжёлое», мерил бы эту дырку, а не множитель. Второе оружие при
+    этом своего же вида: иначе боец платил бы очками двух пулов
+    владения, и сравнение было бы не о хватах.
+
+    Равенство проверяется среднее. Одного множителя на все уровни не
+    хватает: на младших свой урон от силы весит против оружия больше, и
+    там двуручное отстаёт — это цена плоского правила, и она записана
+    рядом с числом.
     """
+    from dataclasses import replace
+
     from bot.game.classes import FIGHTER_CLASSES
     from bot.game.combat import OFFHAND_STRENGTH_SHARE
+    from bot.game.gear import WeaponHand
     from bot.game.reference import best_kit, developed_stats, equipment_of
     from bot.game.stats import derive
 
@@ -193,41 +206,49 @@ def test_the_three_holds_make_a_ladder_and_not_one_right_answer():
             total += own * share + (low + high) / 2 * fclass.damage_mult
         return total
 
+    ratios: list[float] = []
     for fclass in FIGHTER_CLASSES.values():
-        for level in (5, 8, 12):
+        for level in (5, 6, 7, 8, 9, 10, 12):
             kit = dict(best_kit(fclass, level))
-            # Со щитом — эталонная сборка как есть
+            weapon = kit.get(Slot.WEAPON)
+            if weapon is None:
+                continue
+            where = f"{fclass.code} ур.{level}"
+            # Со щитом — эталонная сборка как есть: она одноручная
+            assert not weapon.two_handed, f"{where}: эталон берёт одноручное"
             shield = output(fclass, level, kit)
             bare = dict(kit)
             bare.pop(Slot.OFFHAND, None)
-            # Парно: то же оружие в основной, лёгкое во второй
-            light = max(
-                (
-                    one
-                    for one in CATALOGUE.values()
-                    if one.is_weapon
-                    and one.on_sale
-                    and one.level_required <= level
-                    and one.slots == (Slot.WEAPON, Slot.OFFHAND)
-                ),
-                key=lambda one: (one.level_required, one.damage_max),
-            )
-            pair = dict(bare)
-            pair[Slot.OFFHAND] = light
-            # Двуручное: самое крупное, до какого боец дорос
-            heavy = [
+
+            light = [
                 one
                 for one in CATALOGUE.values()
-                if one.two_handed and one.level_required <= level
+                if one.is_weapon
+                and one.on_sale
+                and not one.two_handed
+                and one.family == weapon.family
+                and one.level_required <= level
+                and one.code != weapon.code
             ]
-            where = f"{fclass.code} ур.{level}"
-            assert output(fclass, level, pair) > shield, where
-            if not heavy:
+            if not light:
                 continue
-            best = max(heavy, key=lambda one: (one.level_required, one.damage_max))
+            pair = dict(bare)
+            pair[Slot.OFFHAND] = max(
+                light, key=lambda one: one.damage_min + one.damage_max
+            )
+
             hands = dict(bare)
-            hands[Slot.WEAPON] = best
-            # Двуручное бьёт больше, чем то же оружие било бы без
-            # множителя, и меньше, чем две руки
-            plain = dict(hands)
-            assert output(fclass, level, pair) > output(fclass, level, plain), where
+            hands[Slot.WEAPON] = replace(
+                weapon, code=f"{weapon.code}_probe", hand=WeaponHand.TWO_HANDED
+            )
+
+            paired = output(fclass, level, pair)
+            both = output(fclass, level, hands)
+            assert paired > shield, f"{where}: парно не сильнее щитового"
+            assert both > shield, f"{where}: двуручное не сильнее щитового"
+            ratios.append(both / paired)
+            assert 0.75 <= both / paired <= 1.25, f"{where}: {both / paired:.2f}"
+
+    assert ratios, "ни одной пары хватов не нашлось — проверять нечего"
+    average = sum(ratios) / len(ratios)
+    assert 0.95 <= average <= 1.05, f"в среднем двуручное даёт {average:.0%} парного"

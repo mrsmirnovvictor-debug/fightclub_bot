@@ -381,3 +381,97 @@ def test_the_heavy_are_named_by_the_table_and_never_pierce():
     assert heavy_families == {
         one.value for one in WeaponFamily if one.heavy_allowed
     }
+
+
+def test_the_city_never_holds_a_heavy_weapon_and_a_second_hand():
+    """У городских тоже две руки: двуручное — вместо второй, а не вместе.
+
+    Правило хвата спрашивают, когда надевает игрок, а NPC одевают
+    кодом, и промолчать тут некому. Между тем двуручное на бойце бьёт
+    множителем (`TWO_HANDED_DAMAGE`), и босс, у которого в одной руке
+    кувалда, а в другой щит, получает и прибавку к урону, и броню со
+    блоком — ту самую пару, которую игроку запрещают.
+
+    Перечислять некого руками: проверка сама обходит все роли, какие
+    объявлены в рейдах и в затмении, — и новая роль попадает под неё в
+    тот же день, когда её впишут.
+    """
+    from bot.game import blackout, raid
+    from bot.game.equipment import CATALOGUE
+
+    def hands_of(weapon: str, offhand: str, gear: tuple[str, ...]) -> tuple[str, str]:
+        """Что у роли в руках после всех её собственных вещей."""
+        main, second = weapon, offhand
+        for code in gear:
+            item = CATALOGUE.get(code)
+            if item is None:
+                continue
+            if item.slot is Slot.WEAPON:
+                main = code
+            elif item.slot is Slot.OFFHAND:
+                second = code
+        return main, second
+
+    roles: list[tuple[str, str, str]] = []
+    for name, value in vars(raid).items():
+        rows = value if isinstance(value, tuple) else (value,)
+        for role in rows:
+            if type(role).__name__ != "Boss":
+                continue
+            main, second = hands_of(role.weapon, role.offhand, role.gear)
+            roles.append((f"{name}: {role.title}", main, second))
+    for code, rules in blackout.BOSSES.items():
+        roles.append((f"затмение: {rules.title}", rules.weapon, rules.offhand))
+
+    assert len(roles) > 10, f"роли не нашлись, проверять нечего: {len(roles)}"
+    for where, main, second in roles:
+        weapon = CATALOGUE.get(main)
+        if weapon is None or not weapon.two_handed:
+            continue
+        assert not second, f"{where}: {weapon.title} двуручная, а во второй руке {second}"
+
+
+def test_every_set_has_something_for_both_hands():
+    """В каждом наборе есть чем взять любой хват, какой этому классу идёт.
+
+    Прежде оружие в наборе было одно, и хват за игрока выбирала лавка:
+    воин в наборе героя не мог надеть щит героя вместе с секирой героя —
+    секира двуручная, а другого оружия в линии не было, — и шёл с
+    прилавочным тесаком, теряя вещь набора. Теперь у набора два ответа:
+    одноручное, рядом с которым встаёт щит или второе оружие, и
+    двуручное, которое занимает обе руки.
+
+    У трикстера двуручного нет и быть не может: колющего двуручного не
+    бывает (`bot/content/arming.py`), и отдача колющего — парный хват.
+    Поэтому в его наборах вторым оружием стоит второе лёгкое: пару
+    собирают из двух вещей набора, и обе считаются в его лестницу.
+    """
+    from bot.game.equipment import CATALOGUE, SET_TITLES
+
+    # Форма начальника сюда не идёт: это наряд, а не набор с прилавка.
+    # Её выдают целиком и носят как есть, выбора хвата в ней нет
+    kits: dict[str, list[Item]] = {}
+    for item in CATALOGUE.values():
+        if item.kit and item.is_weapon and not item.duty:
+            kits.setdefault(item.kit, []).append(item)
+
+    assert len(kits) >= 16, f"наборов с оружием нашлось {len(kits)}"
+    for kit, weapons in kits.items():
+        where = SET_TITLES.get(kit, kit)
+        light = [one for one in weapons if not one.two_handed]
+        heavy = [one for one in weapons if one.two_handed]
+        assert light, f"{where}: нечем взять одну руку — всё оружие двуручное"
+        if light[0].family == PIERCING:
+            assert not heavy, f"{where}: колющего двуручного не бывает"
+            assert len(light) >= 2, f"{where}: трикстеру нечем собрать пару"
+            continue
+        assert heavy, f"{where}: нет двуручного"
+
+    # Щит набора надевают вместе с его же оружием, а не вместо него.
+    # Уровни при этом не сверяются: щит в линии идёт ступенью раньше
+    # оружия (второй против третьего), и это замысел, а не промах
+    for item in CATALOGUE.values():
+        if item.kind is not ItemKind.SHIELD or not item.kit or item.duty:
+            continue
+        with_shield = [one for one in kits.get(item.kit, ()) if not one.two_handed]
+        assert with_shield, f"{SET_TITLES.get(item.kit, item.kit)}: щит не с чем надеть"

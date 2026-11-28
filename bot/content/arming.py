@@ -64,6 +64,10 @@ FAMILIES: dict[str, str] = {
     "set_cardsharp_weapon": PIERCING,
     "set_plut_weapon": PIERCING,
     "set_croupier_weapon": PIERCING,
+    "set_plut_pair": PIERCING,
+    "set_croupier_pair": PIERCING,
+    "set_lovkach_pair": PIERCING,
+    "set_cardsharp_pair": PIERCING,
     "assassin_energy_dagger": PIERCING,
     "assassin_energy_karambit": PIERCING,
     "assassin_energy_push_dagger": PIERCING,
@@ -84,6 +88,15 @@ FAMILIES: dict[str, str] = {
     "set_biker_weapon": CHOPPING,
     "set_fighter_weapon": CHOPPING,
     "set_hero_weapon": CHOPPING,
+    "set_sport_heavy": CHOPPING,
+    "set_biker_heavy": CHOPPING,
+    "set_fighter_heavy": CHOPPING,
+    "set_hero_pair": CHOPPING,
+    "carpenter_axe": CHOPPING,
+    "butcher_axe": CHOPPING,
+    "logger_axe": CHOPPING,
+    "woodsman_axe": CHOPPING,
+    "battle_axe": CHOPPING,
     # ---------- дробящее: дубины и молоты ----------
     "chief_baton": CRUSHING,
     "crowbar": CRUSHING,
@@ -103,6 +116,10 @@ FAMILIES: dict[str, str] = {
     "set_boxer_weapon": CRUSHING,
     "set_army_weapon": CRUSHING,
     "set_bouncer_weapon": CRUSHING,
+    "set_avenger_heavy": CRUSHING,
+    "set_boxer_heavy": CRUSHING,
+    "set_bouncer_heavy": CRUSHING,
+    "set_army_pair": CRUSHING,
     "trickster_energy_baton": CRUSHING,
     "trickster_energy_staff": CRUSHING,
     "tank_energy_hammer": CRUSHING,
@@ -121,28 +138,58 @@ FAMILIES: dict[str, str] = {
     "set_strangler_weapon": SLASHING,
     "set_camouflage_weapon": SLASHING,
     "set_killer_weapon": SLASHING,
+    "set_mercenary_heavy": SLASHING,
+    "set_strangler_heavy": SLASHING,
+    "set_camouflage_heavy": SLASHING,
+    "set_killer_heavy": SLASHING,
+    "dirk": SLASHING,
+    "shashka": SLASHING,
+    "twohand_sabre": SLASHING,
+    "broadsword": SLASHING,
+    "falchion": SLASHING,
 }
 
 # Тяжёлое: занимает обе руки. Секиры по постановке двуручны всегда,
 # кувалды и колун — по весу, посох — потому что его держат двумя
 # руками, двуручные мечи — по названию. Остальное лёгкое, и лёгкое
-# годится в любую руку
+# годится в любую руку.
+#
+# **Кувалды Босса здесь нет, хотя она кувалда.** Её носят двое — Босс
+# Казино и Громила из затмения, — и оба со щитом: у Громилы на щите
+# держатся обе фазы боя («Щит держит», «Щит сломан»), а броня Босса
+# выверена вместе со щитом. Игроку она не достаётся ни покупкой, ни
+# наградой, так что правило хвата её не касается; а двуручный множитель
+# лёг бы поверх чисел, которые считались плоскими (10–40 — средний урон
+# десятой ступени, разложенный в разброс), и Босс Казино прибавил бы
+# треть мощи ни за что. Что двуручное и вторая рука у городских не
+# встречаются, проверяет `tests/test_weapon_hands.py`
 HEAVY: frozenset[str] = frozenset(
     {
         # рубящее
         "viking_axe",
         "splitting_axe",
         "tank_energy_greataxe",
+        "set_sport_heavy",
+        "set_biker_heavy",
+        "set_fighter_heavy",
+        "woodsman_axe",
         # дробящее
         "sledge",
         "bouncer_sledge",
-        "boss_sledge",
         "set_army_weapon",
         "tank_energy_maul",
         "trickster_energy_staff",
+        "set_avenger_heavy",
+        "set_boxer_heavy",
+        "set_bouncer_heavy",
         # режущее
         "greatsword",
         "set_hero_weapon",
+        "set_mercenary_heavy",
+        "set_strangler_heavy",
+        "set_camouflage_heavy",
+        "set_killer_heavy",
+        "twohand_sabre",
     }
 )
 

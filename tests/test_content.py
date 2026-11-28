@@ -1274,3 +1274,44 @@ def test_the_hero_weapon_is_the_two_handed_example_of_its_class():
         item.family for item in CATALOGUE.values() if item.is_weapon and item.two_handed
     }
     assert heavy == {one.value for one in WeaponFamily if one.heavy_allowed}
+
+
+def test_every_family_has_its_own_weapon_on_every_step():
+    """Свой вид есть в лавке на каждой ступени — и одной рукой, и двумя.
+
+    Очки владения кладут в один вид, и покупать чужой вид бойцу значит
+    выбросить их. Поэтому лестница у каждого вида должна быть сплошной:
+    с четвёртого уровня по девятый на прилавке есть вещь его вида, и на
+    каждой ступени есть одноручная — иначе щит с этого уровня надеть не
+    с чем.
+
+    Третьей ступени в этой проверке нет: в лавке на ней стоит один
+    кастет, а своё оружие третьего уровня каждый класс получает в
+    наборе (`test_a_set_weapon_alone_does_not_beat_the_club_one`
+    объясняет, почему новую вещь туда не поставить).
+
+    После переезда видов по типу удара лестница была рваной: у воина
+    рубящее начиналось с седьмого уровня, у ассасина режущее — с
+    шестого, и до них они дрались чужим. Проверка держит достроенное.
+    """
+    from bot.game.mastery import WeaponFamily
+
+    club = [item for item in SHOWCASE if item.is_weapon and not item.kit]
+    for family in WeaponFamily:
+        mine = [item for item in club if item.family == family.value]
+        assert mine, f"{family.title}: в лавке нет ни одной вещи этого вида"
+        for level in range(4, 10):
+            step = [item for item in mine if item.level_required == level]
+            assert step, f"{family.title}: на {level} ступени нет вещи этого вида"
+            assert [item for item in step if not item.two_handed], (
+                f"{family.title}: на {level} ступени всё двуручное, щит надеть не с чем"
+            )
+        if not family.heavy_allowed:
+            assert not [item for item in mine if item.two_handed], (
+                f"{family.title}: двуручного в этом виде не бывает"
+            )
+            continue
+        early = [
+            item for item in mine if item.two_handed and item.level_required <= 6
+        ]
+        assert early, f"{family.title}: двуручное в лавке начинается слишком поздно"
