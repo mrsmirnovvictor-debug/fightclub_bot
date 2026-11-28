@@ -118,6 +118,29 @@
   dl.nums dd { margin: 0; }
   .whose { margin: 9px 0 0; font-size: 13px; color: var(--muted); }
   .whose b { color: var(--fg); }
+  /* Редактор чисел: подпись сверху, поле снизу, и всё это сеткой —
+     на телефоне встаёт в две колонки, на столе в четыре */
+  .edit {
+    grid-column: 1 / -1;
+    display: grid; gap: 6px 10px;
+    grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+    margin: 10px 0 0; padding: 10px 0 0;
+    border-top: 1px dashed var(--line);
+  }
+  .edit label { display: block; font-size: 12px; color: var(--muted); }
+  .edit input {
+    width: 100%; margin: 2px 0 0;
+    font: inherit; font-variant-numeric: tabular-nums;
+    color: var(--fg); background: var(--pad);
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px;
+  }
+  .edit .unit { color: var(--muted); font-size: 11px; }
+  .edit .was { color: var(--steel); font-size: 11px; display: none; }
+  .edit .moved input { border-color: var(--steel); color: var(--steel); }
+  .edit .moved .was { display: inline; }
+  .edit .moved label { color: var(--steel); }
+  .tweaked { border-color: var(--steel); }
+
   .note { grid-column: 1 / -1; }
   .note label {
     display: block; font-size: 12px; letter-spacing: .05em; text-transform: uppercase;
@@ -140,8 +163,12 @@
     единственный огнестрел. Картинки — прямо из бакета, числа и наборы — из
     каталога этого выката. Рамкой обведено то, где картинки нет или она спорит
     с названием; кнопка «Нужен арт» оставляет на листе только их, «По наборам»
-    перекладывает лист линиями наборов. Пометки остаются в этом браузере;
-    кнопка сверху собирает их одним текстом.</p>
+    перекладывает лист линиями наборов.</p>
+  <p class="lede">Числа у каждой вещи правятся прямо здесь: поменянное подсвечивается
+    и помнит, что было. На игру это не влияет — правки живут в этом браузере, и
+    кнопка «Скопировать правки» собирает их списком «поле: было → стало», по
+    которому их переносят в каталог игры. Пометки про арт — отдельной графой у
+    карточки.</p>
   <ul class="tally" id="tally"></ul>
 
   <div class="bar">
@@ -150,6 +177,9 @@
     <button type="button" class="ghost" id="reload">Обновить картинки</button>
     <button type="button" class="ghost" id="copy">Скопировать пометки</button>
     <button type="button" class="ghost" id="save">Скачать пометки</button>
+    <button type="button" class="ghost" id="copy-tweaks">Скопировать правки</button>
+    <button type="button" class="ghost" id="save-tweaks">Скачать правки</button>
+    <button type="button" class="ghost" id="drop-tweaks">Сбросить правки</button>
   </div>
 
   <section class="general">
@@ -171,6 +201,7 @@
   const state = { kind: "", flagged: false, text: "", bySet: false };
   let ITEMS = [];
   let stamp = 0;
+  let tweakTimer = 0;
 
   // Пометки живут в этом браузере: сервер их не хранит, и на игру они
   // не влияют. Чтение и запись обёрнуты — в приватном окне хранилище
@@ -192,6 +223,70 @@
     } catch (e) {
       said("Браузер не дал сохранить пометки — скопируй их кнопкой сверху", "");
     }
+  }
+
+  // Правки чисел живут рядом с пометками и так же только в этом
+  // браузере: сервер их не знает, на игру они не влияют. Хранится
+  // только то, что отличается от каталога, — тогда новый выкат с
+  // новыми числами не тащит за собой старые правки молча
+  const TWEAKS = "arsenal-tweaks";
+  const tweaks = new Map();
+  try {
+    const kept = JSON.parse(localStorage.getItem(TWEAKS) || "{}");
+    Object.entries(kept).forEach(([code, fields]) => {
+      tweaks.set(code, new Map(Object.entries(fields).map(([f, v]) => [f, Number(v)])));
+    });
+  } catch (e) { /* приватное окно */ }
+
+  function keepTweaks() {
+    try {
+      const flat = {};
+      tweaks.forEach((fields, code) => {
+        if (!fields.size) return;
+        flat[code] = Object.fromEntries(fields);
+      });
+      localStorage.setItem(TWEAKS, JSON.stringify(flat));
+      said(tweakCount() ? "Правки сохранены в этом браузере" : "Правок нет", "saved");
+    } catch (e) {
+      said("Браузер не дал сохранить правки — скопируй их кнопкой сверху", "");
+    }
+    paintTally();
+  }
+
+  function tweakCount() {
+    let total = 0;
+    tweaks.forEach((fields) => { total += fields.size; });
+    return total;
+  }
+
+  function tweakOf(code, field) {
+    const fields = tweaks.get(code);
+    return fields ? fields.get(field) : undefined;
+  }
+
+  function tweaksText() {
+    const lines = [];
+    let things = 0;
+    ITEMS.forEach((one) => {
+      const fields = tweaks.get(one.code);
+      if (!fields || !fields.size) return;
+      things += 1;
+      lines.push("", one.code + "  " + one.title + " (ур. " + one.level + ")");
+      one.edit.forEach((field) => {
+        if (!fields.has(field.field)) return;
+        const unit = field.unit === "%" ? "%" : "";
+        lines.push(
+          "  " + field.field + ": " + field.value + unit
+          + " → " + fields.get(field.field) + unit
+        );
+      });
+    });
+    if (!things) return "Правок пока нет.";
+    return (
+      "Правки параметров: вещей " + things + ", чисел " + tweakCount()
+      + "\nПоля названы так, как в каталоге игры."
+      + lines.join("\n")
+    );
   }
 
   function said(text, cls) {
@@ -305,6 +400,49 @@
     setTimeout(() => URL.revokeObjectURL(away.href), 4000);
   });
 
+  // Выгрузка правок названа и наружу: по ней лист проверяют в
+  // браузерном тесте, и по ней же её читают из консоли, когда
+  // буфер обмена в мини-аппе недоступен
+  window.arsenalTweaks = tweaksText;
+
+  document.getElementById("copy-tweaks").addEventListener("click", async (e) => {
+    const out = tweaksText();
+    try {
+      await navigator.clipboard.writeText(out);
+      e.target.textContent = "Скопировано";
+      setTimeout(() => { e.target.textContent = "Скопировать правки"; }, 1600);
+    } catch (err) {
+      const box = document.getElementById("general");
+      box.value = out;
+      box.focus();
+      box.select();
+    }
+  });
+
+  document.getElementById("save-tweaks").addEventListener("click", () => {
+    const blob = new Blob([tweaksText()], { type: "text/plain;charset=utf-8" });
+    const away = document.createElement("a");
+    away.href = URL.createObjectURL(blob);
+    away.download = "арсенал-правки.txt";
+    document.body.appendChild(away);
+    away.click();
+    away.remove();
+    setTimeout(() => URL.revokeObjectURL(away.href), 4000);
+  });
+
+  document.getElementById("drop-tweaks").addEventListener("click", () => {
+    if (!tweakCount()) {
+      said("Правок и так нет", "");
+      return;
+    }
+    if (!window.confirm("Сбросить все правки чисел? Пометки про арт останутся.")) {
+      return;
+    }
+    tweaks.clear();
+    keepTweaks();
+    render();
+  });
+
   function tag(text, cls) {
     const li = document.createElement("li");
     li.textContent = text;
@@ -408,6 +546,55 @@
     }
     body.appendChild(whose);
 
+    // Числа правятся здесь же: поле на каждое, подпись сверху, и
+    // рядом — что стояло в каталоге, если число поменяли
+    const edit = document.createElement("div");
+    edit.className = "edit";
+    (one.edit || []).forEach((field) => {
+      const cell = document.createElement("div");
+      const label = document.createElement("label");
+      label.htmlFor = "edit-" + one.code + "-" + field.field;
+      label.append(field.title);
+      if (field.unit) {
+        const unit = document.createElement("span");
+        unit.className = "unit";
+        unit.textContent = " " + field.unit;
+        label.append(unit);
+      }
+      const input = document.createElement("input");
+      input.type = "number";
+      input.inputMode = "numeric";
+      input.id = label.htmlFor;
+      input.step = "1";
+      const moved = tweakOf(one.code, field.field);
+      input.value = String(moved === undefined ? field.value : moved);
+      const was = document.createElement("span");
+      was.className = "was";
+      was.textContent = "было " + field.value + (field.unit === "%" ? "%" : "");
+      const paint = () => {
+        const changed = tweakOf(one.code, field.field) !== undefined;
+        cell.classList.toggle("moved", changed);
+        box.classList.toggle("tweaked", Boolean((tweaks.get(one.code) || new Map()).size));
+      };
+      input.addEventListener("input", () => {
+        const now = input.value.trim();
+        const fields = tweaks.get(one.code) || new Map();
+        if (now === "" || Number(now) === field.value || Number.isNaN(Number(now))) {
+          fields.delete(field.field);
+        } else {
+          fields.set(field.field, Number(now));
+        }
+        if (fields.size) tweaks.set(one.code, fields);
+        else tweaks.delete(one.code);
+        paint();
+        clearTimeout(tweakTimer);
+        tweakTimer = setTimeout(keepTweaks, 500);
+      });
+      cell.append(label, input, was);
+      paint();
+      edit.appendChild(cell);
+    });
+
     const note = document.createElement("div");
     note.className = "note";
     const label = document.createElement("label");
@@ -427,7 +614,7 @@
     note.append(label, area);
     fields.set(one.code, area);
 
-    box.append(pic, body, note);
+    box.append(pic, body, edit, note);
     return box;
   }
 
@@ -484,16 +671,30 @@
     });
   }
 
+  // Счётчик наверху: сколько чего в арсенале и сколько чисел поменяно.
+  // Последнее меняется на ходу, поэтому выдача запоминается
+  let COUNTS = {};
+
   function tally(counts) {
+    COUNTS = counts;
+    paintTally();
+  }
+
+  function paintTally() {
     const box = document.getElementById("tally");
+    if (!box) return;
     box.textContent = "";
-    [
-      ["всего", counts.all],
-      ["оружие", counts.weapons],
-      ["щиты", counts.shields],
-      ["в наборах", counts.in_sets],
-      ["нужен арт", counts.drawn_apart],
-    ].forEach(([label, n]) => {
+    const rows = [
+      ["всего", COUNTS.all],
+      ["оружие", COUNTS.weapons],
+      ["щиты", COUNTS.shields],
+      ["в наборах", COUNTS.in_sets],
+      ["нужен арт", COUNTS.drawn_apart],
+    ];
+    const moved = tweakCount();
+    if (moved) rows.push(["чисел поменяно", moved]);
+    rows.forEach(([label, n]) => {
+      if (n === undefined) return;
       const li = document.createElement("li");
       const b = document.createElement("b");
       b.textContent = n;

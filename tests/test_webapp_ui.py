@@ -19953,6 +19953,56 @@ async def test_the_drum_crawls_past_half_a_dozen_prizes_at_the_end(server, db):
         await browser.close()
 
 
+async def test_the_sheet_lets_the_owner_change_any_number(server):
+    """Числа правятся на листе, помнят прежние и уезжают списком.
+
+    Лист для сверки стал и местом правки: владелец меняет любое число у
+    любой вещи, лист подсвечивает поменянное и показывает, что стояло в
+    каталоге. На игру это не влияет — правки живут в браузере, и
+    переносят их в код по выгруженному списку.
+
+    Проверяется весь путь: поле меняется, прежнее число видно, правка
+    переживает перезагрузку, счётчик её считает, выгрузка называет поле
+    так, как оно зовётся в каталоге, а сброс всё убирает.
+    """
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            executable_path=CHROMIUM, args=["--no-proxy-server"]
+        )
+        page = await browser.new_page(viewport={"width": 1180, "height": 1400})
+        await page.route(IMAGES, lambda route: route.abort())
+        await page.goto(str(server.make_url("/arsenal")), wait_until="domcontentloaded")
+        await page.wait_for_selector(".card")
+
+        # Урон секиры героя: в каталоге 26–38
+        field = page.locator("#edit-set_hero_weapon-damage_min")
+        await field.scroll_into_view_if_needed()
+        assert await field.input_value() == "26"
+        await field.fill("30")
+        await page.wait_for_timeout(700)
+
+        cell = page.locator("#edit-set_hero_weapon-damage_min").locator("..")
+        assert "moved" in (await cell.get_attribute("class") or ""), "правка не видна"
+        assert "было 26" in await cell.inner_text()
+        assert "1 чисел поменяно" in await page.locator("#tally").inner_text()
+
+        # Перезагрузка её не теряет: правки лежат в браузере
+        await page.reload(wait_until="domcontentloaded")
+        await page.wait_for_selector(".card")
+        assert await page.locator("#edit-set_hero_weapon-damage_min").input_value() == "30"
+
+        # Выгрузка называет поле по-каталожному
+        out = await page.evaluate("() => window.arsenalTweaks()")
+        assert "set_hero_weapon" in out and "damage_min: 26 → 30" in out, out
+
+        # Возврат к прежнему числу правкой не считается
+        await page.locator("#edit-set_hero_weapon-damage_min").fill("26")
+        await page.wait_for_timeout(700)
+        assert "поменяно" not in await page.locator("#tally").inner_text()
+        assert "Правок пока нет" in await page.evaluate("() => window.arsenalTweaks()")
+        await browser.close()
+
+
 async def test_the_belt_does_not_jump_every_five_seconds(server, db):
     """Лента не подменяет товар и не начинает круг заново.
 

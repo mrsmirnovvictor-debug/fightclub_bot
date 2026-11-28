@@ -43,6 +43,68 @@ KIND_TITLES: dict[ItemKind, str] = {
 DRAWN_INSTEAD: dict[str, str] = {}
 
 
+# Числа, которые владелец правит прямо на листе. Поле названо так, как
+# оно зовётся в каталоге (`bot/content/items.py`): правку потом
+# переносят в код, и перевод названий туда-обратно — лишний шаг, на
+# котором теряются вещи. Доли идут процентами: на вещи они записаны
+# частями единицы, а читают и правят их процентами.
+EDITABLE: tuple[tuple[str, str, str], ...] = (
+    ("damage_min", "Урон от", ""),
+    ("damage_max", "Урон до", ""),
+    ("armor_min", "Броня от", ""),
+    ("armor_max", "Броня до", ""),
+    ("strength", "Сила", ""),
+    ("agility", "Проворство", ""),
+    ("intuition", "Интуиция", ""),
+    ("hp", "Запас", ""),
+    ("accuracy", "Точность", "%"),
+    ("dodge", "Уворот", "%"),
+    ("crit", "Крит", "%"),
+    ("anticrit", "Антикрит", "%"),
+    ("counter", "Контрудар", "%"),
+    ("level_required", "Уровень", ""),
+    ("price", "Цена", "кр."),
+    ("stars", "Цена", "⭐"),
+    ("shots", "Патроны", ""),
+)
+
+
+def edit_row(item: Item) -> list[dict]:
+    """Числа этой вещи так, как их правят на листе.
+
+    Показываются не все поля подряд, а те, что у вещи есть: броня у
+    оружия, патроны у щита и звёзды у лавочной вещи — пустые графы, и
+    место они занимают зря. Нулевые прибавки при этом остаются: их как
+    раз и заводят, когда вещи чего-то не хватает.
+    """
+    rows: list[dict] = []
+    for field, title, unit in EDITABLE:
+        value = getattr(item, field)
+        if field in ("armor_min", "armor_max") and not item.armor_max:
+            continue
+        if field in ("damage_min", "damage_max") and not item.damage_max:
+            continue
+        if field == "shots" and not item.shots:
+            continue
+        if field == "price" and item.stars:
+            continue
+        if field == "stars" and not item.stars:
+            continue
+        if unit == "%":
+            value = round(value * 100)
+        rows.append({"field": field, "title": title, "value": value, "unit": unit})
+    for stat in ALL_STATS:
+        rows.append(
+            {
+                "field": f"requires.{stat.value}",
+                "title": f"Нужно: {stat.title}",
+                "value": item.requires.get(stat) or 0,
+                "unit": "",
+            }
+        )
+    return rows
+
+
 def item_row(item: Item) -> dict:
     """Одна вещь так, как её показывает сверочный лист."""
     hold = hold_required(item)
@@ -106,6 +168,9 @@ def item_row(item: Item) -> dict:
         "shots": item.shots,
         "two_handed": bool(item.two_handed),
         "drawn": DRAWN_INSTEAD.get(item.code, ""),
+        # Числа для правки — те же, что выше, но полями каталога и
+        # одним списком: лист ими рисует поля ввода
+        "edit": edit_row(item),
     }
 
 
@@ -165,9 +230,11 @@ def arsenal_payload() -> dict:
 
 __all__ = [
     "DRAWN_INSTEAD",
+    "EDITABLE",
     "FAMILY_ORDER",
     "IN_HANDS",
     "KIND_ORDER",
     "arsenal_payload",
+    "edit_row",
     "item_row",
 ]
