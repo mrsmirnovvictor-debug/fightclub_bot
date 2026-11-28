@@ -406,24 +406,47 @@ async def scene_page(request: web.Request) -> web.Response:
     )
 
 
+# Чем закрыть кеш у страниц, которые обязаны показывать этот выкат, а
+# не прошлый. Три заголовка вместо одного — потому что встроенные
+# браузеры читают их вразнобой: `no-store` для нынешних, `no-cache` с
+# нулевым сроком для тех, что помнят прошлый век
+NO_STORE = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
 async def arsenal_page(request: web.Request) -> web.Response:
     """Сверочный лист оружейной. Отдаётся всем: внутри только каталог.
 
     Та же дверь, что у стенда сцены боя: бойца, его денег и его вещей
     здесь нет вовсе, а числа и картинки каталога игрок и так видит на
     прилавке. Нужен лист владельцу — сверять арт с названиями.
+
+    **Лист не кешируется.** Он нужен ровно одним: показать каталог
+    этого выката. Прежде он уезжал без запрета на кеш, и браузер —
+    особенно встроенный в Telegram — отдавал прежнюю копию: выкат уже
+    новый, а на листе прежние вещи и прежний порядок, и объяснить это
+    глядящему нечем. Разметка листа весит килобайты, перечитать её
+    дешевле, чем один раз обмануть.
     """
     return web.Response(
         text=(STATIC_DIR / "arsenal.html").read_text(encoding="utf-8"),
         content_type="text/html",
+        headers=NO_STORE,
     )
 
 
 async def api_arsenal(request: web.Request) -> web.Response:
-    """Весь арсенал одной выдачей: 94 вещи, которые берут в руки."""
+    """Весь арсенал одной выдачей: всё, что боец берёт в руки.
+
+    Тоже без кеша, и по той же причине: выдача и есть каталог выката,
+    а старая копия её означала бы лист, который врёт о содержимом.
+    """
     from bot.webapp.arsenal import arsenal_payload
 
-    return web.json_response(arsenal_payload())
+    return web.json_response(arsenal_payload(), headers=NO_STORE)
 
 
 async def index(request: web.Request) -> web.Response:

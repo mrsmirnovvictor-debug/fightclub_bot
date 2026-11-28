@@ -163,6 +163,24 @@ async def test_the_page_and_the_payload_are_served_to_anyone(client):
     assert body["counts"]["weapons"] > 60
 
 
+async def test_the_sheet_is_never_served_from_the_cache(client):
+    """Лист и его выдача приезжают с запретом на кеш.
+
+    Лист нужен ровно одним: показать каталог этого выката. Пока запрета
+    не было, браузер — особенно встроенный в Telegram — отдавал прежнюю
+    копию: выкат уже новый, а на листе прежние вещи и прежний порядок.
+    Со стороны это выглядит так, будто правка не уехала, и объяснить это
+    глядящему нечем.
+    """
+    for where in ("/arsenal", "/api/arsenal"):
+        answer = await client.get(where)
+        rule = answer.headers.get("Cache-Control", "")
+
+        assert answer.status == 200, where
+        assert "no-store" in rule, (where, rule)
+        assert answer.headers.get("Pragma") == "no-cache", where
+
+
 def test_the_page_does_not_know_the_bucket():
     """Адрес бакета в вёрстке не пишется: он приходит выдачей.
 
